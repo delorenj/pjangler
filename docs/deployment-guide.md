@@ -8,9 +8,10 @@
 `@delorenj/pjangler` is an npm package published to the public npmjs.org registry
 via `publishConfig.registry` in `package.json`. Publishing uses **npm OIDC
 Trusted Publishing** (GA since July 2025) — no API tokens or 2FA are required.
-A GitHub Actions workflow (`.github/workflows/publish.yml`) triggered by tag
-pushes (`v*`) runs `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under
-the `release` environment with `id-token: write` permission. The package is
+The GitHub Actions workflow `.github/workflows/publish.yml` publishes every
+green push to `main` and every `v*` tag push: its `publish` job runs
+`npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
+environment with `id-token: write` permission (see [CI](#ci)). The package is
 installed globally (or run via `npx`) from npmjs.org. Binaries:
 
 | Binary | Maps to | Purpose |
@@ -79,8 +80,8 @@ The release task owns the only supported bump-and-publish transaction:
    tracked/package secret scan.
 10. Create the commit/tag only after those gates, then atomically push both.
 11. **For npmjs.org (OIDC):** the local release stops here — the tag push
-    triggers the GitHub Actions `publish.yml` workflow, which runs
-    `npm ci`, `npm run build`, `npm run typecheck`, `npm test`, then
+    runs the GitHub Actions `publish.yml` workflow: its `ci` job typechecks,
+    builds and runs the suite under coverage, then its `publish` job runs
     `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
     environment. The local script logs "tag pushed; GitHub Actions OIDC
     workflow will publish" and exits. For GitHub Packages, publish that exact
@@ -114,18 +115,46 @@ Actions workflow from the Actions UI.
 
 ## CI
 
-`.github/workflows/` contains Claude Code automation and the OIDC publish pipeline:
+`.github/workflows/` holds three workflows, and every job in them runs on a
+standard GitHub-hosted runner (`ubuntu-latest`). The repository is public, so
+those runners are free; the rule is no paid runners. No job uses a self-hosted
+runner (PJAN-164): the one the `ci` job used before ran as the operator in his
+real HOME and lent the suite a newer mise, the Krebs adapters and bun. That hid
+two broken suites (PJAN-154, PJAN-155) and a third that skipped itself.
+`tests/release-regressions.mjs` pins every job's runner.
 
-- `claude.yml` — Claude Code interactive workflow
-- `claude-code-review.yml` — automated PR code review
-- `publish.yml` — npm OIDC Trusted Publishing workflow; triggers on tag push (`v*`),
-  runs `npm ci`, `npm run build`, `npm run typecheck`, `npm test`, then
-  `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
-  environment (`id-token: write`, `contents: read`)
+- `publish.yml` (workflow name `CI`) runs on every push to `main`, on `v*` tag
+  pushes, on pull requests and on manual dispatch. Its filename is
+  load-bearing: npm's trusted publisher for `@delorenj/pjangler` names it. Two
+  jobs:
+  - `ci` checks out recursively over the HTTPS submodule bridge, fetches the
+    Krebs tp adapters from the public 33GOD repo into
+    `PJ_TICKET_PROVIDER_ADAPTERS`, and sets up Node 24, bun, mise 2026.9.12,
+    and a uv-managed Python 3.12 with PyYAML and a uv-tool Copier (checked to
+    be one pjangler trusts). It then runs `npm ci`, `npm run typecheck`,
+    `npm run build`, `npm run test:bmad-installer-contract` and
+    `npm run test:coverage`, with a `postgres:16` service on `localhost:5432`
+    for the registry suites. `PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1` makes
+    `pg-registry-regressions` fail, not skip, if postgres, `psql` or bun is
+    missing. The coverage ratchet follows: on `main` it raises
+    `.coverage-floor.json` (`coverage:apply`) and hands the floor to `publish`
+    as an artifact; elsewhere it only checks (`coverage:check`).
+  - `publish` runs after a green `ci`, for `main` pushes and `v*` tags, never
+    for the bot's own release push. On `main` it bumps the patch version past
+    every version npm or a git tag has taken (`scripts/release-version.mjs`).
+    It then runs `npm publish --provenance` over npm OIDC trusted publishing
+    (`release` environment, `id-token: write`, `contents: write`,
+    `NODE_AUTH_TOKEN=""`), and only after npm accepts it, on `main`, commits
+    `chore(release): vX.Y.Z [skip ci]` with the measured coverage floor and
+    pushes that commit and the annotated tag atomically.
+- `claude.yml` runs Claude Code when an issue, comment or review mentions
+  `@claude`.
+- `claude-code-review.yml` reviews pull requests when they are opened,
+  synchronized, reopened or marked ready for review.
 
-Build, test, and the release commit/tag are run locally via the commands above;
-publishing to npmjs.org happens in CI via the `publish.yml` workflow triggered by
-the tag push.
+Every green push to `main` publishes a patch release; there is no separate
+publish step to remember. `mise run release` (above) is the deliberate path,
+for example for a minor or major bump; its tag push runs the same workflow.
 
 ## Runtime dependencies at the install site
 

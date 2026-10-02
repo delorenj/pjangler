@@ -533,9 +533,13 @@ test("real git: with origin unreachable the release stops and writes no output",
 
 test("publish.yml bumps with the script, publishes, and only then commits and tags", () => {
   const workflow = YAML.parse(readFileSync(join(ROOT, ".github", "workflows", "publish.yml"), "utf8"));
-  // PJAN-163: the release lives in the publish job, on a GitHub-hosted runner
-  // where npm OIDC works, after the self-hosted ci job has tested the commit.
+  // PJAN-163, PJAN-164: the release lives in the publish job, on a
+  // GitHub-hosted runner where npm OIDC works, after the ci job (hosted too)
+  // has tested the commit.
   assert.equal(workflow.jobs.publish?.needs, "ci", "the publish job runs only after a green ci");
+  assert.equal(workflow.jobs.ci["runs-on"], "ubuntu-latest", "ci tests on a GitHub-hosted runner");
+  assert.equal(workflow.jobs.publish["runs-on"], "ubuntu-latest", "npm OIDC trusted publishing needs a GitHub-hosted runner");
+  assert.equal(workflow.jobs.publish.permissions?.["id-token"], "write", "npm OIDC trusted publishing needs the job's id-token");
   const steps = workflow.jobs.publish.steps;
   const bump = steps.findIndex((s) => s.id === "bump");
   const commit = steps.findIndex((s) => s.name === "Commit the release");

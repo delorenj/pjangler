@@ -1,8 +1,14 @@
 name: Claude Code Review
 
-# Stopgap (2026-10-01): manual-only until self-hosted runners are containerized; claude-code-action would otherwise write to the operator's real HOME on big-chungus.
 on:
-  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
@@ -12,7 +18,7 @@ jobs:
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
-    runs-on: [self-hosted, Linux, delonet]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read

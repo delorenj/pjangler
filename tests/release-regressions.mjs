@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -19,7 +20,8 @@ const releasePath = join(root, ".mise", "scripts", "release.sh");
 const source = readFileSync(releasePath, "utf8");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const testRunner = readFileSync(join(root, "scripts", "run-tests.mjs"), "utf8");
-const publishWorkflow = readFileSync(join(root, ".github", "workflows", "publish.yml"), "utf8");
+const workflowsDir = join(root, ".github", "workflows");
+const publishWorkflow = readFileSync(join(workflowsDir, "publish.yml"), "utf8");
 const gitmodules = readFileSync(join(root, ".gitmodules"), "utf8");
 const pgSource = readFileSync(join(root, "tests", "pg-registry-regressions.mjs"), "utf8");
 const temp = mkdtempSync(join(tmpdir(), "pjangler-release-regression-"));
@@ -50,22 +52,25 @@ try {
     "publish workflow must not use a mutable mise action tag",
   );
   const miseSetupStep = publishWorkflow.indexOf(miseAction[0]);
-  const miseVersion = publishWorkflow.indexOf("version: '2026.7.5'", miseSetupStep);
+  // PJAN-154: the version pjangler's mise rules are measured on. 2026.7.5
+  // predates the `script` hook deprecation the pjan-135 suites assert on.
+  const miseVersion = publishWorkflow.indexOf("version: '2026.9.12'", miseSetupStep);
   const miseVerificationStep = publishWorkflow.indexOf("run: mise --version", miseSetupStep);
   const npmTestStep = publishWorkflow.indexOf("npm run test:coverage");
   const workflow = YAML.parse(publishWorkflow);
 
-  // PJAN-163: two jobs. `ci` tests on the self-hosted runner (free, unlimited
-  // minutes); `publish` runs after it on a GitHub-hosted runner, because npm's
-  // OIDC trusted publishing and provenance work only there. The repository is
-  // public, so that hosted runner is free; the rule is no PAID runners.
+  // PJAN-163, PJAN-164: two jobs, both GitHub-hosted. `ci` tests on a clean
+  // runner that lends the suite nothing this workflow did not install;
+  // `publish` runs after it, and has to be hosted, because npm's OIDC trusted
+  // publishing and provenance work only there. The repository is public, so a
+  // standard hosted runner is free; the rule is no PAID runners.
   assert.deepEqual(Object.keys(workflow.jobs), ["ci", "publish"], "the workflow has exactly two jobs: ci, then publish");
   const ciJob = workflow.jobs.ci;
   const publishJob = workflow.jobs.publish;
   const ciSteps = ciJob.steps;
   const releaseSteps = publishJob.steps;
   assert.equal(publishJob.needs, "ci", "publish runs only after a green ci");
-  assert.deepEqual(ciJob["runs-on"], ["self-hosted", "Linux", "delonet"], "ci stays on the self-hosted delonet runner");
+  assert.equal(ciJob["runs-on"], "ubuntu-latest", "ci runs on a clean GitHub-hosted runner, never the operator's host");
   assert.equal(publishJob["runs-on"], "ubuntu-latest", "publish runs on a GitHub-hosted runner, where npm OIDC works");
 
   // Every key and scalar in the parsed workflow, with its path. Comments are
@@ -81,15 +86,31 @@ try {
   };
   walk(workflow, []);
 
-  // Only publish is hosted: every other job is self-hosted, and no hosted
-  // label appears anywhere but publish's runs-on.
-  for (const [name, job] of Object.entries(workflow.jobs)) {
-    const labels = [job["runs-on"]].flat();
-    if (name !== "publish") assert.ok(labels.includes("self-hosted"), `job ${name} must run on the self-hosted runner`);
+  // Every job in every workflow of this repository runs on a standard
+  // GitHub-hosted runner (PJAN-164). The self-hosted runner ran as the
+  // operator in his real HOME and lent the suite a newer mise, the Krebs
+  // adapters and bun, which hid two broken suites (PJAN-154, PJAN-155), and
+  // claude-code-action there would have written to his real ~/.claude. No job
+  // may go back to it: not by label, runner group or expression. runs-on is
+  // the plain string ubuntu-latest, a standard runner that a public repository
+  // gets free; larger runners are billed. Parsed values only, so prose about
+  // the old runner cannot trip this and a label cannot hide from it.
+  const workflowFiles = readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name)).sort();
+  assert.deepEqual(workflowFiles, ["claude-code-review.yml", "claude.yml", "publish.yml"], "every workflow is checked below");
+  for (const file of workflowFiles) {
+    const parsed = YAML.parse(readFileSync(join(workflowsDir, file), "utf8"));
+    const values = [];
+    const collect = (node, path) => {
+      if (node && typeof node === "object") for (const [key, value] of Object.entries(node)) collect(value, [...path, key]);
+      else values.push({ path: path.join("."), value: node });
+    };
+    collect(parsed, []);
+    const selfHosted = values.filter(({ value }) => typeof value === "string" && /self-hosted|\bdelonet\b/i.test(value));
+    assert.deepEqual(selfHosted.map(({ path }) => path), [], `${file} must not name a self-hosted runner label`);
+    for (const [name, job] of Object.entries(parsed.jobs)) {
+      assert.equal(job["runs-on"], "ubuntu-latest", `${file}: job ${name} must run on ubuntu-latest`);
+    }
   }
-  const hostedLabels = nodes.filter(({ value }) => typeof value === "string" && /^(?:ubuntu|macos|windows)-/.test(value));
-  assert.deepEqual(hostedLabels.map((node) => node.path), ["jobs.publish.runs-on"], "only the publish job may run on a GitHub-hosted runner");
-  assert.equal(publishWorkflow.match(/ubuntu-latest/g)?.length, 1, "ubuntu-latest appears once: publish's runs-on");
 
   // The gate the release steps had inside ci: main pushes and v* tags, with the
   // actor guard against the bot's own release push.
@@ -115,6 +136,7 @@ try {
   );
   const idTokens = nodes.filter(({ key }) => key === "id-token");
   assert.deepEqual(idTokens.map((node) => node.path), ["jobs.publish.permissions.id-token"], "id-token: write only on publish");
+  assert.equal(publishJob.permissions["id-token"], "write", "npm OIDC trusted publishing needs the publish job's id-token");
 
   // Both jobs check out the same tree and bridge the canonical SSH submodule
   // URLs: ci for the tests, publish because prepublishOnly runs
@@ -221,6 +243,23 @@ try {
     assert.doesNotMatch(String(step.run ?? ""), /\bnpm\s+publish\b|release-version\.mjs|\bnpm\s+version\b/, `ci must not bump or publish: ${label}`);
     assert.doesNotMatch(String(step.run ?? ""), /\bgit\s+(?:commit|push)\b|\bgit\s+tag\s+-a\b/, `ci must not commit, tag or push: ${label}`);
   }
+
+  // What a clean runner lacks, ci provides, so no suite passes by borrowing it
+  // from a host or by skipping (PJAN-154, PJAN-155, PJAN-164).
+  // pg-registry-regressions skips itself, exit 0, without postgres, psql or
+  // bun; ci provides all three and runs it strict, so a missing one fails.
+  assert.equal(ciJob.env.PJANGLER_REQUIRE_DISPOSABLE_POSTGRES, "1", "ci runs the PG harness strict: a missing capability fails, never skips");
+  assert.deepEqual(ciJob.services.postgres.ports, ["5432:5432"], "ci's disposable postgres is on the standard port");
+  assert.equal(String(ciJob.env.PGPORT), "5432", "PG clients reach the service on its port");
+  const setupBun = ciSteps.find((step) => String(step.uses ?? "").startsWith("oven-sh/setup-bun@"));
+  assert.ok(setupBun, "ci must provide the bun the PG round-trip harness runs under");
+  assert.match(setupBun.uses, /^oven-sh\/setup-bun@[0-9a-f]{40}$/, "setup-bun is pinned to a full commit SHA");
+  // pjan-23 and pjan-50 run the Krebs tp adapters, which pjangler never
+  // vendors: ci fetches them and points PJ_TICKET_PROVIDER_ADAPTERS at them.
+  const adapters = stepIndex(ciSteps, (step) => step.name === "Fetch the Krebs tp adapters", "ci must fetch the Krebs tp adapters");
+  assert.match(ciSteps[adapters].run, /https:\/\/github\.com\/delorenj\/33GOD\.git/, "the adapters come from the public 33GOD repo");
+  assert.match(ciSteps[adapters].run, /^echo "PJ_TICKET_PROVIDER_ADAPTERS=\$adapters" >> "\$GITHUB_ENV"$/m, "every later step sees the adapters");
+  assert.ok(adapters < npmTestStepIndex, "the adapters are in place before the suite runs");
 
   // ---- the coverage floor, handed from ci to publish ----
   // The release commit stages .coverage-floor.json; on main, ci's ratchet has

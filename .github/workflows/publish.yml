@@ -1,22 +1,29 @@
 name: CI
 
-# Two jobs on two kinds of runner, on purpose (PJAN-163):
+# Two jobs, both on standard GitHub-hosted runners (PJAN-163, PJAN-164):
 #
-#   ci       self-hosted [self-hosted, Linux, delonet]: tests, coverage, and
-#            the coverage ratchet. Never publishes.
-#   publish  GitHub-hosted, after a green ci: the version bump, npm publish
+#   ci       ubuntu-latest: tests, coverage, and the coverage ratchet. Never
+#            publishes.
+#   publish  ubuntu-latest, after a green ci: the version bump, npm publish
 #            --provenance over OIDC, then the release commit and tag.
 #
-# The self-hosted runner is there for free, unlimited test minutes: the suite
-# is the long part of every run, and the environment it needs (below) is set up
-# there once. The publish job is GitHub-hosted because npm's OIDC trusted
+# This repository is public, so a standard GitHub-hosted runner costs nothing.
+# The rule is no PAID runners, not no hosted ones. Every job here starts on a
+# clean machine that has only what this file installs, so a suite passes on its
+# own merits. Until PJAN-164 the ci job ran on a self-hosted runner, as the
+# operator, in his real HOME, and the host quietly lent the suite what this file
+# never installed: a newer mise ahead of the pinned one on PATH (PJAN-154), the
+# Krebs tp adapters under ~/code/33GOD (PJAN-155) and bun. Two broken suites
+# stayed green that way, and a third would have skipped itself on a clean
+# runner. Anything a suite needs is set up below, in the open.
+#
+# The publish job has to be GitHub-hosted regardless: npm's OIDC trusted
 # publishing and provenance work only on GitHub-hosted runners; npm's docs say
 # "Self-hosted runners are not currently supported", and npm rejected both from
-# the self-hosted runner with E422 (run 36927547374). This repository is public,
-# so a standard GitHub-hosted runner costs nothing. The rule is no PAID runners,
-# not no hosted ones. Publishing over OIDC means there is no npm token in this
-# workflow at all: the publish job's id-token is what proves to npm who is
-# publishing, and the same id-token signs the SLSA provenance attestation.
+# a self-hosted runner with E422 (run 36927547374). Publishing over OIDC means
+# there is no npm token in this workflow at all: the publish job's id-token is
+# what proves to npm who is publishing, and the same id-token signs the SLSA
+# provenance attestation.
 #
 # The FILENAME is load-bearing: npm's trusted publisher for @delorenj/pjangler
 # names this workflow file, and the OIDC token is only honoured when it matches.
@@ -59,11 +66,10 @@ jobs:
     # exactly that and never ran. This actor guard is the half that prose cannot
     # break, and the publish job needs this one, so it is skipped with it.
     if: github.actor != 'github-actions[bot]'
-    # Self-hosted, for free and unlimited test minutes. It only tests and
-    # ratchets coverage: no bump, no publish, no commit. It has no use for an
-    # OIDC token (npm would refuse one from here anyway) and never pushes, so it
-    # only reads the repository.
-    runs-on: [self-hosted, Linux, delonet]
+    # GitHub-hosted, and free because the repository is public. It only tests
+    # and ratchets coverage: no bump, no publish, no commit. It has no use for
+    # an OIDC token and never pushes, so it only reads the repository.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     # pjan-80-consumer-concurrency and pjan-80-registry-regressions talk to a
@@ -78,31 +84,28 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
-        # Container port only: Docker picks a free host port. The self-hosted
-        # runner's host already has a native postgres on 0.0.0.0:5432, so a
-        # fixed 5432:5432 fails 'Initialize containers' with `address already
-        # in use` (PJAN-152). The step below exports the mapped port as PGPORT.
+        # The standard port. A hosted runner is a fresh VM: the image ships a
+        # PostgreSQL but never starts it, so nothing else holds 5432. (The
+        # self-hosted runner had a native postgres there, which is why this was
+        # a dynamic mapping read back into PGPORT, PJAN-152.)
         ports:
-          - 5432
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+    # pg, psql and the registry service all read these from the environment.
     env:
       PGHOST: localhost
+      PGPORT: '5432'
       PGUSER: postgres
+      # pg-registry-regressions skips itself, exit 0, when postgres, psql or
+      # bun is missing. This job provides all three, so a missing one is a
+      # broken job and must fail it rather than pass an untested suite
+      # (release.sh sets the same for the local release gate).
+      PJANGLER_REQUIRE_DISPOSABLE_POSTGRES: '1'
     steps:
-      # The `job` context is not available in jobs.<id>.env, so the service's
-      # mapped host port is exported here for every later step. pg, psql and
-      # the registry service all read PGPORT from the environment.
-      - name: Point PG clients at the postgres service's mapped port
-        run: |
-          port="${{ job.services.postgres.ports['5432'] }}"
-          test -n "$port"
-          echo "PGPORT=$port" >> "$GITHUB_ENV"
-          echo "postgres service mapped to localhost:$port"
-
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -127,15 +130,50 @@ jobs:
           test -n "$(git -C templates/commonproject tag --list)"
           git -C templates/commonproject describe --tags --abbrev=0 HEAD
 
+      # pjan-23 and pjan-50 test the Krebs tp adapters (plane.sh, linear.sh,
+      # trello.sh): the copy provisionTicketProviderBoard resolves and runs.
+      # Krebs owns them and pjangler never vendors them; they live in the public
+      # 33GOD monorepo at krebs/adapters/tp. resolveTicketProviderAdapter tries
+      # PJ_TICKET_PROVIDER_ADAPTERS, then krebs/adapters/tp up the tree from
+      # pjangler, then ~/code/33GOD/krebs/adapters/tp, and on a clean runner
+      # only the first can exist (PJAN-155). The adapters come from 33GOD's
+      # main, as an operator's checkout does, so a Krebs change that breaks
+      # pjangler's contract fails here rather than on the fleet.
+      - name: Fetch the Krebs tp adapters
+        run: |
+          set -euo pipefail
+          krebs="$RUNNER_TEMP/33GOD"
+          git clone --quiet --depth 1 --filter=blob:none --sparse https://github.com/delorenj/33GOD.git "$krebs"
+          git -C "$krebs" sparse-checkout set krebs/adapters/tp
+          adapters="$krebs/krebs/adapters/tp"
+          for provider in plane linear trello; do test -f "$adapters/$provider.sh"; done
+          echo "Krebs tp adapters at 33GOD $(git -C "$krebs" rev-parse --short HEAD)"
+          echo "PJ_TICKET_PROVIDER_ADAPTERS=$adapters" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
+      # pg-registry-regressions runs its PgRegistryStore round-trip harness
+      # (tests/_pg_store_check.ts) under bun. The self-hosted runner lent it the
+      # host's bun; on a clean runner without one the suite skipped and still
+      # counted as a pass, and the migrations it applies dropped out of the
+      # coverage (PJAN-164).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.13'
+
+      # The suites drive the real mise, and pjangler's mise rules are measured
+      # on 2026.9.12 (src/parity/mise-toml.ts), so CI runs that version. On
+      # 2026.7.5, the pin until PJAN-154, the pjan-135 hook suites cannot pass:
+      # it predates the `script` hook deprecation (2026.7.8) they assert on, and
+      # enter hooks never fire under their activate/hook-env sequence. Raise
+      # this pin together with the version in tests/release-regressions.mjs.
       - name: Set up mise
         uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
-          version: '2026.7.5'
+          version: '2026.9.12'
           install: false
           cache: false
           env: false
@@ -156,12 +194,13 @@ jobs:
       # with a third-party dependency. Without PyYAML it exits non-zero and
       # hermes.runtime-singleton blocks the whole lifecycle.
       #
-      # uv supplies both itself and Python 3.12 (PJAN-153): actions/setup-python
-      # ships no 3.12 build for the self-hosted runner's Ubuntu 25.10. These
-      # steps sit after mise on purpose. mise-action prepends the host's mise
-      # shims to PATH, and a shim ahead of this interpreter answers `python`
-      # with "No version is set" and `python3` with the system 3.13, which has
-      # no PyYAML. Anything added to PATH later wins, so this has to come later.
+      # uv supplies both itself and Python 3.12 (PJAN-153), because the trust
+      # check below accepts only a uv-managed interpreter; a setup-python one
+      # lives in the runner's toolcache and is refused. These steps sit after
+      # mise on purpose: mise-action prepends its shims directory to PATH, and
+      # a mise shim ahead of this interpreter answers `python` with "No version
+      # is set" (it did on the old self-hosted runner). Anything added to PATH
+      # later wins, so this has to come later.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.14'
@@ -241,8 +280,8 @@ jobs:
   publish:
     # GitHub-hosted, because npm's OIDC trusted publishing and provenance work
     # only on GitHub-hosted runners, and free, because this repository is
-    # public. This is the one job that may run on a hosted runner
-    # (tests/release-regressions.mjs pins that).
+    # public. It is also the only job with an id-token
+    # (tests/release-regressions.mjs pins both).
     needs: ci
     # The gate the release steps had when they lived in the ci job: green main
     # pushes and v* tags, never the bot's own release push. `needs` already
