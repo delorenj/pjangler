@@ -57,6 +57,7 @@ import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
 import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
 import { registerSkillsCli } from "./skills/cli";
+import { ImportProject } from "./commands/ImportProject";
 
 /** Red ✖ prefix for user-facing error lines. */
 const xmark = `${red(glyph.fail)}`;
@@ -1062,6 +1063,27 @@ function registerProjectCommands(parent: Command, legacy = false): void {
 }
 registerProjectCommands(program);
 registerProjectCommands(projectCmd, true);
+
+program
+  .command("import")
+  .argument("<source>", "Local checkout, github.com/owner/repo or Git URL")
+  .description("Adopt a repository as a submodule and enroll its canonical project path")
+  .option("--name <name>", "Destination directory and submodule name (default: repository basename)")
+  .option("--dry-run", "Explain the adoption without moving or enrolling files")
+  .option("--registry <url>", "Project registry service URL")
+  .option("--bindings-home <path>", "Home containing executable/service bindings (default: current user's home)")
+  .option("--json", "Output machine-parseable JSON")
+  .action(async (source: string, options) => {
+    const { result } = await new ImportProject({ targetDir: process.cwd(), dryRun: Boolean(options.dryRun) }, { source, name: options.name, registry: options.registry, bindingsHome: options.bindingsHome }).invoke();
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Import ${result.status}: ${result.plan?.target ?? source}`);
+      for (const change of result.plan?.changes ?? []) console.log(`  ${change}`);
+      if (result.error) console.error(result.error);
+      if (result.recovery) { console.error(`Recovery receipt: ${result.recovery.receipt}`); for (const instruction of result.recovery.instructions) console.error(instruction); }
+    }
+    if (!result.ok) process.exitCode = 1;
+  });
 
 program
   .command("reindex")

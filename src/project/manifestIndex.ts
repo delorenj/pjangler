@@ -269,6 +269,7 @@ export class ManifestIndex {
     return { ...global, schema_version: 1, projects, __registry_hashes: hashes, __registry_baseline: baseline, __registry_status: statuses, __registry_settings_baseline: structuredClone(global) };
   }
   load(): Promise<Json> { return this.serialized(async client => { await this.refresh(client); return this.snapshot(client); }); }
+  inspect(): Promise<Json> { return this.serialized(client => this.snapshot(client)); }
   index(path: string): Promise<Json> { return this.serialized(async client => { await this.register(client, path); await this.refresh(client); return this.snapshot(client); }); }
   rebuild(paths: string[]): Promise<Json> {
     return this.serialized(async client => {

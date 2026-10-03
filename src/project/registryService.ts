@@ -34,6 +34,7 @@ export async function createRegistryService(options: { pool?: Pool; port?: numbe
           result = { ok: true, service: 'pjangler-project-registry', schema_version: 1 };
           break;
         case 'GET /v1/registry': result = await index.load(); break;
+        case 'GET /v1/index': result = await index.inspect(); break;
         case 'POST /v1/reindex': result = await index.load(); break;
         case 'POST /v1/rebuild': {
           const payload = await body(request);
