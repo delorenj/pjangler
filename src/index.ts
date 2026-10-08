@@ -423,7 +423,7 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
 
 /** Shared body for scaffolding a single subsystem/recipe into the cwd. Used by
  * `pjangler add`, `pjangler recipe run`, and the deprecated `pjangler init <subsystem>`. */
-async function runRecipeSubsystem(name: string, options: { force?: boolean; dryRun?: boolean }): Promise<void> {
+async function runRecipeSubsystem(name: string, options: { force?: boolean; dryRun?: boolean; json?: boolean }): Promise<void> {
   const context: CommandContext = {
     targetDir: process.cwd(),
     force: options.force || false,
@@ -440,8 +440,11 @@ async function runRecipeSubsystem(name: string, options: { force?: boolean; dryR
       lifecycleContext(context.targetDir, Boolean(context.dryRun), false, context),
       {},
     );
-    for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
-    for (const error of result.errors) console.error(`${xmark} ${error}`);
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      for (const line of result.logs) console.log(line.split("\n").map((part) => part ? `  ${part}` : part).join("\n"));
+      for (const error of result.errors) console.error(`${xmark} ${error}`);
+    }
     if (!result.ok) process.exitCode = 1;
   } catch (error) {
     console.error(`${xmark} Error scaffolding ${bold(name)}:`, error);
@@ -1158,6 +1161,7 @@ recipeCmd
   .argument("<name>", "Recipe name")
   .description("Execute a specific recipe")
   .option("--dry-run", "Preview changes without writing files")
+  .option("--json", "Print the structured recipe result, including optional extensions")
   .option("-f, --force", "Overwrite existing files")
   .action(async (name: string, options) => {
     await runRecipeSubsystem(name, options);

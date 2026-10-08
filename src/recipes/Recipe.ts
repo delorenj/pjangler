@@ -91,13 +91,13 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
   }
 
   /** Initialize missing/drifted state using only this recipe's owned checks. */
-  protected async initializeOwnedChecks(ctx: LifecycleContext): Promise<RecipeInitResult> {
+  protected async initializeOwnedChecks(ctx: LifecycleContext, checks: readonly RecipeCheck[] = this.checks): Promise<RecipeInitResult> {
     const phases: RecipePhaseOutcome[] = [];
     const logs: string[] = [];
     const errors: string[] = [];
     const changedFiles: string[] = [];
 
-    for (const check of this.checks) {
+    for (const check of checks) {
       const finding = await check.audit(ctx);
       if (finding.status === "pass" || finding.status === "skip") {
         phases.push({ id: check.id, status: finding.status === "skip" ? "skipped" : "unchanged", changedFiles: [], message: finding.summary });

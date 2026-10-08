@@ -85,6 +85,8 @@ const SUITES = [
   "tests/pjan-145-waiver-regressions.mjs",
   "tests/pjan-147-env-materialization-opt-out-regressions.mjs",
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",
+  "tests/pjan-167-g33-companion.mjs",
+  "tests/pjan-167-enrollment.mjs",
   "tests/pjan-57-dogfood-regressions.mjs",
   "tests/generated-project-lifecycle-regressions.mjs",
   "tests/pjan-23-regressions.mjs",
@@ -231,6 +233,8 @@ const HERMETIC_ENV = {
   TRELLO_API_KEY: "",
   TRELLO_TOKEN: "",
   HERMES_FLEET_ENV: join(root, "scripts", "no-such-fleet.env"),
+  PJ_G33_ADAPTER_MODULE: "",
+  PJ_G33_ADAPTER_EXPORT: "",
 };
 
 const results = [];

@@ -56,6 +56,11 @@ disabled until explicitly enabled in `.project.json`.
 
 ## Parity audit
 
+BMAD recipes support an optional owner-provided g33 companion for registered
+33GOD projects, with explicit opt-in/out, no-write previews, and structured
+optional outcomes. See [g33 companion](docs/g33-companion.md) for the callable
+configuration and the actual `pj recipe run bmad --dry-run --json` commands.
+
 `pjangler audit` runs the deterministic 33god parity rules against a repository
 and exits nonzero when any of them fails. `pjangler migrate` applies the
 idempotent fix the owning rule declares.

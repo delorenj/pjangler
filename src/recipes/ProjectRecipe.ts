@@ -34,6 +34,7 @@ import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import type { TrustedCopierIdentity } from "../lifecycle/preflight";
 import type { NotebookPlanV1 } from "../notebook/observation";
 import { NotebookRecipe } from "./NotebookRecipe";
+import { companionDetails, g33CompanionEnabled, runG33Companion, type CompanionResult } from "../bmad/companion";
 
 export interface ProjectRecipeInput {
   plan: ProjectInitPlan;
@@ -230,8 +231,9 @@ function refreshPlanFromCanonicalManifest(plan: ProjectInitPlan): void {
  *
  * It executes the selected plan, initializes declared lifecycle dependencies
  * only for a fresh scaffold, applies only explicitly selected sync migrations,
- * proves eligibility, initializes Git and local registry state, then runs the
- * provider/systemd tail followed only by read-only postcondition verification.
+ * proves eligibility, initializes Git, runs the external tail, then performs
+ * optional local enrollment reconciliation before the final Registry mutation.
+ * Only read-only postcondition verification follows that finalizer.
  * No implicit migrate-all repair phase exists.
  */
 export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> {
@@ -284,6 +286,8 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       repoRoot: targetDir,
       bmadVersionPin: mode === "create" ? BMAD_INSTALLER_VERSION : ctx.bmadVersionPin,
     };
+    let bmadCompanion: CompanionResult | undefined;
+    let g33DeferredForEnrollment = false;
     let migrationReport: MigrationReport | undefined;
     let audit: AuditReport | undefined;
     let notebookPlan: NotebookPlanV1 | undefined;
@@ -331,6 +335,11 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       });
 
       if (errors.length === 0 && executed.ok && mode === "create") {
+        // Record policy before dependencies. Only automatic enrollment that was
+        // disabled here gets a later attempt; explicit opt-ins/linked projects
+        // already ran their optional owner, including any failed partial apply.
+        try { g33DeferredForEnrollment = !g33CompanionEnabled(targetDir); }
+        catch { /* BmadRecipe reports malformed optional configuration. */ }
         const dependencyResult = await this.registry.initDependencies(this.metadata.id, transactionContext, normalized, ["notebook"]);
         logs.push(...dependencyResult.logs);
         errors.push(...dependencyResult.errors);
@@ -425,10 +434,10 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           : "Lifecycle eligibility audit failed or was skipped; external effects remain disabled",
       });
 
-      // Complete every ordinary local operation that can fail before entering
-      // the explicitly granted external tail. External scripts may persist
-      // their own returned identifiers, but no new lifecycle mutation follows
-      // them; only the postcondition audit below remains.
+      // Complete every required ordinary local operation that can fail before
+      // entering the external tail. External scripts persist their identifiers.
+      // The optional enrollment reconciliation can write before the finalizer;
+      // its failure never changes rollback latches or fails required init.
       if (errors.length === 0 && mode === "create") {
         if (hasGitRepository(this.runtime, targetDir)) {
           phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
@@ -544,6 +553,25 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         } catch (error) {
           errors.push(`project manifest refresh after external effects failed: ${error instanceof Error ? error.message : String(error)}`);
         }
+      }
+
+      // Fresh BMAD dependencies ran while the board was only planned. Reconcile
+      // once against the authoritative on-disk linked binding, after external
+      // success and manifest refresh, but BEFORE the last Registry mutation.
+      // Optional errors (and any partial writes) are recorded, never promoted
+      // into required transaction failures or a fresh-target rollback.
+      if (errors.length === 0 && registryFinalizerEligible && mode === "create" && g33DeferredForEnrollment
+        && plan.project.ticket_provider.state === "linked") {
+        bmadCompanion = await runG33Companion(targetDir, ctx.dryRun);
+        logs.push(...companionDetails(bmadCompanion));
+        changedFiles.push(...bmadCompanion.changedFiles);
+        phases.push({
+          id: "project.optional:g33-companion",
+          status: bmadCompanion.status === "changed" ? "changed" : bmadCompanion.status === "planned" ? "planned"
+            : bmadCompanion.status === "unchanged" ? "unchanged" : "skipped",
+          changedFiles: bmadCompanion.changedFiles,
+          message: `Optional g33 (${bmadCompanion.status}): ${bmadCompanion.summary}`,
+        });
       }
 
       // One Registry-only finalizer is the last mutation. It persists linked
@@ -669,6 +697,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       selectedOperations: normalized.selectedOperations ?? [],
       selectedParityRules: normalized.selectedRuleIds ?? [],
       migrationReport,
+      ...(bmadCompanion ? { bmadCompanion } : {}),
     };
   }
 
