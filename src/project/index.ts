@@ -30,7 +30,76 @@ export const PROJECT_REGISTRY_SCHEMA_VERSION = 1;
  * Applies to new records only — existing records keep their recorded status.
  */
 export const DEFAULT_NEW_PROJECT_STATUS = "active";
-export const BOARD_URL_DEPRECATION_WARNING = "boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
+
+/**
+ * What the CommonProject template renders (PJAN-169), recorded as
+ * `template.commonproject.project_type` and as the `project_type` Copier answer.
+ *
+ * `base` is the generic skeleton; an absent record key means `base`, so the
+ * ~60 existing records stay byte-identical. `obsidian-plugin` layers the
+ * canonical Obsidian sample plugin over that skeleton (`pj init
+ * --obsidian-plugin`). A type is chosen when the project is created and is
+ * immutable afterwards: re-rendering a different type over a project orphans
+ * the old type's files, because Copier never deletes.
+ */
+export const PROJECT_TYPES = ["base", "obsidian-plugin"] as const;
+export type ProjectType = (typeof PROJECT_TYPES)[number];
+const PROJECT_TYPE_LANGUAGES: Partial<Record<ProjectType, readonly string[]>> = {
+  "obsidian-plugin": ["typescript", "javascript"],
+};
+/** Files whose absence after Copier means the template ignored the requested type. */
+const PROJECT_TYPE_SENTINELS: Partial<Record<ProjectType, readonly string[]>> = {
+  "obsidian-plugin": ["manifest.json", join("src", "main.ts")],
+};
+
+export function normalizeProjectType(value: unknown, label = "Project type"): ProjectType {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if ((PROJECT_TYPES as readonly string[]).includes(text)) return text as ProjectType;
+  throw new Error(`${label} ${JSON.stringify(value)} is not one of: ${PROJECT_TYPES.join(", ")}`);
+}
+
+/**
+ * Does the repo at `dir` already hold an Obsidian plugin? Adoption (`pj init
+ * --obsidian-plugin` on an existing repo) renders nothing, so the type may only
+ * be recorded when the repo is evidently one already.
+ */
+function looksLikeObsidianPlugin(dir: string): boolean {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as unknown;
+    return isRecord(manifest) && typeof manifest.id === "string" && typeof manifest.minAppVersion === "string";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse a type the vendored template cannot render. Copier silently ignores
+ * an unknown `--data` key, so a pjangler whose CommonProject pin predates a
+ * type would render `base` and record the type it was asked for.
+ */
+function assertTemplateOffersProjectType(pjanglerRoot: string, projectType: ProjectType): void {
+  if (projectType === "base") return;
+  const copierYml = join(pjanglerRoot, "templates", "commonproject", "copier.yml");
+  let choices: unknown;
+  try {
+    const parsed = YAML.parse(readFileSync(copierYml, "utf8")) as unknown;
+    choices = isRecord(parsed) && isRecord(parsed.project_type) ? parsed.project_type.choices : undefined;
+  } catch {
+    choices = undefined;
+  }
+  const offered = isRecord(choices) ? Object.values(choices) : Array.isArray(choices) ? choices : [];
+  if (!offered.includes(projectType)) {
+    throw new Error(`The CommonProject template at ${dirname(copierYml)} cannot render project type "${projectType}" (its copier.yml offers no such project_type); update pjangler or its templates/commonproject pin`);
+  }
+}
+
+/** The manifest author for a rendered plugin: the operator's git identity. */
+function operatorDisplayName(cwd: string): string {
+  const result = spawnSync("git", ["config", "--get", "user.name"], { cwd: existsSync(cwd) ? cwd : undefined, encoding: "utf8", timeout: 5000 });
+  return result.status === 0 ? result.stdout.trim() : "";
+}
+
+export const BOARD_URL_DEPRECATION_WARNING ="boardUrl is deprecated and ignored; board URLs are derived at runtime and are never persisted.";
 
 export interface SourceArtifact {
   kind: "skill" | "template" | "package" | string;
@@ -149,6 +218,8 @@ export interface ProjectRecord {
     commonproject: {
       enabled: boolean;
       primary_language: string;
+      /** PJAN-169: absent means "base". See PROJECT_TYPES. */
+      project_type?: string;
     };
   };
   ticket_provider: ProjectTicketProvider;
@@ -198,6 +269,12 @@ export interface ProjectInitInput {
   targetDir?: string;
   sourceSkill?: string;
   primaryLanguage?: string;
+  /**
+   * What CommonProject renders (PJAN-169). Omit to keep the recorded type
+   * (base for a new project); never default it, or re-running init on a plugin
+   * would quietly record it as base.
+   */
+  projectType?: ProjectType | string;
   apply?: boolean;
   live?: boolean;
   /** Deprecated no-op retained for API compatibility; runtime is always role-local and ignored. */
@@ -1253,6 +1330,42 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   // owns the record.
   const agents = createSafeRecord<ProjectAgentRecord>(Object.entries(existing?.agents ?? {}));
   const scaffold = input.scaffold ?? true;
+  // PJAN-169: the project type is fixed once something has been rendered. A
+  // request may restate it, pick freely for a fresh render (even over a
+  // registry row whose repo is gone), or — when nothing is rendered (adoption)
+  // — record a type the repo already demonstrably is.
+  const recordedTypeValue = existing?.template?.commonproject?.project_type;
+  const recordedType = recordedTypeValue === undefined ? undefined : normalizeProjectType(recordedTypeValue, `Recorded project type of ${slug}`);
+  const requestedType = input.projectType === undefined ? undefined : normalizeProjectType(input.projectType);
+  const freshRender = scaffold && localManifest === undefined && !existsSync(join(targetDir, ".copier-answers.yml"));
+  if (requestedType && !freshRender && requestedType !== (recordedType ?? "base")) {
+    const adoptingPlugin = !scaffold && recordedType === undefined && requestedType === "obsidian-plugin" && looksLikeObsidianPlugin(targetDir);
+    if (!adoptingPlugin) {
+      throw new Error(scaffold || recordedType !== undefined
+        ? `Project type "${requestedType}" conflicts with ${slug}'s recorded type "${recordedType ?? "base"}"; a project's type is fixed when it is created`
+        : `${targetDir} is adopted as-is, so "${requestedType}" would render nothing, and the repo is not one already (no Obsidian manifest.json with id and minAppVersion)`);
+    }
+  }
+  const projectType: ProjectType = requestedType ?? recordedType ?? "base";
+  const typeLanguages = PROJECT_TYPE_LANGUAGES[projectType];
+  if (input.primaryLanguage !== undefined && typeLanguages && !typeLanguages.includes(input.primaryLanguage)) {
+    throw new Error(`A ${projectType} project is written in ${typeLanguages.join(" or ")}, not ${input.primaryLanguage}`);
+  }
+  // The CLI used to default --primary-language to "python" and pass it on
+  // every run, so re-running init rewrote a TypeScript project as python. An
+  // explicit value wins; then, for a newly chosen type, its language unless
+  // the recorded one already fits it; then whatever is recorded. "Recorded"
+  // means written down: recordFromManifest invents `typescript` for a
+  // manifest with no template block, which must not count.
+  const recordedLanguageValue = (localManifest ? (localManifest.template as ProjectRecord["template"] | undefined) : indexed?.template)?.commonproject?.primary_language;
+  const recordedLanguage = typeof recordedLanguageValue === "string" && recordedLanguageValue ? recordedLanguageValue : undefined;
+  const newlyTyped = requestedType !== undefined && requestedType !== recordedType;
+  const recordedLanguageFits = !typeLanguages || (recordedLanguage !== undefined && typeLanguages.includes(recordedLanguage));
+  const primaryLanguage = input.primaryLanguage
+    ?? (newlyTyped && !recordedLanguageFits ? typeLanguages?.[0] : undefined)
+    ?? recordedLanguage
+    ?? typeLanguages?.[0]
+    ?? "python";
 
   const candidateProject: ProjectRecord = {
     ...(existing ?? {}),
@@ -1277,7 +1390,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       commonproject: {
         ...existing?.template?.commonproject,
         enabled: true,
-        primary_language: input.primaryLanguage ?? existing?.template?.commonproject?.primary_language ?? "python",
+        primary_language: primaryLanguage,
+        // Written only for a non-base type (or one already recorded), so a
+        // base record never gains a key and stays equivalent to its last run.
+        ...(projectType !== "base" || recordedType !== undefined ? { project_type: projectType } : {}),
       },
     },
     ticket_provider: { ...existing?.ticket_provider, ...buildTicketProviderBlock({
@@ -1334,6 +1450,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     { kind: "registry.upsert", registryPath, slug, project },
   ];
   if (scaffold) {
+    assertTemplateOffersProjectType(pjanglerRoot, projectType);
     actions.push(buildCommonProjectCopierAction({
       pjanglerRoot,
       targetDir,
@@ -1347,6 +1464,8 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       boardId: project.ticket_provider.board_id ?? "",
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
+      projectType,
+      ...(projectType === "obsidian-plugin" ? { pluginAuthor: operatorDisplayName(input.cwd ?? process.cwd()) } : {}),
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
       overwrite,
     }));
@@ -1517,6 +1636,15 @@ export async function executeProjectInitPlan(
         errors.push(`copier exited with status ${result.status ?? "unknown"}`);
         break;
       }
+      // PJAN-169: copier exits 0 for a project_type its template does not
+      // know (unknown --data keys are ignored), so prove the type rendered.
+      const projectType = (action.data.project_type ?? "base") as ProjectType;
+      const missing = (PROJECT_TYPE_SENTINELS[projectType] ?? []).filter((rel) => !existsSync(join(action.targetDir, rel)));
+      if (missing.length) {
+        errors.push(`copier rendered no ${projectType} project: ${missing.join(", ")} missing from ${action.targetDir}`);
+        break;
+      }
+      if (projectType !== "base") logs.push(`commonproject: rendered as ${projectType}`);
     } else if (action.kind === "project.write-manifest") {
       if (action.expectedContent !== undefined && (!existsSync(action.path) || readFileSync(action.path, "utf8") !== action.expectedContent)) {
         errors.push(`Manifest changed after planning: ${action.path}; re-plan before applying`);
@@ -1636,13 +1764,18 @@ export function formatProjectInitPlan(plan: ProjectInitPlan): string {
   lines.push(`  ${cyan(bold(glyph.chevron))} ${title}${plan.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
   lines.push(`  ${dim("registry".padEnd(8))} ${dim(plan.registryPath)}`);
   lines.push(`  ${dim("target".padEnd(8))} ${dim(plan.project.repo_path)}`);
+  const projectType = plan.project.template?.commonproject?.project_type;
+  if (projectType && projectType !== "base") lines.push(`  ${dim("type".padEnd(8))} ${cyan(projectType)}`);
   for (const warning of plan.warnings ?? []) lines.push(`  ${yellow(glyph.warn)} ${warning}`);
   lines.push("");
   lines.push(`  ${bold("Actions")} ${dim(`(${plan.actions.length})`)}`);
   if (!plan.actions.length) lines.push(`     ${dim("(nothing to do)")}`);
   for (const action of plan.actions) {
     lines.push(`     ${cyan(glyph.bullet)} ${action.kind}`);
-    if (action.kind === "copier.copy.commonproject") lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
+    if (action.kind === "copier.copy.commonproject") {
+      lines.push(`        ${dim(`target: ${action.targetDir}`)}`);
+      if (action.data.project_type && action.data.project_type !== "base") lines.push(`        ${dim(`type: ${action.data.project_type}`)}`);
+    }
     if (action.kind === "project.write-manifest") lines.push(`        ${dim(`path: ${action.path}`)}`);
     if (action.kind === "ticket-provider.create-or-link") {
       const target = [action.provider, action.workspace, action.identifier].filter(Boolean).join("/");
@@ -1828,6 +1961,10 @@ export function buildCommonProjectCopierAction(input: {
   ticketWorkspace?: string;
   projectIdentifier: string;
   primaryLanguage: string;
+  /** Always emitted, so `.copier-answers.yml` records it; defaults to base. */
+  projectType?: ProjectType;
+  /** obsidian-plugin only: manifest.json `author`. */
+  pluginAuthor?: string;
   agentHooksLayer?: boolean;
   overwrite: boolean;
 }): Extract<ProjectInitAction, { kind: "copier.copy.commonproject" }> {
@@ -1843,6 +1980,8 @@ export function buildCommonProjectCopierAction(input: {
     board_id: input.boardId ?? input.planeProjectId ?? "",
     project_identifier: input.projectIdentifier,
     primary_language: input.primaryLanguage,
+    project_type: input.projectType ?? "base",
+    ...(input.pluginAuthor !== undefined ? { plugin_author: input.pluginAuthor } : {}),
     agent_hooks_layer: (input.agentHooksLayer ?? true) ? "true" : "false",
   };
   // `--vcs-ref=HEAD` is load-bearing (PJAN-49). Whenever `templates/commonproject`

@@ -91,6 +91,7 @@ const SUITES = [
   "tests/pjan-24-regressions.mjs",
   "tests/pjan-30-regressions.mjs",
   "tests/pjan-31a-regressions.mjs",
+  "tests/pjan-169-obsidian-plugin-regressions.mjs",
   "tests/pjan-36-regressions.mjs",
   "tests/pjan-43-regressions.mjs",
   "tests/pjan-49-regressions.mjs",

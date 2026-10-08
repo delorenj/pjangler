@@ -610,10 +610,53 @@ function lstatIfPresent(path: string): ReturnType<typeof lstatSync> | undefined 
 
 
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
+  // PJAN-169: an Obsidian plugin releases from a bare `X.Y.Z` tag whose tree
+  // carries that version in manifest.json, with versions.json mapping it to its
+  // minAppVersion. The default `json package.json` + `gittag .` bumped neither
+  // file and tagged `v1.0.1` on the PRE-bump commit, so release.yml shipped a
+  // manifest one version behind its tag. Here bumping keeps the three files in
+  // step and tags nothing: `npm version` (commit first, then a bare tag via
+  // .npmrc) is the plugin's release step.
+  if (isObsidianPluginRepo(ctx, repoRoot)) return OBSIDIAN_VERSION_FILES_CONF;
   const packageJson = join(repoRoot, "package.json");
   return existsSync(packageJson)
     ? "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\njson package.json\ngittag .\n"
     : "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag\ngittag .\n";
+}
+
+
+const OBSIDIAN_VERSION_FILES_CONF = "# mise-versioning manifest: <type> <path>\n# types: json toml cargo csproj gradle plain gittag obsidian\n# Obsidian plugin: bump with `mise run version:bump`, release with `npm version` (bare X.Y.Z tag).\njson package.json\nobsidian manifest.json\n";
+
+
+/** The project type `.project.json` records (`pj init --obsidian-plugin`), if any. */
+function recordedProjectType(ctx: Context): unknown {
+  return record(record(readProjectJson(ctx)?.template).commonproject).project_type;
+}
+
+
+/**
+ * The recorded project type, else the repo's own evidence: an Obsidian
+ * manifest.json (the same test `pj init --obsidian-plugin` adoption applies).
+ * Evidence matters because adoption is planned and audited BEFORE the type is
+ * written into .project.json. No versioned repo on this machine was an
+ * unrecorded plugin when this landed, so it moved no existing project.
+ */
+function isObsidianPluginRepo(ctx: Context, repoRoot: string): boolean {
+  const recorded = recordedProjectType(ctx);
+  if (recorded !== undefined) return recorded === "obsidian-plugin";
+  const manifest = record(tryParseJson(safeReadText(join(repoRoot, "manifest.json"))));
+  return typeof manifest.id === "string" && typeof manifest.minAppVersion === "string";
+}
+
+
+/**
+ * Manifest types the installed versioning.sh cannot handle. canonical()
+ * swallows the engine's "unknown manifest type" death, so a conf naming a type
+ * an older engine lacks reads as "all files in parity" and then half-bumps.
+ */
+function unsupportedVersionTypes(conf: string, script: string): string[] {
+  const types = conf.split("\n").map((line) => line.trim().split(/\s+/)[0] ?? "").filter((type) => type && !type.startsWith("#"));
+  return [...new Set(types)].filter((type) => !new RegExp(`(^|[\\s|])${type.replace(/[^a-z0-9-]/gi, "")}(\\|[a-z-]+)*\\)`, "m").test(script));
 }
 
 
@@ -2788,6 +2831,15 @@ return [
       if (!text?.includes("# >>> mise-versioning >>>")) details.push("mise versioning managed block missing");
       if (!existsSync(versioningPath)) details.push(".mise/scripts/versioning.sh missing");
       if (!existsSync(manifestPath)) details.push(".mise/version-files.conf missing");
+      const conf = safeReadText(manifestPath);
+      const script = safeReadText(versioningPath);
+      if (conf !== null && script !== null) {
+        const unsupported = unsupportedVersionTypes(conf, script);
+        if (unsupported.length) details.push(`.mise/scripts/versioning.sh cannot version type(s) ${unsupported.join(", ")} named in .mise/version-files.conf`);
+      }
+      if (conf !== null && isObsidianPluginRepo(ctx, ctx.repoRoot) && !/^obsidian\s+manifest\.json\s*$/m.test(conf)) {
+        details.push(".mise/version-files.conf does not version manifest.json/versions.json for this obsidian-plugin project");
+      }
       return {
         id: "mise.versioning",
         title: "managed mise versioning block",
@@ -3426,6 +3478,23 @@ function strayOpInjectLines(text: string): number[] {
 }
 
 
+const COPIER_ANSWERS_HEADER = "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY";
+
+
+function parseCopierAnswers(text: string): { answers: Record<string, unknown> } | { problem: string } {
+  try {
+    const parsed = YAML.parse(text) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? { answers: parsed as Record<string, unknown> }
+      : { problem: ".copier-answers.yml is not a YAML mapping" };
+  } catch (error) {
+    // The old migrate wrote descriptions unquoted, so `Flume: the workforce`
+    // left files copier itself can no longer read.
+    return { problem: `.copier-answers.yml is not valid YAML (${errorText(error).split("\n")[0]})` };
+  }
+}
+
+
 function createProjectProvenanceChecks(): RecipeOwnedCheck[] {
 return [
   {
@@ -3439,16 +3508,16 @@ return [
       if (!text) {
         details.push(".copier-answers.yml missing");
       } else {
-        if (!text.startsWith("# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY")) details.push("missing Copier overwrite warning header");
-        if (!text.includes("_src_path:")) details.push("_src_path missing");
-        if (project?.project_name) {
-          const nameMatch = text.match(/project_name:\s*(.+)/);
-          if (!nameMatch || nameMatch[1]?.trim() !== String(project.project_name)) details.push("project_name drift between .copier-answers.yml and .project.json");
-        }
-        if (project?.project_description) {
-          const descMatch = text.match(/project_description:\s*([\s\S]*?)(?=\n\w|$)/);
-          const yamlDesc = descMatch?.[1]?.replace(/\n\s+/g, " ").trim() ?? "";
-          if (yamlDesc !== String(project.project_description)) details.push("project_description drift between .copier-answers.yml and .project.json");
+        if (!text.startsWith(COPIER_ANSWERS_HEADER)) details.push("missing Copier overwrite warning header");
+        // Compare parsed values. Copier quotes a scalar like `Sync notes: fast`,
+        // and a regex over the raw text read that quoting as drift.
+        const parsed = parseCopierAnswers(text);
+        if ("problem" in parsed) details.push(parsed.problem);
+        else {
+          const { answers } = parsed;
+          if (answers._src_path === undefined) details.push("_src_path missing");
+          if (project?.project_name && String(answers.project_name ?? "") !== String(project.project_name)) details.push("project_name drift between .copier-answers.yml and .project.json");
+          if (project?.project_description && String(answers.project_description ?? "") !== String(project.project_description)) details.push("project_description drift between .copier-answers.yml and .project.json");
         }
       }
       return {
@@ -3463,9 +3532,21 @@ return [
     migrate: (ctx, finding) => {
       const changedFiles: string[] = [];
       const project = canonicalProjectJson(ctx);
-      const text = `# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n_src_path: ${join(ctx.pjanglerRoot, "templates", "commonproject")}\nproject_description: ${String(project.project_description)}\nproject_name: ${String(project.project_name)}\nticket_provider: ${String(((project.ticket_provider as Record<string, unknown>)?.type ?? "plane"))}\n`;
       const path = join(ctx.repoRoot, ".copier-answers.yml");
-      if (safeReadText(path) !== text) {
+      // Rewrite only the keys this rule owns, inside the existing document:
+      // the old fixed four-key text erased every other answer (_commit, and
+      // PJAN-169's project_type) and wrote descriptions unquoted, which is
+      // invalid YAML for a value like `Sync notes: fast`.
+      const current = safeReadText(path);
+      const existing = current ? YAML.parseDocument(current) : undefined;
+      const document = existing && !existing.errors.length && YAML.isMap(existing.contents) ? existing : new YAML.Document({});
+      document.set("_src_path", join(ctx.pjanglerRoot, "templates", "commonproject"));
+      document.set("project_description", String(project.project_description));
+      document.set("project_name", String(project.project_name));
+      document.set("ticket_provider", String(((project.ticket_provider as Record<string, unknown>)?.type ?? "plane")));
+      const body = String(document);
+      const text = body.startsWith(COPIER_ANSWERS_HEADER) ? body : `${COPIER_ANSWERS_HEADER}\n${body}`;
+      if (current !== text) {
         changedFiles.push(path);
         if (!ctx.dryRun) writeText(path, text);
       }

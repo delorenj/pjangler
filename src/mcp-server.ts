@@ -16,6 +16,7 @@ import {
   loadProjectRegistry,
   normalizeAgentRole,
   planProjectInit,
+  PROJECT_TYPES,
   projectRegistryPath,
   proposeProjectIdentifier,
   resolveContainedPath,
@@ -32,6 +33,8 @@ const server = new McpServer({
 });
 
 const TICKET_PROVIDER_SCHEMA = z.enum(["plane", "trello"]);
+const PROJECT_TYPE_SCHEMA = z.enum(PROJECT_TYPES)
+  .describe("What CommonProject renders: base (default) or obsidian-plugin. Fixed at creation; omit it to keep the recorded type.");
 const BOARD_URL_COMPAT_SCHEMA = z.string()
   .optional()
   .describe("Deprecated compatibility input. Ignored; board URLs are derived at runtime and are never persisted.")
@@ -451,6 +454,7 @@ server.registerTool(
       planeProjectId: z.string().optional(),
       projectIdentifier: z.string().optional(),
       primaryLanguage: z.string().optional(),
+      projectType: PROJECT_TYPE_SCHEMA.optional(),
       skipPlane: z.boolean().optional(),
       agentPurpose: z.string().optional(),
       local: z.boolean().optional(),
@@ -496,7 +500,8 @@ server.registerTool(
         targetDir,
         projectSlug,
         sourceSkill: input.sourceSkill,
-        primaryLanguage: input.primaryLanguage ?? "python",
+        primaryLanguage: input.primaryLanguage,
+        projectType: input.projectType,
         apply: !dryRun,
         live: input.live ?? false,
         provisionTicketBoard: externalEffects.ticketBoard,
@@ -566,6 +571,7 @@ server.registerTool(
       targetDir: z.string().optional(),
       sourceSkill: z.string().optional(),
       primaryLanguage: z.string().optional(),
+      projectType: PROJECT_TYPE_SCHEMA.optional(),
       apply: z.boolean().optional(),
       live: z.boolean().optional(),
       provisionTicketBoard: z.boolean().optional().describe("Explicitly opt in to ticket-board provisioning; also requires live=true and skipPlane!=true."),
@@ -589,6 +595,7 @@ server.registerTool(
         targetDir: input.targetDir,
         sourceSkill: input.sourceSkill,
         primaryLanguage: input.primaryLanguage,
+        projectType: input.projectType,
         apply: input.apply ?? false,
         live: input.live ?? false,
         provisionTicketBoard: externalEffects.ticketBoard,

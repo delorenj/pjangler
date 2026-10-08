@@ -68,6 +68,7 @@ interface ProjectInitCliOptions {
   targetDir?: string;
   sourceSkill?: string;
   primaryLanguage?: string;
+  obsidianPlugin?: boolean;
   apply?: boolean;
   dryRun?: boolean;
   live?: boolean;
@@ -231,18 +232,20 @@ function reportBoardDelivery(board: BoardDelivery, slug: string, skipRequested: 
   return skipRequested;
 }
 
-function projectInitActionLabel(kind: string): string {
-  switch (kind) {
+function projectInitActionLabel(action: ReturnType<typeof planProjectInit>["actions"][number]): string {
+  switch (action.kind) {
     case "registry.upsert":
       return "Refresh the project registry index";
     case "copier.copy.commonproject":
-      return "Render CommonProject scaffold";
+      return action.data.project_type && action.data.project_type !== "base"
+        ? `Render CommonProject scaffold (${action.data.project_type})`
+        : "Render CommonProject scaffold";
     case "project.write-manifest":
       return "Write authoritative repo-local .project.json";
     case "ticket-provider.create-or-link":
       return "Create/link ticket provider project";
     default:
-      return kind;
+      return (action as { kind: string }).kind;
   }
 }
 
@@ -276,7 +279,7 @@ async function selectProjectInitOperations(input: {
     .filter((action) => actionNeedsRun(input.plan, action.kind, input.syncMode))
     .map((action) => ({
       value: action.kind,
-      label: projectInitActionLabel(action.kind),
+      label: projectInitActionLabel(action),
       hint: action.kind === "registry.upsert" ? input.plan.registryPath : action.kind,
     }));
   const parityOperations = input.auditRules
@@ -473,7 +476,8 @@ program
   .option("--description <text>", "Project description")
   .option("--target-dir <path>", "Adopt an existing repo at this path (the only way to init a directory you are not standing in)")
   .option("--source-skill <path>", "Source skill/template provenance path")
-  .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
+  .option("--primary-language <language>", "Primary language recorded for the project (default: the recorded one, else the project type's, else python)")
+  .option("--obsidian-plugin", "Render the CommonProject variant built on the canonical Obsidian sample plugin (new projects; on an existing repo, records one that already is a plugin)")
   .option("--apply", "Write the project manifest, render the scaffold and refresh its index")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
@@ -700,7 +704,8 @@ projectCmd
   .option("--description <text>", "Project description")
   .option("--target-dir <path>", "Adopt an existing repo at this path (the only way to init a directory you are not standing in)")
   .option("--source-skill <path>", "Source skill/template provenance path")
-  .option("--primary-language <language>", "Primary language for CommonProject rendering", "python")
+  .option("--primary-language <language>", "Primary language recorded for the project (default: the recorded one, else the project type's, else python)")
+  .option("--obsidian-plugin", "Render the CommonProject variant built on the canonical Obsidian sample plugin (new projects; on an existing repo, records one that already is a plugin)")
   .option("--apply", "Write the project manifest, render the scaffold and refresh its index")
   .option("--dry-run", "Preview changes without writing files (default)")
   .option("--live", "Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this.")
@@ -734,6 +739,7 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         targetDir: target.targetDir,
         sourceSkill: options.sourceSkill,
         primaryLanguage: options.primaryLanguage,
+        projectType: options.obsidianPlugin ? "obsidian-plugin" : undefined,
         apply,
         live: options.live ?? false,
         projectSlug: target.slug,
@@ -836,6 +842,14 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         if (result.ok && result.changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}`);
         if (result.ok && result.changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}`);
         reportBoardDelivery(board, plan.project.slug, skipRequested);
+        const rendered = selectedPlan.actions.find((action) => action.kind === "copier.copy.commonproject");
+        if (result.ok && rendered?.kind === "copier.copy.commonproject" && rendered.data.project_type === "obsidian-plugin") {
+          console.log(`  ${bold("Next")}  ${dim(`cd ${target.targetDir}`)}`);
+          console.log(`     ${cyan("npm install")} ${dim("dev dependencies, pinned by the committed package-lock.json")}`);
+          console.log(`     ${cyan("npm run dev")} ${dim("watch build -> main.js")}`);
+          console.log(`     ${cyan("mise run plugin:link <vault>")} ${dim("load it in an Obsidian vault")}`);
+          console.log("");
+        }
       }
       process.exitCode = result.ok && boardDelivered ? 0 : 1;
     } catch (err) {

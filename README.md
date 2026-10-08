@@ -76,6 +76,31 @@ instead of reading a clean report over nothing.
 live catalog. The rules are owned by the recipes in `src/recipes/`, not by a
 central table, so that catalog is the only authority on which ones exist.
 
+## Obsidian plugins
+
+`pjangler init <name> --obsidian-plugin` does everything a normal init does
+(registry, `.project.json`, board, BMAD, skills, hooks, mise, the init commit).
+The difference is the CommonProject render: it is the variant built on the
+canonical [obsidian-sample-plugin](https://github.com/obsidianmd/obsidian-sample-plugin).
+That means `manifest.json`, `versions.json`, npm + esbuild + TypeScript in `src/`,
+`eslint-plugin-obsidianmd`, and build/release workflows on the self-hosted runners.
+
+```bash
+pjangler init tag-wrangler --obsidian-plugin --description "Wrangle tags across a vault"
+cd tag-wrangler && npm install && npm run dev
+mise run plugin:link ~/Vaults/Main   # symlink into <vault>/.obsidian/plugins/<id>
+```
+
+- The type is recorded as `template.commonproject.project_type` and in
+  `.copier-answers.yml`. It is fixed at creation, and re-running `init` keeps it.
+- On an existing repo, the flag only records the type, and only when the repo
+  already has an Obsidian `manifest.json`.
+- `mise run version:bump` keeps `package.json`, `manifest.json` and `versions.json`
+  in step. It never tags. Release with `npm version patch|minor|major`, which
+  commits and then tags a bare `X.Y.Z` (Obsidian matches that), and push the tag.
+- MCP takes the same choice as `projectType: "obsidian-plugin"` on
+  `pjangler_project_init` and `pjangler_bootstrap_33god_project`.
+
 ## Agents
 
 pjangler does not hire, provision, or inspect agents. That is Flume's surface —
