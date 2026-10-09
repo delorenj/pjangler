@@ -1612,11 +1612,15 @@ const BMAD_NPM_PACKAGE = "bmad-method";
 // 6.11.1-next.1 -> 6.12.0 (PJAN-149): the old pin fetches the external cis
 // module from its main branch, whose layout moved, so every default install
 // (bmm,bmb,cis) failed. 6.12.0 passes the contract with all four modules.
-export const BMAD_INSTALLER_VERSION = "6.12.0";
+// 6.12.0 -> 6.12.1: 6.12.1 went stable on 2026-10-04, after which bmad.version
+// warned "behind stable" on every fresh install of the old pin, and init treats
+// that warn as a failed postcondition. 6.12.1 passes the same contract.
+export const BMAD_INSTALLER_VERSION = "6.12.1";
 
 // Legacy BMAD currency checks continue to report the moving next channel; fresh
 // bootstrap uses the exact installer pin above so mutation is reproducible.
 const BMAD_TARGET_CHANNEL = "next";
+const BMAD_STABLE_CHANNEL = "latest";
 
 const BMAD_DIST_TAGS_TTL_MS = 60 * 60 * 1000; // 1h — mirrors the starship BMAD indicator cache
 
@@ -1916,9 +1920,27 @@ function runBmadInstall(
   const invocation = bmadInstallerInvocation(version);
   const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)], { encoding: "utf8" });
   if (result.status !== 0) {
-    return { ok: false, error: result.stderr || result.error?.message || "Unknown error" };
+    // bmad-method reports its own failures on stdout ("Installation failed:
+    // ..."), leaving stderr empty, so stderr alone surfaced as "Unknown error".
+    const stdoutTail = result.stdout?.trim().split("\n").slice(-12).join("\n");
+    return { ok: false, error: result.stderr?.trim() || stdoutTail || result.error?.message || `installer exited ${result.status}` };
   }
   return { ok: true };
+}
+
+
+/**
+ * The unpinned upgrade target: the `next` channel, unless a stable release has
+ * overtaken it. Upstream leaves `next` on the last prerelease after cutting the
+ * release (6.12.1-next.1 stayed behind 6.12.1), and a prerelease installer
+ * fetches external modules from their main HEAD, so chasing the stale `next`
+ * both downgrades the target and fails once a module's layout moves.
+ */
+function bmadChannelTarget(distTags: Record<string, string> | undefined): { version: string; channel: string } | undefined {
+  const next = distTags?.[BMAD_TARGET_CHANNEL];
+  const stable = distTags?.[BMAD_STABLE_CHANNEL];
+  if (next && stable && compareBmadVersions(stable, next) > 0) return { version: stable, channel: BMAD_STABLE_CHANNEL };
+  return next ? { version: next, channel: BMAD_TARGET_CHANNEL } : undefined;
 }
 
 
@@ -3852,7 +3874,9 @@ return [
 
       const pinned = ctx.bmadVersionPin?.trim();
       const resolved = pinned ? undefined : resolveBmadDistTags(ctx.homeDir);
-      const available = pinned ?? resolved?.distTags?.[BMAD_TARGET_CHANNEL];
+      const channelTarget = pinned ? undefined : bmadChannelTarget(resolved?.distTags);
+      const available = pinned ?? channelTarget?.version;
+      const channel = channelTarget?.channel ?? BMAD_TARGET_CHANNEL;
       if (!available) {
         return {
           id: "bmad.version",
@@ -3864,7 +3888,7 @@ return [
         };
       }
 
-      const targetLabel = pinned ? `pinned ${available}` : `${BMAD_TARGET_CHANNEL} ${available}`;
+      const targetLabel = pinned ? `pinned ${available}` : `${channel} ${available}`;
       const staleNote = resolved?.stale ? `  ${glyph.dot} cached` : "";
       const comparison = compareBmadVersions(installed, available);
       if (pinned ? comparison === 0 : comparison >= 0) {
@@ -3900,7 +3924,7 @@ return [
           title: "BMAD version currency",
           status: "skip",
           summary: `BMAD ${installed} installed; stable currency floor unknown (${BMAD_NPM_PACKAGE} latest unresolved)`,
-          details: [`installed: ${installed}`, `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`],
+          details: [`installed: ${installed}`, `available: ${available}  (${BMAD_NPM_PACKAGE}@${channel})`],
           fixable: false,
         };
       }
@@ -3913,7 +3937,7 @@ return [
           summary: `BMAD ${installed} is at or ahead of stable ${stable ?? "unknown"}; ${targetLabel} available${staleNote}`,
           details: [
             `installed: ${installed}`,
-            `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
+            `available: ${available}  (${BMAD_NPM_PACKAGE}@${channel})`,
             stable ? `stable latest: ${stable}` : "",
             "run `pj migrate bmad.version` to take the prerelease",
           ].filter(Boolean),
@@ -3929,7 +3953,7 @@ return [
           : `BMAD ${installed} is behind stable ${stable} — upgrade available`,
         details: [
           `installed: ${installed}`,
-          pinned ? `required transaction pin: ${available}` : `available: ${available}  (${BMAD_NPM_PACKAGE}@${BMAD_TARGET_CHANNEL})`,
+          pinned ? `required transaction pin: ${available}` : `available: ${available}  (${BMAD_NPM_PACKAGE}@${channel})`,
           !pinned && stable ? `stable latest: ${stable}` : "",
           "run `pj migrate bmad.version` to upgrade",
         ].filter(Boolean),
@@ -3948,14 +3972,14 @@ return [
       }
       {
         const current = readInstalledBmadVersion(ctx.repoRoot);
-        const target = ctx.bmadVersionPin?.trim() ?? resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
+        const target = ctx.bmadVersionPin?.trim() ?? bmadChannelTarget(resolveBmadDistTags(ctx.homeDir)?.distTags)?.version;
         if (!current || !target || compareBmadVersions(current, target) === 0) {
           return { id: finding.id, title: finding.title, status: "noop", summary: "BMAD already current", changedFiles: [], details: [] };
         }
       }
 
       const installed = readInstalledBmadVersion(ctx.repoRoot);
-      const available = ctx.bmadVersionPin?.trim() ?? resolveBmadDistTags(ctx.homeDir)?.distTags?.[BMAD_TARGET_CHANNEL];
+      const available = ctx.bmadVersionPin?.trim() ?? bmadChannelTarget(resolveBmadDistTags(ctx.homeDir)?.distTags)?.version;
       const manifestPath = join(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
       const manifestSelection = manifestBmadModules(ctx.repoRoot);
       if (manifestSelection.status === "invalid") {

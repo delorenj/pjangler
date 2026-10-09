@@ -636,6 +636,41 @@ run = "echo still here"
     const noneFinding = noneAudit.rules.find((r) => r.id === "bmad.version");
     assert.equal(noneFinding.status, "skip", JSON.stringify(noneFinding));
     assert.equal(noneFinding.fixable, false, "absent BMAD version rule must not be fixable");
+
+    // `next` left behind by a stable release (6.12.1-next.1 < 6.12.1): the
+    // upgrade targets the release, never the older prerelease, whose installer
+    // pulls external modules from main HEAD and failed on cis's moved layout.
+    const laggingCache = mkdtempSync(join(tmpdir(), "pjangler-bmadcache-lag-"));
+    repos.push(laggingCache);
+    mkdirSync(join(laggingCache, "pjangler"), { recursive: true });
+    writeFileSync(
+      join(laggingCache, "pjangler", "bmad-dist-tags.json"),
+      JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.12.1", next: "6.12.1-next.1" } })
+    );
+    const laggingEnv = { XDG_CACHE_HOME: laggingCache };
+    const lagging = makeRepo("bmad-version-next-lags-stable");
+    repos.push(lagging);
+    writeManifest(lagging, "6.12.0");
+    const lagAudit = JSON.parse(runAllowFailure(["audit", lagging, "--json"], root, laggingEnv));
+    const lagFinding = lagAudit.rules.find((r) => r.id === "bmad.version");
+    assert.equal(lagFinding.status, "warn", JSON.stringify(lagFinding));
+    assert.ok(lagFinding.details.includes("available: 6.12.1  (bmad-method@latest)"), JSON.stringify(lagFinding));
+    const lagDry = JSON.parse(run(["migrate", "bmad.version", lagging, "--dry-run", "--json"], root, laggingEnv));
+    const lagDryResult = lagDry.results.find((r) => r.id === "bmad.version");
+    assert.match(lagDryResult.summary, /Would upgrade BMAD 6\.12\.0 -> 6\.12\.1$/, JSON.stringify(lagDryResult));
+    const atRelease = makeRepo("bmad-version-at-release");
+    repos.push(atRelease);
+    writeManifest(atRelease, "6.12.1");
+    const atReleaseFinding = JSON.parse(runAllowFailure(["audit", atRelease, "--json"], root, laggingEnv)).rules.find((r) => r.id === "bmad.version");
+    assert.equal(atReleaseFinding.status, "pass", JSON.stringify(atReleaseFinding));
+
+    // A failing installer reports on stdout; that text is the blocked detail.
+    const failingInstaller = join(laggingCache, "failing-bmad-installer.sh");
+    writeFileSync(failingInstaller, "#!/bin/sh\necho 'Installation failed: module cis definition missing'\nexit 1\n", { mode: 0o755 });
+    const lagApply = JSON.parse(runAllowFailure(["migrate", "bmad.version", lagging, "--json"], root, { ...laggingEnv, PJ_BMAD_INSTALLER: failingInstaller }));
+    const lagApplyResult = lagApply.results.find((r) => r.id === "bmad.version");
+    assert.equal(lagApplyResult.status, "blocked", JSON.stringify(lagApplyResult));
+    assert.ok(lagApplyResult.details.some((d) => d.includes("Installation failed: module cis definition missing")), JSON.stringify(lagApplyResult));
   }
 
   {

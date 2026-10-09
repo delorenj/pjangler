@@ -11,8 +11,8 @@ import YAML from "yaml";
 // while the real installer is unavailable or incompatible.
 const root = resolve(import.meta.dirname, "..");
 const packageName = "bmad-method";
-const requiredVersion = "6.12.0";
-const requiredIntegrity = "sha512-gbbHo32TxCPwo4Yy70kqykFRwN5UdYqfnDKTsKAsF9m5qtLeoiCgEawj/LuzLBHLrYA0WTOyL/XWtXpgyDonMQ==";
+const requiredVersion = "6.12.1";
+const requiredIntegrity = "sha512-B3HZ0HXmaKSWYh/+JkL8iP778q3pviqWHmAn0WJJqeSeH50wh7WUuvJk1noB4Qq1FqJrfDb4jLFCpHk8NZFKXw==";
 const packageSpec = `${packageName}@${requiredVersion}`;
 const requestedProjectName = "PJAN 57 Installer Contract Delta";
 const optionalModules = ["bmm", "bmb", "cis"];
