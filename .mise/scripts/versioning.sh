@@ -16,10 +16,12 @@
 #   versioning.sh files                List the manifest
 #
 # Manifest: .mise/version-files.conf  — lines of "<type> <path>" (see file-types).
-#   types: json toml cargo csproj gradle plain gittag
+#   types: json toml cargo csproj gradle plain gittag obsidian
 #
 # Storage format per type:
 #   json/toml/cargo/csproj/gradle/plain -> bare  "X.Y.Z"
+#   obsidian (manifest.json)            -> bare  "X.Y.Z", plus the sibling
+#                                          versions.json gains X.Y.Z -> minAppVersion
 #   gittag                              -> tag   "vX.Y.Z"
 # `current` always prints with the leading "v".
 
@@ -85,12 +87,21 @@ manifest_entries() {
   done <"$MANIFEST"
 }
 
+# Rewrite a JSON file through jq, keeping its indentation: tab-indented files
+# (Obsidian's manifest.json/versions.json/package.json) stay tab-indented.
+jq_rewrite() {  # $1=path, remaining args go to jq
+  local path="$1" tmp indent=(--indent 2); shift
+  grep -q $'^\t' "$path" && indent=(--tab)
+  tmp="$(mktemp)"
+  jq "${indent[@]}" "$@" "$path" >"$tmp" && mv "$tmp" "$path"
+}
+
 # ---- per-type read -----------------------------------------------------------
 
 read_version() {  # $1=type $2=path -> bare X.Y.Z on stdout, or nothing
   local type="$1" path="$2" raw=""
   case "$type" in
-    json)
+    json|obsidian)
       [[ -f "$path" ]] || return 0
       raw="$(jq -r '.version // empty' "$path" 2>/dev/null || true)" ;;
     toml|cargo)
@@ -119,12 +130,22 @@ read_version() {  # $1=type $2=path -> bare X.Y.Z on stdout, or nothing
 # ---- per-type write ----------------------------------------------------------
 
 write_version() {  # $1=type $2=path $3=bare-new-version
-  local type="$1" path="$2" new="$3" tmp
+  local type="$1" path="$2" new="$3"
   case "$type" in
     json)
       [[ -f "$path" ]] || return 0
-      tmp="$(mktemp)"
-      jq --indent 2 --arg v "$new" '.version = $v' "$path" >"$tmp" && mv "$tmp" "$path" ;;
+      jq_rewrite "$path" --arg v "$new" '.version = $v' ;;
+    obsidian)
+      # What the sample plugin's version-bump.mjs does: set the manifest
+      # version, then record new -> minAppVersion in versions.json (once).
+      [[ -f "$path" ]] || return 0
+      jq_rewrite "$path" --arg v "$new" '.version = $v'
+      local versions min
+      versions="$(dirname "$path")/versions.json"
+      min="$(jq -r '.minAppVersion // empty' "$path")"
+      if [[ -f "$versions" && -n "$min" ]]; then
+        jq_rewrite "$versions" --arg v "$new" --arg m "$min" 'if has($v) then . else .[$v] = $m end'
+      fi ;;
     toml|cargo)
       [[ -f "$path" ]] || return 0
       # Replace only the first top-level `version = "..."` line.

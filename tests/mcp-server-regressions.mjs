@@ -168,6 +168,29 @@ try {
   assert.ok(projectPayload.actions.some((action) => action.kind === "registry.upsert"));
   assert.ok(projectPayload.actions.some((action) => action.kind === "copier.copy.commonproject"));
 
+  // PJAN-169: the project type is part of both strict schemas, an unknown one
+  // is refused at the boundary, and the plan carries it into Copier.
+  const pluginDryRun = await client.callTool({
+    name: "pjangler_project_init",
+    arguments: { name: "Mcp Plugin", targetDir: join(mcpTmp, "McpPlugin"), projectType: "obsidian-plugin" },
+  });
+  const pluginPayload = JSON.parse(pluginDryRun.content[0].text);
+  assert.equal(pluginPayload.project.template.commonproject.project_type, "obsidian-plugin");
+  assert.equal(pluginPayload.project.template.commonproject.primary_language, "typescript");
+  const pluginCopier = pluginPayload.actions.find((action) => action.kind === "copier.copy.commonproject");
+  assert.ok(pluginCopier, "a new plugin project must render through Copier");
+  assert.ok(pluginCopier.command.includes("project_type=obsidian-plugin"), JSON.stringify(pluginCopier.command));
+  const bootstrapPlugin = await client.callTool({
+    name: "pjangler_bootstrap_33god_project",
+    arguments: { parentDir: mcpTmp, projectName: "Mcp Boot Plugin", projectSlug: "mcp-boot-plugin", projectType: "obsidian-plugin", dryRun: true },
+  });
+  assert.equal(JSON.parse(bootstrapPlugin.content[0].text).project.template.commonproject.project_type, "obsidian-plugin");
+  await expectInvalidParams(
+    "pjangler_project_init",
+    { name: "Bogus Type", targetDir: join(mcpTmp, "BogusType"), projectType: "vscode-extension" },
+    "an unknown projectType must be rejected by the schema",
+  );
+
   const trelloProjectDryRun = await client.callTool({
     name: "pjangler_project_init",
     arguments: {

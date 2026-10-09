@@ -49,7 +49,7 @@ function validateManifestFields(manifest: Json, path: string): void {
     if (!object(manifest.template.commonproject)) fail('template.commonproject', 'an object');
     const template = manifest.template.commonproject;
     if (template.enabled !== undefined && typeof template.enabled !== 'boolean') fail('template.commonproject.enabled', 'boolean');
-    strings(template, ['primary_language'], 'template.commonproject.');
+    strings(template, ['primary_language', 'project_type'], 'template.commonproject.');
   }
   for (const field of ['binding', 'policy']) if (manifest.notebook?.[field] !== undefined && !object(manifest.notebook[field])) fail(`notebook.${field}`, 'an object');
   if (manifest.notebook?.binding) strings(manifest.notebook.binding, ['provider', 'state', 'notebook_name', 'blocked_reason', 'notebook_id', 'overview_note_id', 'created_at', 'updated_at'], 'notebook.binding.');
