@@ -93,7 +93,7 @@ for (const declaration of [null, '{ "inherit_global": false, "skills": [] }\n', 
       // rename to `run`; nothing is left on the deprecated spelling.
       assert.match(text, /\[\[hooks\.leave\]\]\nrun = "echo keep-custom-hook"/);
       assert.doesNotMatch(text, /^\s*scripts?\s*=/m);
-      assert.match(text, /skillex sync --scope project --project '\{\{config_root\}\}'/);
+      assert.doesNotMatch(text, /skills:sync|skillex sync --scope project/, "the retired skills task is never written back");
       assert.deepEqual(snapshot(join(f.project, ".claude")), foreign);
       assert.deepEqual(snapshot(join(f.project, ".agents", "skills")), native);
       if (declaration === null) {

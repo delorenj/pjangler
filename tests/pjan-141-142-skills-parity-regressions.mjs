@@ -121,7 +121,7 @@ test("PJAN-141: a missing link is still drift and still fails", async () => {
   const f = await fixture();
   try {
     await f.migrate();
-    rmSync(join(f.R, "alpha"));
+    rmSync(join(f.R, "alpha"), { recursive: true });
     put(join(f.catalog, "all-skills", "beta", "SKILL.md"), skill("beta", "edited upstream\n"));
     f.catalogGit("commit", "-qam", "edit");
     const finding = await f.audit();

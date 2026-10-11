@@ -71,10 +71,14 @@ function walk(dir, skip = new Set([".git", "_bmad", "node_modules"])) {
   return out;
 }
 
-const tmp = mkdtempSync(join(tmpdir(), "pjan-169-"));
+const tmp = mkdtempSync("/tmp/pjan-169-");
 try {
   const homeDir = join(tmp, "home");
   mkdirSync(homeDir);
+  // The fixture global selection: without it the fresh project's
+  // inherit_global:true declaration has no global scope to compose with.
+  mkdirSync(join(homeDir, ".agents"), { recursive: true });
+  writeFileSync(join(homeDir, ".agents", "skills.json"), '{"scope":"global","inherit_global":false,"skills":[]}\n');
   const fixtureRoot = join(tmp, "bmad-fixtures");
   const registry = join(tmp, "projects.yaml");
   lifecycleEnv = {
@@ -196,7 +200,7 @@ try {
   git(pluginDir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "anchor");
   const bumped = spawnSync(versioning, ["bump", "patch"], {
     cwd: pluginDir, encoding: "utf8",
-    env: { ...process.env, ...lifecycleEnv, GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t" },
+    env: { ...process.env, ...lifecycleEnv, MISE_TRUSTED_CONFIG_PATHS: pluginDir, GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t" },
   });
   assert.equal(bumped.status, 0, bumped.stderr);
   assert.equal(JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8")).version, "1.0.1");

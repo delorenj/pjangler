@@ -72,22 +72,32 @@ test("explicit project never mutates the nested invocation or global activation"
   } finally { f.close(); }
 });
 
-test("declared set filters and exclusive packs use canonical catalog links", () => {
+test("a declared set exclusively replaces the root and exclusive packs use canonical catalog links", () => {
   const f = fixture(); try {
     for (const name of ["alpha", "beta"]) {
       mkdirSync(join(f.registry, "sets", "coding"), { recursive: true });
       symlinkSync(join(f.registry, "all-skills", name), join(f.registry, "sets", "coding", name));
     }
-    put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"sets":[{"name":"coding","exclude":["alpha"]}]}\n');
+    // 2026-10-10 contract: a set is an exclusive root replacement — no member
+    // masking (the old "set filters" exclude form is retired), so the project
+    // root becomes a symlink to the set's skill root with every member live.
+    const setManifest = '{"inherit_global":false,"sets":["coding"]}\n';
+    put(join(f.project, ".agents", "skills.json"), setManifest);
     assert.equal(f.migrate().exit, 0);
-    assert.deepEqual(readdirSync(join(f.project, ".agents", "skills")), ["beta"]);
+    assert.equal(realpathSync(join(f.project, ".agents", "skills")), join(f.registry, "sets", "coding"));
+    assert.deepEqual([...readdirSync(join(f.project, ".agents", "skills"))].sort(), ["alpha", "beta"]);
+    assert.equal(realpathSync(join(f.project, ".agents", "skills", "alpha")), join(f.registry, "all-skills", "alpha"));
     const pack = join(f.registry, "packs", "coding", "1.0.0");
     put(join(pack, "pack.toml"), '[pack]\nname = "coding"\nversion = "1.0.0"\n[freeform]\nskills = ["gamma"]\n');
     mkdirSync(join(pack, "skills")); symlinkSync(join(f.registry, "all-skills", "gamma"), join(pack, "skills", "gamma"));
     const manifest = '{"inherit_global":false,"skills":["alpha"],"packs":["coding@1.0.0"]}\n';
     put(join(f.project, ".agents", "skills.json"), manifest);
     const result = f.migrate(); assert.equal(result.exit, 0, JSON.stringify(result.report));
-    assert.equal(realpathSync(join(f.project, ".agents", "skills")), join(pack, "skills"));
+    // 2026-10-10 contract: packs COMPOSE — the root stays the project's own
+    // directory and the pack adds per-skill member links beside explicit skills.
+    assert.equal(realpathSync(join(f.project, ".agents", "skills")), join(f.project, ".agents", "skills"));
+    assert.deepEqual([...readdirSync(join(f.project, ".agents", "skills"))].sort(), ["alpha", "gamma"]);
+    assert.equal(realpathSync(join(f.project, ".agents", "skills", "gamma")), join(f.registry, "all-skills", "gamma"));
     assert.equal(readFileSync(join(f.project, ".agents", "skills.json"), "utf8"), manifest);
   } finally { f.close(); }
 });
@@ -173,22 +183,22 @@ test("migration retires enter/watch/provision scripts and preserves unrelated ho
     for (const file of ["sync-skills.py", "provision-packs.py"]) put(join(f.project, ".mise", "scripts", file), "legacy\n");
     const result = f.migrate(); assert.equal(result.exit, 0, JSON.stringify(result.report));
     const mise = readFileSync(join(f.project, "mise.toml"), "utf8");
-    assert.match(mise, /skillex sync --scope project --project '\{\{config_root\}\}'/);
+    assert.doesNotMatch(mise, /skills:sync|skillex sync --scope project/, "the retired skills task is never written; skill operations invoke skillex directly");
     assert.match(mise, /echo custom/); assert.match(mise, /echo bye/);
     assert.doesNotMatch(mise, /sync-skills\.py|provision-packs\.py|skills:provision|patterns = \["\.agents\/skills\.json"\]/);
     assert.equal(existsSync(join(f.project, ".mise", "scripts", "sync-skills.py")), false);
     assert.equal(f.audit().status, "pass"); assert.equal(f.migrate().report.results[0].status, "noop");
   } finally { f.close(); }
 });
-test("task audit checks the actual run and pin, not comments or other tasks", () => {
+test("task audit judges the managed-name task and ignores comments or other tasks", () => {
   const f = fixture(); try {
     put(join(f.project, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
     assert.equal(f.migrate().exit, 0);
-    put(join(f.project, "mise.toml"), `# skillex sync --scope project --project '{{config_root}}'\n# "npm:@delorenj/skillex" = "0.1.2"\n[tasks.other]\nrun = "skillex sync --scope project --project '{{config_root}}'"\ntools = { "npm:@delorenj/skillex" = "0.1.2" }\n[tasks."skills:sync"]\nrun = "echo not wired"\n`);
-    assert.equal(f.audit().status, "fail");
+    put(join(f.project, "mise.toml"), `# skillex sync --scope project --project '{{config_root}}'\n# "npm:@delorenj/skillex" = "0.3.0"\n[tasks.other]\nrun = "skillex sync --scope project --project '{{config_root}}'"\ntools = { "npm:@delorenj/skillex" = "0.3.0" }\n[tasks."skills:sync"]\nrun = "echo not wired"\n`);
+    assert.equal(f.audit().status, "fail", "a carried managed-name task is drift");
     assert.equal(f.migrate().exit, 0);
     assert.equal(f.audit().status, "pass");
-    assert.match(readFileSync(join(f.project, "mise.toml"), "utf8"), /\[tasks.other\]/);
+    assert.match(readFileSync(join(f.project, "mise.toml"), "utf8"), /\[tasks.other\]/, "the operator's own task survives");
   } finally { f.close(); }
 });
 

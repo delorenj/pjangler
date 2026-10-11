@@ -313,7 +313,7 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
     assert.match(mise, /_\.path = \["\.mise\/scripts", "bin", "agents\/hermes\/pm"\]/, "mise.toml _.path should include agents/hermes/pm and preserve existing entries");
-    assert.match(mise, /skillex sync --scope project --project/, "mise.toml should install the project-local skills sync hook");
+    assert.doesNotMatch(mise, /skills:sync/, "the retired skills task must not be installed; skill operations invoke skillex directly");
     assert.doesNotMatch(mise, /(?:run|script) = "sync-skills\.py --scope project"/, "mise.toml must not invoke a missing bare sync-skills executable");
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
@@ -381,13 +381,8 @@ run = "echo still here"
       /run = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/,
       "the env materialization recipe should install the managed script hook"
     );
-    assert.match(
-      mise,
-      /run = "skillex sync --scope project --project '\{\{config_root\}\}'"/,
-      "migrate should install the explicit Node sync task, rooted at config_root"
-    );
+    assert.doesNotMatch(mise, /skills:sync|skillex sync --scope project/, "the retired skills task is never written; skill operations invoke skillex directly");
     assert.doesNotMatch(mise, /(?:run|script) = .*sync-skills|provision-packs/);
-    assert.match(mise, /\[tasks\."skills:sync"\]/, "migrate should add the canonical skills:sync task");
     assertMiseParses(repo, "preserve-hooks");
   }
 
@@ -505,8 +500,7 @@ run = "echo still here"
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml from template should contain the link:agentfiles task");
     assert.match(mise, /run = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
-    assert.match(mise, /skillex sync --scope project --project/, "mise.toml should declare an explicit project skill sync task");
-    assert.match(mise, /\[tasks\."skills:sync"\]/, "mise.toml should include the skills:sync task");
+    assert.doesNotMatch(mise, /skills:sync|skillex sync --scope project/, "bootstrap must not install a skill sync task; skillex is invoked directly");
     assert.doesNotMatch(mise, /patterns = \["\.agents\/skills\.json"\]/, "selection changes must not trigger automatic writes");
     assert.match(mise, /patterns = \["AGENTS.md"\]/, "mise.toml should include AGENTS.md watch_files pattern");
     assert.doesNotMatch(mise, /init-project|create-plane-project|test-template|lint-template/, "bootstrap must not copy the template repository's dev tasks");
@@ -533,8 +527,7 @@ run = "echo still here"
     assert.doesNotMatch(mise, /\{%/, "bootstrap must not leak ANY unevaluated Jinja statement tag into mise.toml");
     assert.match(mise, /\[tasks\."link:agentfiles"\]/, "mise.toml should still contain the link:agentfiles task");
     assert.match(mise, /run = "'\{\{config_root\}\}\/\.mise\/scripts\/materialize-env\.sh'"/, "mise.toml should retain the managed env materialization hook");
-    assert.match(mise, /skillex sync --scope project --project/, "skills sync should stay enabled even when the hook layer is skipped");
-    assert.match(mise, /\[tasks\."skills:sync"\]/, "skills:sync task should remain when the hook layer is skipped");
+    assert.doesNotMatch(mise, /skills:sync|skillex sync --scope project/, "no skill sync task exists even when the hook layer is skipped; skillex is invoked directly");
     assert.doesNotMatch(mise, /\[tasks\."hooks:sync"\]/, "agent-hooks layer OFF should omit the hooks:sync task");
     assert.doesNotMatch(mise, /link-project-skills-to-clis/, "agent-hooks layer OFF should omit the legacy skill fan-out wiring");
 
@@ -733,9 +726,10 @@ run = "echo still here"
     run(["migrate", "mise.config-root", repo, "--json"], root);
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
 
-    for (const name of ["link:agentfiles", "skills:sync", "hooks:check"]) {
+    for (const name of ["link:agentfiles", "hooks:check"]) {
       assert.match(mise, new RegExp(`\\[tasks\\."${name.replace(/:/g, ":")}"\\]`), `${name} task header must be quoted-colon: ${mise}`);
     }
+    assert.doesNotMatch(mise, /\[tasks\."skills:sync"\]/, "the retired skills:sync task is never written");
     assert.match(mise, /task = "link:agentfiles"/, "watch_files must dispatch the renamed task");
     assert.doesNotMatch(mise, /task = "skills:sync"/, "skills have no automatic watch dispatch");
     assert.doesNotMatch(mise, /skills:provision:packs/, "no separate pack writer remains");
@@ -749,9 +743,10 @@ run = "echo still here"
     // the exact failure the dash/colon split caused.
     const listed = runMise(repo, ["tasks", "--no-header"]);
     assert.equal(listed.status, 0, `mise tasks must succeed after the rename\n${listed.stderr}`);
-    for (const name of ["link:agentfiles", "skills:sync", "hooks:check"]) {
+    for (const name of ["link:agentfiles", "hooks:check"]) {
       assert.match(listed.stdout, new RegExp(`^${name}\\b`, "m"), `mise must list ${name}:\n${listed.stdout}`);
     }
+    assert.doesNotMatch(listed.stdout, /^skills:sync\b/m, `mise must NOT list the retired skills:sync task:\n${listed.stdout}`);
     for (const retired of ["link-agentfiles", "skills-sync", "skills-provision-packs", "hooks-check"]) {
       assert.doesNotMatch(
         mise,

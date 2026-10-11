@@ -359,7 +359,7 @@ test("bmad.cli-roots reports a real skills root as an issue, fixable only when t
     for (const alias of SUPPORTED_SKILLS_ALIASES) assert.equal(readlinkSync(join(f.project, alias)), "../.agents/skills", alias);
     assert.ok(existsSync(join(f.R, "bmad-codex-only", "SKILL.md")));
     // A differing collision stays unfixable and untouched.
-    rmSync(f.alias(".claude")); put(join(f.alias(".claude"), "bmad-demo", "SKILL.md"), "edited\n");
+    rmSync(f.alias(".claude"), { recursive: true }); put(join(f.alias(".claude"), "bmad-demo", "SKILL.md"), "edited\n");
     const blocked = await cliRoots.audit(f.ctx);
     assert.equal(blocked.fixable, false);
     assert.match(blocked.details.join("\n"), /blocked: \.claude\/skills\/bmad-demo differs/);

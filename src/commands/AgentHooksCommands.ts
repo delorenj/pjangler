@@ -5,8 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { InvokeResult } from "./Command";
 import { Command } from "./Command";
 import { resolveAgentHooksLayer } from "../project/index";
-import { SKILLS_SYNC_TOOLS } from "../parity/rules";
-import { canonicalJson, checkRewrite, deepClone, isTable, type TomlTable } from "../parity/mise-toml";
+import { checkRewrite, deepClone, isTable, type TomlTable } from "../parity/mise-toml";
 import { parse as parseToml } from "smol-toml";
 
 /** Shared skip result when a global ~/.agents/hooks install makes the project-scoped
@@ -166,25 +165,13 @@ export class WireMiseAgentHooks extends Command {
       wiredHooks = true;
     }
 
-    const skillsSync = [
-      '[tasks."skills:sync"]',
-      `description = "Reconcile this project's selected skills"`,
-      `tools = ${SKILLS_SYNC_TOOLS}`,
-      `run = "skillex sync --scope project --project '${cr}'"`,
-      "",
-    ];
-    // PJAN-135: a project whose parity migrate already wrote the managed
-    // skills:sync task keeps it; appending a second table under the same name
-    // wrote a mise.toml nothing could parse.
-    const managedSkillsSync = (parseToml(skillsSync.join("\n")) as { tasks: TomlTable }).tasks["skills:sync"];
-    const keepSkillsSync = existingTasks["skills:sync"] !== undefined
-      && canonicalJson(existingTasks["skills:sync"]) === canonicalJson(managedSkillsSync);
     const appended = [
       "",
       WireMiseAgentHooks.MARKER + " (generated — see .agents/hooks/README.md)",
       // PJAN-61: task names use the colon namespace form. A colon is not legal
       // in a BARE toml key, so every header here MUST stay quoted.
-      ...(keepSkillsSync ? [] : skillsSync),
+      // PJAN-135 retired 2026-10-10: no skills:sync task is appended — skill
+      // operations invoke skillex directly (`pj skills …`), never a mise task.
       "[[watch_files]]",
       'patterns = [".agents/hooks/hooks.master.json"]',
       'task = "hooks:sync"',

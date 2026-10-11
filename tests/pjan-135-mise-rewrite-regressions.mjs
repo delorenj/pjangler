@@ -41,7 +41,7 @@ const bundle = join(root, "node_modules", ".cache", `pjan-135-rewrite-${process.
 buildSync({
   stdin: {
     contents: [
-      'export { createMiseChecks, createMiseOpInjectChecks, createAgentHooksChecks, SKILLS_SYNC_TOOLS, verifyMiseHookRewrite } from "./src/parity/rules";',
+      'export { createMiseChecks, createMiseOpInjectChecks, createAgentHooksChecks, verifyMiseHookRewrite } from "./src/parity/rules";',
       'export { WireMiseAgentHooks } from "./src/commands/AgentHooksCommands";',
     ].join("\n"),
     resolveDir: root,
@@ -423,20 +423,21 @@ test("the first migrate is a fixed point on a file with no [env] and on one whos
   }
 });
 
-test("the legacy string skillex pin is fixable drift in both audits, and migrate writes the approved table", async () => {
+test("a carried skills:sync task is fixable drift in both audits, and migrate removes it", async () => {
+  const OLD_TASK = `[tasks."skills:sync"]
+description = "Reconcile this project's selected skills"
+tools = { "npm:@delorenj/skillex" = { version = "0.1.2", allow_low_downloads = true }, node = "24" }
+run = "skillex sync --scope project --project '{{config_root}}'"`;
   const repo = repoWith("[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\"]\n");
   const ctx = ctxFor(repo);
   await mise.migrate(ctx, await mise.audit(ctx));
   assert.equal((await mise.audit(ctx)).status, "pass");
-  const table = read(repo);
-  const legacy = table.replace(rules.SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.2", node = "24" }');
-  assert.notEqual(legacy, table);
-  writeFileSync(join(repo, "mise.toml"), legacy);
+  writeFileSync(join(repo, "mise.toml"), `${read(repo).trimEnd()}\n\n${OLD_TASK}\n`);
 
   const audited = await mise.audit(ctx);
-  assert.equal(audited.status, "fail", "mise 2026.9 refuses this pin, so it is not parity");
+  assert.equal(audited.status, "fail", "the retired skill task is not parity");
   assert.equal(audited.fixable, true);
-  assert.ok(audited.details.some((detail) => /allow_low_downloads/.test(detail)), JSON.stringify(audited.details));
+  assert.ok(audited.details.some((detail) => /Retire the skills:sync mise task/.test(detail)), JSON.stringify(audited.details));
   // skills.project-manifest reads the same wiring.
   mkdirSync(join(work, "registry", "all-skills"), { recursive: true });
   mkdirSync(join(work, "registry", "sets"), { recursive: true });
@@ -446,18 +447,18 @@ test("the legacy string skillex pin is fixable drift in both audits, and migrate
   try {
     const skillsFinding = await skills.audit(ctx);
     assert.equal(skillsFinding.status, "fail");
-    assert.ok(skillsFinding.details.some((detail) => /allow_low_downloads/.test(detail)), JSON.stringify(skillsFinding.details));
+    assert.ok(skillsFinding.details.some((detail) => /Retire the skills:sync mise task/.test(detail)), JSON.stringify(skillsFinding.details));
   } finally {
     if (previous === undefined) delete process.env.PJ_SKILLS_REGISTRY_ROOT; else process.env.PJ_SKILLS_REGISTRY_ROOT = previous;
   }
 
   const { first, written } = await migrateToFixedPoint(mise, repo);
   assert.equal(first.status, "applied");
-  assert.deepEqual(parseToml(written).tasks["skills:sync"].tools["npm:@delorenj/skillex"], { version: "0.1.2", allow_low_downloads: true });
+  assert.equal(parseToml(written).tasks["skills:sync"], undefined, `the retired task is deleted:\n${written}`);
   assert.equal((await mise.audit(ctx)).status, "pass");
-  const info = spawnSync("mise", ["tasks", "info", "skills:sync", "--json"], { cwd: repo, env: miseEnv(freshState(), repo), encoding: "utf8" });
-  assert.equal(info.status, 0, info.stderr);
-  assert.deepEqual(JSON.parse(info.stdout).tools["npm:@delorenj/skillex"], { version: "0.1.2", allow_low_downloads: true });
+  const tasks = spawnSync("mise", ["tasks", "--json"], { cwd: repo, env: miseEnv(freshState(), repo), encoding: "utf8" });
+  assert.equal(tasks.status, 0, tasks.stderr);
+  assert.ok(!JSON.parse(tasks.stdout).some((task) => task.name === "skills:sync"), "real mise no longer knows the task");
 });
 
 test("a rewrite that cannot be made safely writes nothing and says why, dry or not", async () => {
@@ -538,7 +539,7 @@ test("mise.versioning: a multi-line run string is not torn apart, and a task it 
 });
 
 test("WireMiseAgentHooks never writes a mise.toml that does not parse or drops meaning", async () => {
-  // A project mise.config-root already migrated carries the managed skills:sync task.
+  // A project mise.config-root already migrated carries no skills:sync task.
   const repo = repoWith("[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\"]\n");
   await mise.migrate(ctxFor(repo), await mise.audit(ctxFor(repo)));
   const before = read(repo);

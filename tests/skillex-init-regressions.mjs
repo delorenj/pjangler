@@ -31,8 +31,8 @@ function assertProject(cli, project) {
   assert.equal(manifest.inherit_global, true);
   assert.deepEqual(manifest.skills, []);
   const mise = readFileSync(join(project, "mise.toml"), "utf8");
-  assert.match(mise, /skillex sync --scope project --project '\{\{config_root\}\}'/);
-  assert.match(mise, /"npm:@delorenj\/skillex" = \{ version = "0\.1\.2", allow_low_downloads = true \}, node = "24"/);
+  assert.doesNotMatch(mise, /skills:sync|skillex sync --scope project/, "no skill sync task is rendered; skillex is invoked directly");
+  assert.doesNotMatch(mise, /skills:sync|skillex sync --scope project/, "no skill sync task is rendered; skillex is invoked directly");
   for (const name of ["sync-skills.py", "provision-packs.py", "provision-bmad-skills.py"]) assert.equal(existsSync(join(project, ".mise", "scripts", name)), false);
   const skills = join(project, ".agents", "skills");
   const installed = readdirSync(skills).filter((name) => name.startsWith("bmad-"));
@@ -76,7 +76,7 @@ try {
   if (process.env.PJ_SKILLEX_TEST_TARBALL) args.push(process.env.PJ_SKILLEX_TEST_TARBALL);
   run("npm", args);
   const installed = join(install, "node_modules", "@delorenj", "pjangler");
-  assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).dependencies["@delorenj/skillex"], "0.1.2");
+  assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).dependencies["@delorenj/skillex"], "0.3.0");
   const results = [];
   for (const [label, cli] of [["source", join(root, "dist", "index.js")], ["installed", join(installed, "dist", "index.js")]]) {
     const project = join(tmp, `${label} project`);

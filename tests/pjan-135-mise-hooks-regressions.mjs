@@ -1,5 +1,5 @@
 // PJAN-135: the mise.toml pjangler writes must keep working on the mise it runs
-// under, and its skills:sync task must be installable at all.
+// under, and the retired skills:sync task must stay retired everywhere.
 //
 // 1. mise 2026.7.8 deprecated `script` for spawned hook commands ("Use `run`
 //    instead", removed in 2027.3.0) and pjangler emitted `[[hooks.enter]]
@@ -9,10 +9,9 @@
 //    array is joined with newlines into ONE such command, and a table with a
 //    `shell` key is sourced into the operator's shell (not spawned, not
 //    deprecated, and `run` there would execute the text as a file name).
-// 2. mise 2026.9 refuses to install `npm:@delorenj/skillex` at any version
-//    (the name was first published inside its 30-day minimumPackageAge) unless
-//    the tool table sets `allow_low_downloads = true`, so the plain string pin
-//    never installed.
+// 2. The skills:sync mise task retired with the 2026-10-10 skill-operation-task
+//    policy: no generator writes it, migrate deletes a carried copy, and skill
+//    operations invoke skillex directly (`pj skills …` relays the bundled CLI).
 //
 // Real temp repositories, the real rule objects bundled from src/, and the
 // real mise binary with every MISE_* directory isolated under the fixture.
@@ -32,14 +31,14 @@ const bundle = join(root, "node_modules", ".cache", `pjan-135-mise-${process.pid
 buildSync({
   stdin: {
     contents: [
-      'export { createMiseChecks, SKILLS_SYNC_TOOLS } from "./src/parity/rules";',
+      'export { createMiseChecks } from "./src/parity/rules";',
       'export { WireMiseAgentHooks } from "./src/commands/AgentHooksCommands";',
     ].join("\n"),
     resolveDir: root,
   },
   outfile: bundle, bundle: true, packages: "external", platform: "node", format: "esm", logLevel: "warning",
 });
-const { createMiseChecks, SKILLS_SYNC_TOOLS, WireMiseAgentHooks } = await import(pathToFileURL(bundle).href);
+const { createMiseChecks, WireMiseAgentHooks } = await import(pathToFileURL(bundle).href);
 rmSync(bundle);
 const mise = createMiseChecks().find((check) => check.id === "mise.config-root");
 
@@ -176,29 +175,27 @@ test("a rename that cannot parse is left for the operator, never written broken"
   assert.match(written, /^\[\[hooks\.leave\]\]\nrun = "echo c"$/m);
 });
 
-test("skills:sync pins 0.1.2 as an approved table; the legacy string is fixable drift; every copy is identical", async () => {
-  const expected = {
-    description: "Reconcile this project's selected skills",
-    tools: { "npm:@delorenj/skillex": { version: "0.1.2", allow_low_downloads: true }, node: "24" },
-    run: "skillex sync --scope project --project '{{config_root}}'",
-  };
-  assert.equal(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = { version = "0.1.2", allow_low_downloads = true }, node = "24" }');
+test("skills:sync is retired: nothing writes it, migrate deletes a carried copy, and no template carries one", async () => {
+  const OLD_TASK = `[tasks."skills:sync"]
+description = "Reconcile this project's selected skills"
+tools = { "npm:@delorenj/skillex" = { version = "0.1.2", allow_low_downloads = true }, node = "24" }
+run = "skillex sync --scope project --project '{{config_root}}'"`;
 
-  // (1) what mise.config-root writes
-  const repo = repoWith("pin", "[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\"]\n");
+  // (1) what mise.config-root writes on a fresh migrate: no skills task at all.
+  const repo = repoWith("retire", "[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\"]\n");
   const ctx = ctxFor(repo);
   await mise.migrate(ctx, await mise.audit(ctx));
   const written = readFileSync(join(repo, "mise.toml"), "utf8");
-  assert.deepEqual(parseToml(written).tasks["skills:sync"], expected);
+  assert.equal(parseToml(written).tasks["skills:sync"], undefined, written);
   assert.equal((await mise.audit(ctx)).status, "pass");
 
-  // (2) what WireMiseAgentHooks appends
+  // (2) what WireMiseAgentHooks appends: also none.
   const wired = repoWith("wired", "[env]\n");
   const previous = process.env.PJ_AGENT_HOOKS_LAYER;
   process.env.PJ_AGENT_HOOKS_LAYER = "1";
   try { assert.equal((await new WireMiseAgentHooks({ targetDir: wired }).invoke()).success, true); }
   finally { if (previous === undefined) delete process.env.PJ_AGENT_HOOKS_LAYER; else process.env.PJ_AGENT_HOOKS_LAYER = previous; }
-  assert.deepEqual(parseToml(readFileSync(join(wired, "mise.toml"), "utf8")).tasks["skills:sync"], expected);
+  assert.equal(parseToml(readFileSync(join(wired, "mise.toml"), "utf8")).tasks["skills:sync"], undefined);
 
   // (3) + (4) both CommonProject copies
   const jinja = readFileSync(join(root, "templates", "commonproject", "template", "mise.toml.jinja"), "utf8")
@@ -210,36 +207,28 @@ test("skills:sync pins 0.1.2 as an approved table; the legacy string is fixable 
     "mise.toml": parseToml(readFileSync(join(root, "templates", "commonproject", "mise.toml"), "utf8")),
   };
   for (const [name, parsed] of Object.entries(templates)) {
-    assert.deepEqual(parsed.tasks["skills:sync"], expected, name);
+    assert.equal(parsed.tasks["skills:sync"], undefined, name);
     for (const kind of ["enter", "leave"]) {
       for (const hook of parsed.hooks?.[kind] ?? []) assert.ok(hook.run && !("script" in hook), `${name} hooks.${kind}: ${JSON.stringify(hook)}`);
     }
   }
 
-  // The legacy plain-string pin of the same version is NOT parity: mise 2026.9
-  // refuses to install it (first published inside its 30-day
-  // minimumPackageAge), so on a cold mise the task cannot run. It is fixable
-  // drift, and migrate writes the approved table (PJAN-135 review).
-  const legacy = written.replace(SKILLS_SYNC_TOOLS, '{ "npm:@delorenj/skillex" = "0.1.2", node = "24" }');
-  assert.notEqual(legacy, written);
-  writeFileSync(join(repo, "mise.toml"), legacy);
-  const legacyFinding = await mise.audit(ctx);
-  assert.equal(legacyFinding.status, "fail", "the legacy string pin is drift");
-  assert.equal(legacyFinding.fixable, true);
-  assert.ok(legacyFinding.details.some((detail) => /allow_low_downloads = true/.test(detail)), JSON.stringify(legacyFinding.details));
-  // Any other version, in either form, is drift -- including 0.1.1, the
-  // approved table every project carried before SKRILL-24 published 0.1.2.
-  for (const drift of ['{ "npm:@delorenj/skillex" = "0.1.0", node = "24" }', '{ "npm:@delorenj/skillex" = { version = "0.1.0", allow_low_downloads = true }, node = "24" }', '{ "npm:@delorenj/skillex" = { version = "0.1.1", allow_low_downloads = true }, node = "24" }']) {
-    writeFileSync(join(repo, "mise.toml"), written.replace(SKILLS_SYNC_TOOLS, drift));
-    assert.ok((await mise.audit(ctx)).details.some((detail) => /must pin @delorenj\/skillex 0\.1\.2/.test(detail)), drift);
-  }
+  // (5) The exact managed form every project carried until the 2026-10-10
+  // retirement is fixable drift, and migrate deletes it: skill operations
+  // invoke skillex directly, never a mise task.
+  writeFileSync(join(repo, "mise.toml"), `${written.trimEnd()}\n\n${OLD_TASK}\n`);
+  const carried = await mise.audit(ctx);
+  assert.equal(carried.status, "fail", "a carried skills:sync task is drift");
+  assert.equal(carried.fixable, true);
+  assert.ok(carried.details.some((detail) => /Retire the skills:sync mise task/.test(detail)), JSON.stringify(carried.details));
+  await mise.migrate(ctx, carried);
+  const retiredText = readFileSync(join(repo, "mise.toml"), "utf8");
+  assert.equal(parseToml(retiredText).tasks["skills:sync"], undefined, retiredText);
+  assert.equal((await mise.audit(ctx)).status, "pass", JSON.stringify((await mise.audit(ctx)).details));
 
-  // Real mise reads the table form as the tool pin of this task.
-  writeFileSync(join(repo, "mise.toml"), written);
-  const info = spawnSync("mise", ["tasks", "info", "skills:sync", "--json"], { cwd: repo, env: miseEnv(join(work, "mise-pin"), repo), encoding: "utf8" });
-  assert.equal(info.status, 0, info.stderr);
-  assert.equal(info.stderr, "", "no parse or deprecation warning");
-  const task = JSON.parse(info.stdout);
-  assert.deepEqual(task.tools, expected.tools, "mise parsed the approval as part of the tool pin");
-  assert.deepEqual(task.run, [expected.run]);
+  // Real mise loads the retired file cleanly and no longer knows the task.
+  const tasks = spawnSync("mise", ["tasks", "--json"], { cwd: repo, env: miseEnv(join(work, "mise-pin"), repo), encoding: "utf8" });
+  assert.equal(tasks.status, 0, tasks.stderr);
+  assert.equal(tasks.stderr, "", "no parse or deprecation warning");
+  assert.ok(!JSON.parse(tasks.stdout).some((task) => task.name === "skills:sync"), "the task is gone from mise's registry");
 });

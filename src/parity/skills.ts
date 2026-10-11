@@ -45,7 +45,7 @@ export function relaySkillexCommands(text: string): string {
 }
 
 /** `skillex <subcommand>` as a command, never a path (`state/skillex/`) or package (`@delorenj/skillex`). */
-const SKILLEX_COMMAND = /(?<![\w/@.:-])skillex(?=\s+(?:skill|set|pack|init|enable|disable|inherit|sync|status|explain|doctor|vendor|profile|migrate)\b)/g;
+const SKILLEX_COMMAND = /(?<![\w/@.:-])skillex(?=\s+(?:skill|set|pack|bmad|init|enable|disable|inherit|normalize|sync|status|explain|doctor|vendor|profile|migrate|integrations|clients|root)\b)/g;
 
 export function skillDiagnostics(findings: readonly Diagnostic[]): string[] {
   return findings.map((finding) =>
@@ -239,8 +239,8 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
   // ANY commit to all-skills leaves every project's receipt stale while every
   // link still resolves exactly where it should. One catalog commit turned the
   // whole fleet red overnight. A plan whose only change is rewriting that
-  // receipt is host bookkeeping, not project drift: warn (fixable; migrate and
-  // the skills:sync enter hook refresh it), never fail.
+  // receipt is host bookkeeping, not project drift: warn (fixable; migrate
+  // or `pj skills sync` refreshes it), never fail.
   const changes = result.data?.changes ?? [];
   const receiptOnly = result.exit === 6 && changes.length > 0
     && changes.every((change) => change.action === "write-receipt")

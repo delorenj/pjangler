@@ -239,21 +239,11 @@ const HOOKS_COMMENT_HEADER = `# This block will handle the linking of
 
 
 /**
- * PJAN-135: the skills:sync tool pin. mise 2026.9 installs npm tools through
- * aube, which refuses a package whose NAME was first published inside its
- * 30-day `minimumPackageAge` (@delorenj/skillex: 2026-09-14), whatever the
- * version, so a plain `"npm:@delorenj/skillex" = "<version>"` string pin never
- * installed and the task could not run. `allow_low_downloads = true` approves
- * it. Measured for 0.1.2 (SKRILL-24) on 2026-10-01, mise 2026.9.12 with every
- * MISE_* and XDG dir isolated: the string is refused, this table installs and
- * `skillex --version` prints 0.1.2 (0.1.1 measured the same way; mise 2026.5.0
- * parses the table too). Keep every copy identical:
- * src/commands/AgentHooksCommands.ts and both CommonProject templates.
+ * PJAN-135 note, superseded 2026-10-10: the skills:sync mise task and its
+ * @delorenj/skillex tool pin are RETIRED with the skill-operation-task policy —
+ * projects invoke skillex directly (`pj skills …` relays the bundled CLI), so
+ * nothing pins the package in a mise tools table any more.
  */
-export const SKILLEX_TOOL_VERSION = "0.1.2";
-
-export const SKILLS_SYNC_TOOLS =
-  `{ "npm:@delorenj/skillex" = { version = "${SKILLEX_TOOL_VERSION}", allow_low_downloads = true }, node = "24" }`;
 
 
 const LINK_AGENTFILES_WATCH_TASK_BLOCK = `[[watch_files]]
@@ -262,12 +252,7 @@ task = "${LINK_AGENTFILES_TASK}"
 
 ${taskHeader(LINK_AGENTFILES_TASK)}
 description = "Symlink all agent files to AGENTS.md"
-run = ${JSON.stringify(LINK_AGENTFILES_SCRIPT)}
-
-${taskHeader(SKILLS_SYNC_TASK)}
-description = "Reconcile this project's selected skills"
-tools = ${SKILLS_SYNC_TOOLS}
-run = "skillex sync --scope project --project '{{config_root}}'"`;
+run = ${JSON.stringify(LINK_AGENTFILES_SCRIPT)}`;
 
 
 const VERSIONING_BLOCK = `# >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
@@ -999,19 +984,21 @@ function managedLinkHookIssues(parsed: TomlTable): string[] {
 
 // ---- managed task / watch tables ------------------------------------------
 
-/** Retired task names the AGENTS-linking owner deletes (after the colon renames). */
-const RETIRED_LINK_TASKS = ["skills-sync", "skills-provision-packs", PROVISION_PACKS_TASK, "skills-provision-bmad",
+/** Retired task names the AGENTS-linking owner deletes (after the colon renames).
+ * The skills:sync mise task itself retired with the 2026-10-10 skill-operation-task
+ * policy (invoke skillex directly), so both its colon form and its dash ancestor
+ * are deleted wherever they remain. */
+const RETIRED_LINK_TASKS = ["skills-sync", SKILLS_SYNC_TASK, "skills-provision-packs", PROVISION_PACKS_TASK, "skills-provision-bmad",
   "link-project-skills-to-clis", "unlink-project-skills-from-clis", "skills-relink", "link-agentfiles"];
 
 interface ManagedTable { lines: string[]; value: TomlTable }
 
-function managedLinkTables(): { watch: ManagedTable; link: ManagedTable; sync: ManagedTable } {
+function managedLinkTables(): { watch: ManagedTable; link: ManagedTable } {
   const chunks = LINK_AGENTFILES_WATCH_TASK_BLOCK.split(/\n\s*\n/).map((chunk) => chunk.split("\n"));
   const parsed = parseToml(LINK_AGENTFILES_WATCH_TASK_BLOCK) as { watch_files: TomlTable[]; tasks: Record<string, TomlTable> };
   return {
     watch: { lines: chunks[0]!, value: parsed.watch_files[0]! },
     link: { lines: chunks[1]!, value: parsed.tasks[LINK_AGENTFILES_TASK]! },
-    sync: { lines: chunks[2]!, value: parsed.tasks[SKILLS_SYNC_TASK]! },
   };
 }
 
@@ -1068,7 +1055,7 @@ function reconcileManagedLinkTables(text: string): { text: string; refused?: str
       edits.push({ start: span.start, end: span.end, lines: [] });
       continue;
     }
-    const table = name === LINK_AGENTFILES_TASK ? managed.link : managed.sync;
+    const table = managed.link;
     found.add(name);
     if (isDeepStrictEqualLoose(parseBody(lines, statements, index), table.value)) continue;
     if (name === LINK_AGENTFILES_TASK && !lines.slice(span.start, span.end).join("\n").includes("link-agentfiles")) {
@@ -1094,7 +1081,6 @@ function reconcileManagedLinkTables(text: string): { text: string; refused?: str
   const missing = [
     ...(plan.managed >= 0 ? [] : [managed.watch.lines]),
     ...(found.has(LINK_AGENTFILES_TASK) ? [] : [managed.link.lines]),
-    ...(found.has(SKILLS_SYNC_TASK) ? [] : [managed.sync.lines]),
   ];
   if (missing.length) {
     const block = missing.flatMap((chunk, index) => (index ? ["", ...chunk] : chunk));
@@ -1197,7 +1183,6 @@ function expectedLinkModel(base: TomlTable, required: readonly string[]): TomlTa
   const tasks = isTable(model.tasks) ? model.tasks : (model.tasks = {});
   for (const name of RETIRED_LINK_TASKS) delete tasks[name];
   tasks[LINK_AGENTFILES_TASK] = deepClone(managed.link.value);
-  tasks[SKILLS_SYNC_TASK] = deepClone(managed.sync.value);
   const watches = Array.isArray(model.watch_files) ? model.watch_files as unknown[] : [];
   const plan = managedWatchPlan(watches);
   model.watch_files = [
@@ -3008,41 +2993,32 @@ function retiredSkillsScripts(ctx: Context): string[] {
  * writer), so neither audit claims a fix its migrate cannot make.
  */
 function skillsWiringFindings(text: string | null): { fixable: string[]; manual: string[] } {
-  if (text === null) return { fixable: ["mise.toml is missing; add the explicit skills:sync task"], manual: [] };
+  if (text === null) return { fixable: [], manual: [] };
   const fixable: string[] = [];
   const manual: string[] = [];
   let parsed = parsedOrUndefined(text);
   if (!parsed) {
     const baseline = parseBaseline(text);
-    if ("refused" in baseline) return { fixable: [], manual: ["mise.toml is invalid TOML; repair it before running skills:sync"] };
+    if ("refused" in baseline) return { fixable: [], manual: ["mise.toml is invalid TOML; repair it before pjangler can retire skill tasks"] };
     parsed = baseline.parsed;
     fixable.push("mise.toml repeats the close of a [hooks] array (an earlier pjangler run wrote it); migrate repairs it");
   }
   const record = (value: unknown): Record<string, unknown> => isTable(value) ? value : {};
-  const tasks = record(parsed.tasks), task = record(tasks[SKILLS_SYNC_TASK]);
-  const run = Array.isArray(task.run) && task.run.length === 1 ? task.run[0] : task.run;
-  if (typeof run !== "string" || !/^skillex\s+sync\s+--scope\s+project\s+--project\s+(['"])\{\{config_root\}\}\1\s*$/.test(run)) {
-    fixable.push("skills:sync must explicitly target {{config_root}} with the Node CLI");
-  }
-  // PJAN-135: mise 2026.9 refuses to install npm:@delorenj/skillex (the name
-  // was first published inside its 30-day minimumPackageAge) unless the tool
-  // table approves it, so the plain string pin is drift, not parity: on a cold
-  // mise (a new machine, CI, a container) `mise run skills:sync` cannot run.
-  const pin = record(task.tools)["npm:@delorenj/skillex"];
-  const pinned = typeof pin === "string" ? pin : record(pin).version;
-  if (pinned !== SKILLEX_TOOL_VERSION) {
-    fixable.push(`skills:sync must pin @delorenj/skillex ${SKILLEX_TOOL_VERSION} in its own tools table`);
-  } else if (typeof pin === "string") {
-    fixable.push(`skills:sync pins @delorenj/skillex as the plain string "${pin}", which mise 2026.9 refuses to install inside its 30-day minimumPackageAge; pin { version = "${SKILLEX_TOOL_VERSION}", allow_low_downloads = true }`);
-  } else if (record(pin).allow_low_downloads !== true) {
-    fixable.push(`skills:sync must approve @delorenj/skillex ${SKILLEX_TOOL_VERSION} with allow_low_downloads = true (mise 2026.9 refuses to install it otherwise)`);
+  const tasks = record(parsed.tasks);
+  // Skill-task retirement (user policy 2026-10-10): the skills:sync mise task
+  // — managed by pjangler until now, "skills-sync" in the dash era — must not
+  // exist. Projects invoke skillex directly; `pj skills …` relays the bundled
+  // CLI, so no task pins it and no hook runs it.
+  if (tasks[SKILLS_SYNC_TASK] !== undefined) {
+    fixable.push(`Retire the ${SKILLS_SYNC_TASK} mise task; invoke skillex directly (pj skills sync --scope project --project .)`);
   }
   // Tasks: a retired or managed NAME is rewritten or removed by migrate; any
   // other task that merely runs a retired writer belongs to the operator.
   const retired = /sync-skills\.py|provision-(?:packs|bmad-skills)\.py|skills[:\-]provision/;
   const renames = new Map(RETIRED_TASK_RENAMES);
-  const replaced = new Set([...RETIRED_LINK_TASKS, LINK_AGENTFILES_TASK, SKILLS_SYNC_TASK]);
+  const replaced = new Set([...RETIRED_LINK_TASKS, LINK_AGENTFILES_TASK]);
   for (const [name, entry] of Object.entries(tasks)) {
+    if (name === SKILLS_SYNC_TASK) continue;
     if (!retired.test(name) && !retired.test(JSON.stringify(record(entry).run ?? ""))) continue;
     if (replaced.has(renames.get(name) ?? name)) {
       if (!fixable.includes("Retire Python skill sync/provision tasks from mise.toml")) fixable.push("Retire Python skill sync/provision tasks from mise.toml");
@@ -3060,7 +3036,7 @@ function skillsWiringFindings(text: string | null): { fixable: string[]; manual:
   }
   manual.push(...decisions.manual.filter((entry) => SKILL_WRITER_MENTION.test(entry.command)).map(manualHookLine));
   const watches = Array.isArray(parsed.watch_files) ? parsed.watch_files as unknown[] : [];
-  if (managedWatchPlan(watches).skills.length) fixable.push("Remove the skills watch hook; run skills:sync explicitly");
+  if (managedWatchPlan(watches).skills.length) fixable.push("Remove the skills watch hook; run pj skills sync explicitly, never automatically");
   return { fixable, manual };
 }
 
@@ -3085,12 +3061,14 @@ return [
       const details = [...finding.details, ...wiring, ...retired.map((path) => unsafe.includes(path)
         ? `Inspect and preserve retired script directory: ${path}` : `${path} is a retired skill writer`)];
       // PJAN-135: fixable means "migrate makes progress", not "migrate reaches
-      // parity". Retiring writer files and normalizing the task no longer wait on
-      // the sync outcome, so either one alone is progress; auditProjectSkills
-      // already folded in the CLI skills-root plan and root-collision verdict.
+      // parity". Retiring writer files, retiring the skills:sync task, and
+      // normalizing the managed link block no longer wait on the sync outcome,
+      // so any one of them alone is progress; auditProjectSkills already
+      // folded in the CLI skills-root plan and root-collision verdict.
       // A retired path that is a directory is never touched, so it still gates.
+      const miseDrift = mise !== null && upsertLinkAgentfilesBlock(mise, ctx) !== mise;
       return { ...finding, status: wiring.length || retired.length ? "fail" as const : finding.status,
-        fixable: unsafe.length ? false : finding.fixable || wiring.length > 0 || retired.length > 0,
+        fixable: unsafe.length ? false : finding.fixable || wiring.length > 0 || retired.length > 0 || miseDrift,
         summary: details.length ? `${details.length} Skillex finding(s)` : finding.summary, details };
     },
     migrate: async (ctx, finding) => {
@@ -3120,7 +3098,9 @@ return [
         changedFiles.push(path);
         if (!ctx.dryRun) unlinkSync(path);
       }
-      // (3) The explicit skills:sync task, likewise independent of the sync.
+      // (3) The mise wiring: retire the skills:sync task (skill operations
+      // invoke skillex directly) and normalize the managed link block,
+      // likewise independent of the sync.
       const misePath = join(ctx.repoRoot, "mise.toml");
       const nextMise = upsertLinkAgentfilesBlock(currentMise, ctx);
       if (safeReadText(misePath) !== nextMise) {
@@ -3144,7 +3124,7 @@ return [
         return result(changedFiles.length ? "partial" : "blocked", "Skillex requires attention before project migration");
       }
       return changedFiles.length
-        ? result("applied", "Project skills use the Node core and explicit sync task")
+        ? result("applied", "Project skills use the Node core and direct invocation")
         : result("noop", "No changes required");
     },
   },

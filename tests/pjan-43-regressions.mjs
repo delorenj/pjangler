@@ -19,12 +19,12 @@ import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
-const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjan-43-bmad-fixture-"));
+const bmadFixtureRoot = mkdtempSync(join("/tmp", "pjan-43-bmad-fixture-"));
 const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 const cleanup = [bmadFixtureRoot];
 
 function makeHome(name) {
-  const home = mkdtempSync(join(tmpdir(), `pjan-43-${name}-home-`));
+  const home = mkdtempSync(join("/tmp", `pjan-43-${name}-home-`));
   cleanup.push(home);
   mkdirSync(join(home, ".hermes"), { recursive: true });
   const cache = join(home, ".cache", "pjangler");
@@ -37,7 +37,7 @@ function makeHome(name) {
 }
 
 function makeRepo(name) {
-  const repo = mkdtempSync(join(tmpdir(), `pjan-43-${name}-repo-`));
+  const repo = mkdtempSync(join("/tmp", `pjan-43-${name}-repo-`));
   cleanup.push(repo);
   writeFileSync(join(repo, "AGENTS.md"), "# Fixture agent rules\n");
   writeFileSync(join(repo, "mise.toml"), '[env]\n_.path = [".mise/scripts"]\n');
@@ -179,7 +179,7 @@ try {
     writeFileSync(join(repo, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
     writeFileSync(join(managed, "custom-sentinel"), "do-not-touch\n");
     mkdirSync(join(repo, ".codex"));
-    const outside = mkdtempSync(join(tmpdir(), "pjan-43-outside-skills-"));
+    const outside = mkdtempSync(join("/tmp", "pjan-43-outside-skills-"));
     cleanup.push(outside);
     writeFileSync(join(outside, "outside-sentinel"), "do-not-touch\n");
     const unsafeLink = join(repo, ".codex", "skills");
@@ -192,7 +192,8 @@ try {
     assert.equal(unsafeFinding.status, "fail");
     // PJAN-135: the foreign alias is planned independently and reported as a
     // block that names its target. It no longer vetoes the rest of the rule:
-    // the missing skills:sync task is progress that never touches the topology.
+    // the managed mise wiring the rule can still write (link task, skills:sync
+    // retirement) is progress that never touches the topology.
     assert.equal(unsafeFinding.fixable, true, "task wiring stays fixable beside a blocked alias");
     assert.match(unsafeFinding.details.join("\n"), new RegExp(`blocked: \\.codex/skills is a symlink to ${outside}`));
 
@@ -211,7 +212,7 @@ try {
     assert.deepEqual(readdirSync(managed), beforeManaged);
     assert.deepEqual(readdirSync(outside), beforeOutside);
     assert.equal(readlinkSync(unsafeLink), outside, "a foreign alias is never replaced");
-    assert.match(readFileSync(join(repo, "mise.toml"), "utf8"), /\[tasks\."skills:sync"\]/);
+    assert.doesNotMatch(readFileSync(join(repo, "mise.toml"), "utf8"), /\[tasks\."skills:sync"\]/, "the retired task is never written");
   }
 
   {
@@ -252,7 +253,7 @@ try {
     assert.equal(stale.status, "fail");
     assert.deepEqual(stale.details, ["_bmad/tea/config.yaml"]);
 
-    const fakeBin = mkdtempSync(join(tmpdir(), "pjan-43-fake-npx-"));
+    const fakeBin = mkdtempSync(join("/tmp", "pjan-43-fake-npx-"));
     cleanup.push(fakeBin);
     const invocation = join(fakeBin, "invocation.txt");
     const fakeNpx = join(fakeBin, "npx");
@@ -315,7 +316,7 @@ done
     assert.equal(blocker.fixable, false);
     assert.match(blocker.summary, /invalid.*refusing fallback/i);
 
-    const fakeBin = mkdtempSync(join(tmpdir(), "pjan-43-malformed-manifest-npx-"));
+    const fakeBin = mkdtempSync(join("/tmp", "pjan-43-malformed-manifest-npx-"));
     cleanup.push(fakeBin);
     const invocation = join(fakeBin, "invoked");
     const fakeNpx = join(fakeBin, "npx");
@@ -355,7 +356,7 @@ done
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
     assert.deepEqual(finding(audit, "bmad.scaffold").details, ["_bmad/core/config.yaml"]);
 
-    const fakeBin = mkdtempSync(join(tmpdir(), `pjan-43-${selection.name}-npx-`));
+    const fakeBin = mkdtempSync(join("/tmp", `pjan-43-${selection.name}-npx-`));
     cleanup.push(fakeBin);
     const invocation = join(fakeBin, "invocation.txt");
     const fakeNpx = join(fakeBin, "npx");

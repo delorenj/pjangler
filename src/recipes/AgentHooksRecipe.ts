@@ -31,7 +31,7 @@ export class AgentHooksRecipe extends Recipe {
   protected printNextSteps(): void {
     console.log("🪝 Agent-hooks layer installed!");
     console.log("   Next steps:");
-    console.log("   1. mise run skills:sync  # sync .agents/skills.json into local CLI dirs");
+    console.log("   1. pj skills sync --scope project --project .  # sync .agents/skills.json into local CLI dirs");
     console.log("   2. mise run hooks:sync   # generate .claude/settings.json + inject codex/kimi/hermes");
     console.log("   3. git add .claude/settings.json .agents/hooks .agents/skills.json && commit (codex/kimi/hermes are per-dev)");
     console.log("   4. mise run hindsight:setup   # set HINDSIGHT_OP_KEY_REF to your 1Password item first");
