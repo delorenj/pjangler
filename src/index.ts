@@ -57,6 +57,7 @@ import type { MigrationReport } from "./parity/index";
 import { isNotebookJsonInvocation, notebookParserFailureEnvelope, registerNotebookCli } from "./notebook/cli";
 import { notebookEnvelopeExitCode, renderNotebookJson } from "./notebook/output";
 import { registerSkillsCli } from "./skills/cli";
+import { registerCrankCli } from "./crank/cli";
 
 /** Red ✖ prefix for user-facing error lines. */
 const xmark = `${red(glyph.fail)}`;
@@ -1495,6 +1496,7 @@ program
 // inherits the setting.
 program.enablePositionalOptions();
 registerSkillsCli(program, exitAfterFlush);
+registerCrankCli(program);
 
 try {
   await program.parseAsync();
