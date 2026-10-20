@@ -35,9 +35,17 @@ run = "{{config_root}}/.mise/scripts/backfill-projects.sh"
 patterns = ["AGENTS.md"]
 task = "link:agentfiles"
 
+[[watch_files]]
+patterns = [".env.op"]
+task = "env:materialize"
+
 [tasks."link:agentfiles"]
 description = "Symlink all agent files to AGENTS.md"
 run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'"
+
+[tasks."env:materialize"]
+description = "Inject .env.op into .env"
+run = "'{{config_root}}/.mise/scripts/materialize-env.sh'"
 
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
