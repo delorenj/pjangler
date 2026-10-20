@@ -156,8 +156,9 @@ export async function runG33Companion(
     if (typeof callable !== "function") throw new Error(`Configured g33 export ${selection.exportName} is not callable`);
     const invoke = async (operation: CompanionRequest["operation"]): Promise<CompanionReply> => {
       const value = reply(await (callable as Callable)({ schemaVersion: 1, moduleId: "g33", operation, projectRoot, reason, options: selection.options }), operation);
-      if (operation !== "apply" && changedTreePaths(projectRoot, before!, snapshotTree(projectRoot)).length) {
-        throw new Error(`g33 adapter violated the no-write ${operation} contract`);
+      const written = operation === "apply" ? [] : changedTreePaths(projectRoot, before!, snapshotTree(projectRoot));
+      if (written.length) {
+        throw new Error(`g33 adapter violated the no-write ${operation} contract: ${written.slice(0, 10).join(", ")}${written.length > 10 ? ` (+${written.length - 10} more)` : ""}`);
       }
       return value;
     };
