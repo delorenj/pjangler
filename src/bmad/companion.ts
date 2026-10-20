@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
+import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../utils/tree-diff";
 import type { RecipeOwnedCheck } from "../parity/rules";
 
 /** PJangler's callable boundary; an owner adapter translates its public API. */
@@ -290,13 +290,7 @@ export function captureTreeBackup(root: string, current = root, backup: TreeBack
     throw error;
   }
   const rel = relative(root, current) || ".";
-  const sep = process.platform === "win32" ? "\\" : "/";
-  if (
-    rel === ".git"
-    || rel.startsWith(`.git${sep}`)
-    || rel === ".worktrees"
-    || rel.startsWith(`.worktrees${sep}`)
-  ) return backup;
+  if (excludedFromTreeSnapshot(rel)) return backup;
   if (stat.isSymbolicLink()) {
     backup.set(rel, { kind: "link", target: readlinkSync(current) });
   } else if (stat.isFile()) {
