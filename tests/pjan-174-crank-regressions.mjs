@@ -6,9 +6,9 @@
 // candidate/ladder resolution (live-exact, redis-exact, live-prefix,
 // project-name-as-is) is what can silently point a toggle at the wrong tab.
 // Everything here pins that mapping with a faked redis-cli/zellij shell
-// seam; the live smoke (real Redis + real zellij, `pj crank enable` from the
-// tower-of-lost-things repo, whose tab is "Pile of Dumb Things") is run by
-// hand.
+// seam; the live smoke (real Redis + real zellij, `pj crank enable` from
+// the tower-of-lost-things repo, whose tab is "Pile of Dumb Things") is run
+// by hand.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
@@ -343,7 +343,7 @@ console.log("list: an agent-matched tab is consumed, not orphaned");
       {
         slug: "tower-of-dumb-things",
         name: "Tower of Lost Things",
-        repoPath: "/home/delorenj/code/tower-of-lost-things",
+        repoPath: "/tmp/pjan-174/tower-of-lost-things",
         agents: [{ handle: "pile-of-dumb-things-pm", role: "pm" }],
       },
     ],
