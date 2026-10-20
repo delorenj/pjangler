@@ -9,6 +9,7 @@ import {
   readSelectionManifest,
   resolveSelection,
   sync,
+  writeActivationReceipt,
   type Diagnostic,
   type ResolvedBinding,
   type SyncOptions,
@@ -147,22 +148,87 @@ function bmadInstallerCopy(label: string, name: string): RootCollisionDecision {
   return { action: "exclude", detail: `${label} is the bmad-method installer's copy of ${name}; the project selection excludes the inherited ${name}` };
 }
 
+/** skillex's activation ownership lock, the resource its own selection edits and syncs take. */
+const ACTIVATION_LOCK = "skillex:activation:v2";
+
+/** True when `path` is `.agents/skills/<name>` (either spelling) for an installer-owned name. */
+function installerSkillPath(ctx: Context, path: string, installed: ReadonlySet<string>): boolean {
+  return installed.has(basename(path)) && projectPaths(ctx, join(".agents", "skills")).has(dirname(path));
+}
+
+/** A skillex refusal that only the BMAD installer's copy of a selected skill causes. */
+function installerOwnedFinding(ctx: Context, finding: Diagnostic, installed: ReadonlySet<string>): boolean {
+  return (finding.code === "E_OWNERSHIP_CHANGED" || finding.code === "E_ACTIVATION_CONFLICT")
+    && Boolean(finding.path) && installerSkillPath(ctx, finding.path!, installed);
+}
+
+export interface InstallerSkillHandoff {
+  /** Selected names now excluded from the project selection. */
+  excluded: string[];
+  /** Receipt claims dropped on links the installer replaced with real content. */
+  released: string[];
+  changedFiles: string[];
+}
+
 /**
- * Record installer-provided skills in the project manifest's `exclude` under
- * skillex's own activation lock (the resource its selection edits take), so a
- * concurrent sync never interleaves. Operator exclusions are kept; nothing is
- * ever removed from the list.
+ * PJAN-176: hand BMAD-installed skills over from Skillex, under skillex's own
+ * activation lock so a concurrent sync never interleaves. Two records change:
+ *
+ * - the project manifest's `exclude` gains every selected name the installer
+ *   provides (operator exclusions are kept; nothing is ever removed), and
+ * - the activation receipt drops its claim on any link the installer replaced
+ *   with a real directory (`pj init` links the inherited bmad pack before
+ *   bmad.scaffold runs, then the installer writes over those links, which
+ *   skillex reports as E_OWNERSHIP_CHANGED). Dropping a claim never deletes
+ *   anything: the content stays and skillex treats it as foreign.
+ *
+ * A dry run computes both and writes neither.
  */
-async function excludeInstallerSkills(ctx: Context, names: readonly string[]): Promise<{ path: string; added: string[] }> {
+export async function handOffInstallerSkills(ctx: Context): Promise<InstallerSkillHandoff> {
+  const none: InstallerSkillHandoff = { excluded: [], released: [], changedFiles: [] };
+  const installed = bmadInstalledSkills(ctx.repoRoot);
+  if (!installed.size) return none;
   const options = skillCoreOptions(ctx);
-  return withLock("skillex:activation:v2", async () => {
-    const snapshot = await readSelectionManifest(options.project);
-    if (!snapshot.exists || !snapshot.raw) throw new Error(`No project skills manifest at ${snapshot.path}`);
-    const current = Array.isArray(snapshot.raw.exclude) ? snapshot.raw.exclude.filter((name): name is string => typeof name === "string") : [];
-    const added = names.filter((name) => !current.includes(name));
-    if (added.length) await writeSelectionManifest(snapshot, { ...snapshot.raw, exclude: [...current, ...[...added].sort()] });
-    return { path: snapshot.path, added };
-  }, { home: ctx.homeDir, env: process.env });
+  const lock = { home: ctx.homeDir, env: process.env };
+  const plan = async (): Promise<InstallerSkillHandoff & { apply: () => Promise<void> }> => {
+    const declaration = await readSelectionManifest(options.project);
+    if (!declaration.exists || !declaration.raw) return { ...none, apply: async () => {} };
+    const selected = new Set((await projectBindings(ctx)).map((binding) => binding.name));
+    const current = Array.isArray(declaration.raw.exclude)
+      ? declaration.raw.exclude.filter((name): name is string => typeof name === "string") : [];
+    const excluded = [...installed].filter((name) => selected.has(name) && !current.includes(name)).sort();
+    const receipt = await readActivationReceipt<{ links?: Record<string, { kind?: string }> }>(realpathSync(ctx.repoRoot), lock);
+    const links = receipt.document?.data?.links ?? {};
+    const released = Object.keys(links).filter((path) => {
+      if (!installerSkillPath(ctx, path, installed)) return false;
+      try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; }
+    }).sort();
+    const changedFiles = [...(excluded.length ? [declaration.path] : []), ...(released.length ? [receipt.path] : [])];
+    return {
+      excluded, released: released.map((path) => basename(path)), changedFiles,
+      apply: async () => {
+        if (excluded.length) await writeSelectionManifest(declaration, { ...declaration.raw, exclude: [...current, ...excluded] });
+        if (released.length && receipt.document) {
+          const kept = Object.fromEntries(Object.entries(links).filter(([path]) => !released.includes(path)));
+          await writeActivationReceipt(receipt, { ...receipt.document.data, links: kept }, lock);
+        }
+      },
+    };
+  };
+  if (ctx.dryRun) { const { apply: _apply, ...preview } = await plan(); return preview; }
+  return withLock(ACTIVATION_LOCK, async () => {
+    const { apply, ...result } = await plan();
+    await apply();
+    return result;
+  }, lock);
+}
+
+function handOffDetails(handoff: InstallerSkillHandoff, dryRun: boolean): string[] {
+  const verb = dryRun ? "would " : "";
+  return [
+    ...handoff.excluded.map((name) => `${verb}exclude ${name}: .agents/skills/${name} is the bmad-method installer's copy, which satisfies the inherited selection`),
+    ...handoff.released.map((name) => `${verb}release receipt ownership of .agents/skills/${name}: the bmad-method installer replaced the Skillex link with its own copy`),
+  ];
 }
 
 /**
@@ -293,6 +359,12 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
         : `resolvable root collision: ${decision.detail.replace(/^replaced/, "replace")}`);
     }
   }
+  // PJAN-176: refusals only at skills the BMAD installer provides are exactly
+  // what migrate's handoff resolves (exclusion + receipt release).
+  const installed = bmadInstalledSkills(ctx.repoRoot);
+  const errors = result.findings.filter((finding) => finding.severity === "error");
+  const installerOnly = errors.length > 0 && errors.every((finding) => installerOwnedFinding(ctx, finding, installed));
+  if (installerOnly) details.push("resolvable: every refusal is at a skill the bmad-method installer provides; migrate excludes the inherited selection and releases the replaced links");
   if (result.exit === 2 || result.exit === 3) details.push(migrationGuidance(ctx));
   // PJAN-141: the receipt records the catalog commit it was written against, so
   // ANY commit to all-skills leaves every project's receipt stale while every
@@ -313,7 +385,7 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
       : receiptOnly ? "Skillex activation is in parity; its receipt predates the current catalog commit"
       : `Skillex inspection returned exit ${result.exit}`,
     details,
-    fixable: result.exit === 0 || result.exit === 6 || conflictResolvable
+    fixable: result.exit === 0 || result.exit === 6 || conflictResolvable || installerOnly
       || result.findings.some((finding) => finding.code === "E_NO_PROJECT_MANIFEST"),
   };
 }
@@ -342,7 +414,7 @@ export interface SkillSynchronizationOptions {
  * The public core owns manifests, receipts, alias publication and pruning.
  * PJangler only clears legacy links that collide with a selected skill
  * (classifyRootCollision), one refusal at a time, and never adopts anything.
- * A collision the BMAD installer owns is recorded as a project exclusion.
+ * Skills the BMAD installer provides are handed off first (handOffInstallerSkills).
  */
 export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchronizationOptions = {}): Promise<SkillSynchronization> {
   const options = skillCoreOptions(ctx);
@@ -364,8 +436,15 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
         return { ok: true, changedFiles: [...new Set(changedFiles)], details };
       }
     }
+    // PJAN-176: BMAD-installed skills satisfy their inherited selection before
+    // skillex plans anything, so the sync below never refuses at them.
+    let handoff = await handOffInstallerSkills(ctx);
+    changedFiles.push(...handoff.changedFiles);
+    details.push(...handOffDetails(handoff, Boolean(ctx.dryRun)));
+    const handedOff = new Set([...handoff.excluded, ...handoff.released]);
+    const installed = bmadInstalledSkills(ctx.repoRoot);
     const unlinked = new Set<string>();
-    const excluded = new Set<string>();
+    let rehanded = false;
     for (let round = 0; ; round++) {
       const result = await sync({ ...options, dryRun: Boolean(ctx.dryRun) });
       const conflict = result.ok ? undefined : activationConflict(ctx, result.findings);
@@ -394,35 +473,42 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
             changedFiles.push(path);
             details.push(`would ${decision.detail.replace(/^replaced/, "replace")}`);
           }
-          if (excludable.length) {
-            changedFiles.push(join(resolve(ctx.repoRoot), ".agents", "skills.json"));
-            details.push(...excludable.map(({ decision }) => `would exclude: ${decision.detail}`));
+          // The handoff preview above already reports the installer's names.
+          for (const { decision } of excludable.filter(({ path }) => !handedOff.has(basename(path)))) {
+            details.push(`would exclude: ${decision.detail}`);
           }
           return { ok: true, changedFiles: [...new Set(changedFiles)], details };
         }
         const fresh = replaceable.filter(({ path }) => !unlinked.has(path));
-        const freshExclusions = excludable.filter(({ path }) => !excluded.has(basename(path)));
-        if ((fresh.length || freshExclusions.length) && round < MAX_ROOT_COLLISION_ROUNDS) {
+        if (fresh.length && round < MAX_ROOT_COLLISION_ROUNDS) {
           for (const { path, decision } of fresh) {
             unlinkSync(path);
             unlinked.add(path);
             changedFiles.push(path);
             details.push(decision.detail);
           }
-          if (freshExclusions.length) {
-            const names = freshExclusions.map(({ path }) => basename(path));
-            const recorded = await excludeInstallerSkills(ctx, names);
-            names.forEach((name) => excluded.add(name));
-            if (recorded.added.length) changedFiles.push(recorded.path);
-            details.push(...freshExclusions.map(({ decision }) => `excluded: ${decision.detail}`));
-          }
           continue;
+        }
+        // An installer copy that appeared after the first handoff (only an
+        // interleaved install can do that) is handed off once more.
+        if (excludable.length && !rehanded) {
+          rehanded = true;
+          handoff = await handOffInstallerSkills(ctx);
+          changedFiles.push(...handoff.changedFiles);
+          details.push(...handOffDetails(handoff, false));
+          if (handoff.changedFiles.length) continue;
         }
         details.push(round >= MAX_ROOT_COLLISION_ROUNDS ? `stopped after ${MAX_ROOT_COLLISION_ROUNDS} root collision rounds`
           : `no progress: ${conflict?.path ?? "a root collision"} collided again after every classified link was replaced`);
       }
       const changes = ctx.dryRun ? result.data?.changes : result.data?.applied;
       changedFiles.push(...(changes ?? []).map((change) => change.path));
+      // A preview cannot apply the handoff, so skillex still refuses at the
+      // names it hands off; those refusals are what the handoff resolves.
+      const errors = result.findings.filter((finding) => finding.severity === "error");
+      const previewResolved = Boolean(ctx.dryRun) && !result.ok && errors.length > 0
+        && errors.every((finding) => installerOwnedFinding(ctx, finding, installed) && handedOff.has(basename(finding.path!)));
+      if (previewResolved) return { ok: true, changedFiles: [...new Set(changedFiles)], details };
       details.push(...skillDiagnostics(result.findings));
       if (!result.ok) details.push(migrationGuidance(ctx));
       return { ok: result.ok, changedFiles: [...new Set(changedFiles)], details };
@@ -436,4 +522,15 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
     details.push(migrationGuidance(ctx));
     return { ok: false, changedFiles, details };
   }
+}
+
+/**
+ * PJAN-176: after bmad-method runs, hand its skills over from Skillex and
+ * re-sync, so the install never leaves the project refusing at them (pj init
+ * links the inherited bmad pack first, then bmad.scaffold writes over it). A
+ * project without a skills manifest has nothing to reconcile.
+ */
+export async function reconcileInstallerSkills(ctx: Context): Promise<SkillSynchronization> {
+  if (ctx.dryRun || !(await readSelectionManifest(resolve(ctx.repoRoot))).exists) return { ok: true, changedFiles: [], details: [] };
+  return synchronizeProjectSkills(ctx);
 }

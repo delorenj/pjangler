@@ -15,7 +15,7 @@ import YAML from "yaml";
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLIS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
-import { auditProjectSkills, currentSkillActivations, synchronizeProjectSkills } from "./skills";
+import { auditProjectSkills, currentSkillActivations, reconcileInstallerSkills, synchronizeProjectSkills } from "./skills";
 import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
 import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
 import {
@@ -3787,8 +3787,31 @@ function ensureSupportedCliProjections(ctx: Context): { changedFiles: string[]; 
 }
 
 
+/**
+ * PJAN-176: bmad-method writes real skill directories over whatever Skillex
+ * linked at those names, so the rule that ran it hands those skills over
+ * (src/parity/skills.ts reconcileInstallerSkills) instead of leaving the
+ * project refusing until skills.project-manifest runs again.
+ */
+function withInstallerSkillHandoff(check: RecipeOwnedCheck): RecipeOwnedCheck {
+  if (check.id !== "bmad.scaffold" && check.id !== "bmad.version") return check;
+  return {
+    ...check,
+    migrate: async (ctx, finding) => {
+      const result = await check.migrate(ctx, finding);
+      if (ctx.dryRun || result.status !== "applied") return result;
+      const handoff = await reconcileInstallerSkills(ctx);
+      return {
+        ...result,
+        changedFiles: [...new Set([...result.changedFiles, ...handoff.changedFiles])],
+        details: [...result.details, ...handoff.details, ...(handoff.ok ? [] : ["skills handoff after the BMAD install is incomplete; see skills.project-manifest"])],
+      };
+    },
+  };
+}
+
 export function createBmadChecks(): RecipeOwnedCheck[] {
-return [
+return ([
   {
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
@@ -4279,7 +4302,7 @@ return [
       };
     },
   },
-];
+] satisfies RecipeOwnedCheck[]).map(withInstallerSkillHandoff);
 }
 
 
