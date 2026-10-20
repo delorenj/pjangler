@@ -18,7 +18,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
-import { readActivationReceipt } from "@delorenj/skillex";
+import { readActivationReceipt, sync } from "@delorenj/skillex";
 
 const root = resolve(import.meta.dirname, "..");
 const bundle = join(root, "node_modules", ".cache", `pjan-176-${process.pid}.mjs`);
@@ -26,13 +26,13 @@ buildSync({
   stdin: {
     contents: [
       'export { createMiseChecks, createAgentHooksChecks } from "./src/parity/rules";',
-      'export { reconcileInstallerSkills } from "./src/parity/skills";',
+      'export { reconcileInstallerSkills, handOffInstallerSkills } from "./src/parity/skills";',
     ].join("\n"),
     resolveDir: root,
   },
   outfile: bundle, bundle: true, packages: "external", platform: "node", format: "esm", logLevel: "warning",
 });
-const { createMiseChecks, createAgentHooksChecks, reconcileInstallerSkills } = await import(pathToFileURL(bundle).href);
+const { createMiseChecks, createAgentHooksChecks, reconcileInstallerSkills, handOffInstallerSkills } = await import(pathToFileURL(bundle).href);
 rmSync(bundle);
 
 const mise = createMiseChecks().find((check) => check.id === "mise.config-root");
@@ -44,14 +44,14 @@ function put(path, content) { mkdirSync(dirname(path), { recursive: true }); wri
 function skill(name, body = "") { return `---\nname: ${name}\ndescription: Fixture ${name}\n---\n# ${name}\n${body}`; }
 const INSTALLED = skill("bmad-alpha", "the installer's copy\n");
 
-async function fixture({ projectExclude } = {}) {
+async function fixture({ projectExclude, projectSkills = [], inherit = true } = {}) {
   const base = realpathSync(mkdtempSync("/tmp/pjan-176-"));
   const project = join(base, "project"), home = join(base, "home"), catalog = join(base, "registry");
   for (const path of [project, home, join(catalog, "all-skills"), join(catalog, "sets"), join(catalog, "packs")]) mkdirSync(path, { recursive: true });
   for (const name of ["bmad-alpha", "beta"]) put(join(catalog, "all-skills", name, "SKILL.md"), skill(name));
   // Inherited, as the real global bmad pack is.
   put(join(home, ".agents", "skills.json"), '{"skills":["bmad-alpha","beta"]}\n');
-  put(join(project, ".agents", "skills.json"), `${JSON.stringify({ inherit_global: true, skills: [], ...(projectExclude ? { exclude: projectExclude } : {}) })}\n`);
+  put(join(project, ".agents", "skills.json"), `${JSON.stringify({ inherit_global: inherit, skills: projectSkills, ...(projectExclude ? { exclude: projectExclude } : {}) })}\n`);
   put(join(project, "mise.toml"), '[env]\n_.path = [".mise/scripts"]\n');
   const saved = { registry: process.env.PJ_SKILLS_REGISTRY_ROOT, state: process.env.XDG_STATE_HOME };
   process.env.PJ_SKILLS_REGISTRY_ROOT = catalog;
@@ -70,7 +70,8 @@ async function fixture({ projectExclude } = {}) {
   git(catalog)("commit", "-qm", "catalog");
   const R = join(project, ".agents", "skills");
   return {
-    project, ctx, R,
+    project, ctx, R, home, catalog,
+    syncOptions: { cwd: project, project, scope: "project", home, env: process.env, registryRoot: catalog },
     /** What bmad-method leaves: a real skill directory plus its manifest row. */
     install({ listed = true } = {}) {
       rmSync(join(R, "bmad-alpha"), { recursive: true, force: true });
@@ -78,6 +79,12 @@ async function fixture({ projectExclude } = {}) {
       put(join(project, "_bmad", "_config", "skill-manifest.csv"), "canonicalId,name,description,module,path\n"
         + (listed ? '"bmad-alpha","bmad-alpha","Fixture","core","_bmad/core/bmad-alpha/SKILL.md"\n' : ""));
     },
+    /** The installer stops providing bmad-alpha (removed module, BMAD uninstalled). */
+    uninstall() {
+      rmSync(join(R, "bmad-alpha"), { recursive: true, force: true });
+      put(join(project, "_bmad", "_config", "skill-manifest.csv"), "canonicalId,name,description,module,path\n");
+    },
+    manifestText: () => readFileSync(join(project, ".agents", "skills.json"), "utf8"),
     manifest: () => JSON.parse(readFileSync(join(project, ".agents", "skills.json"), "utf8")),
     receiptLinks: async () => Object.keys((await readActivationReceipt(project, { home, env: process.env })).document?.data?.links ?? {}),
     audit: () => skills.audit(ctx),
@@ -160,5 +167,77 @@ test("PJAN-176: operator exclusions are kept", async () => {
     assert.equal((await f.migrate()).status, "applied");
     assert.deepEqual(f.manifest().exclude, ["beta", "bmad-alpha"]);
     assert.equal((await f.audit()).status, "pass");
+  } finally { f.close(); }
+});
+
+test("PJAN-176: an exclusion pjangler wrote is withdrawn once the installer stops providing the skill", async () => {
+  const f = await fixture({ projectExclude: ["beta"] });
+  try {
+    f.install();
+    await f.migrate();
+    assert.deepEqual(f.manifest().exclude, ["beta", "bmad-alpha"]);
+    f.uninstall();
+    const finding = await f.audit();
+    assert.equal(finding.status, "warn", "a stale handoff exclusion is surfaced, not silently passing");
+    assert.equal(finding.fixable, true);
+    assert.match(finding.details.join("\n"), /stale exclusion: bmad-alpha/);
+    await f.migrate();
+    assert.deepEqual(f.manifest().exclude, ["beta"], "only pjangler's own exclusion is withdrawn");
+    assert.equal(realpathSync(join(f.R, "bmad-alpha")), realpathSync(join(f.catalog, "all-skills", "bmad-alpha")), "the inherited catalog skill returns");
+    assert.equal((await f.audit()).status, "pass");
+  } finally { f.close(); }
+});
+
+test("PJAN-176: an installer copy of an explicitly selected skill keeps blocking (the operator's call)", async () => {
+  const f = await fixture({ projectSkills: ["bmad-alpha"], inherit: false });
+  try {
+    f.install();
+    const finding = await f.audit();
+    assert.equal(finding.fixable, false, JSON.stringify(finding.details));
+    assert.match(finding.details.join("\n"), /also selects explicitly/);
+    const before = f.manifestText();
+    await f.migrate();
+    assert.equal(f.manifestText(), before, "an explicit selection is never excluded");
+    untouched(f);
+  } finally { f.close(); }
+});
+
+test("PJAN-176: nothing is excluded beside a set (skillex refuses exclusions there)", async () => {
+  const f = await fixture();
+  try {
+    f.install();
+    put(join(f.project, ".agents", "skills.json"), `${JSON.stringify({ sets: ["team"] })}\n`);
+    const before = f.manifestText();
+    const handoff = await handOffInstallerSkills(f.ctx);
+    assert.match(handoff.skipped ?? "", /a set replaces the project skills root/);
+    assert.deepEqual(handoff.changedFiles, []);
+    assert.equal(f.manifestText(), before);
+  } finally { f.close(); }
+});
+
+test("PJAN-176: an interrupted skillex operation's journal is left for skillex to recover", async () => {
+  const f = await fixture();
+  try {
+    await f.migrate();
+    // Drop bmad-alpha from the selection and interrupt the sync mid-operation,
+    // as SIGINT does: the receipt keeps a pending journal on the bmad-alpha link.
+    put(join(f.home, ".agents", "skills.json"), '{"skills":["beta"]}\n');
+    const receiptText = async () => { try { return readFileSync((await readActivationReceipt(f.project, { home: f.home, env: process.env })).path, "utf8"); } catch { return ""; } };
+    let pending = false;
+    const signal = { get aborted() { return pending; } };
+    const poll = setInterval(async () => { if ((await receiptText()).includes('"pending"')) pending = true; }, 0);
+    const interrupted = await sync({ ...f.syncOptions, signal });
+    clearInterval(poll);
+    const receipt = await readActivationReceipt(f.project, { home: f.home, env: process.env });
+    // A sync that finished before the journal was observed proves nothing.
+    assert.notEqual(receipt.document?.data?.pending, undefined, `precondition: the sync was interrupted mid-operation (${JSON.stringify(interrupted.findings)})`);
+    put(join(f.home, ".agents", "skills.json"), '{"skills":["bmad-alpha","beta"]}\n');
+    f.install();
+    const before = JSON.stringify(receipt.document.data);
+    const handoff = await handOffInstallerSkills(f.ctx);
+    assert.match(handoff.skipped ?? "", /interrupted skillex operation/);
+    const after = await readActivationReceipt(f.project, { home: f.home, env: process.env });
+    assert.equal(JSON.stringify(after.document?.data), before, "the receipt is untouched while skillex owes a recovery");
+    assert.equal((await f.audit()).fixable, false, "the audit does not send the operator into the handoff");
   } finally { f.close(); }
 });

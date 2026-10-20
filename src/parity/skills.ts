@@ -1,4 +1,6 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   initScope,
@@ -165,53 +167,113 @@ function installerOwnedFinding(ctx: Context, finding: Diagnostic, installed: Rea
 export interface InstallerSkillHandoff {
   /** Selected names now excluded from the project selection. */
   excluded: string[];
+  /** Earlier handoff exclusions withdrawn because the installer no longer provides the skill. */
+  restored: string[];
   /** Receipt claims dropped on links the installer replaced with real content. */
   released: string[];
+  /** Why nothing was handed off when something could have been. */
+  skipped?: string;
   changedFiles: string[];
 }
 
 /**
+ * Which exclusions pjangler itself wrote. The manifest schema has no room for
+ * provenance, and an exclusion pjangler wrote is indistinguishable from an
+ * operator's, so the handoff keeps its own record (host state, beside skillex's
+ * receipts) and only ever withdraws names it recorded.
+ */
+function handoffRecordPath(ctx: Context): string {
+  const stateHome = process.env.XDG_STATE_HOME?.trim() || join(ctx.homeDir || homedir(), ".local", "state");
+  const key = createHash("sha256").update(realpathOf(ctx.repoRoot) ?? resolve(ctx.repoRoot)).digest("hex");
+  return join(stateHome, "pjangler", "skill-handoffs", `${key}.json`);
+}
+
+function readHandoffRecord(ctx: Context): string[] {
+  try {
+    const value = JSON.parse(readFileSync(handoffRecordPath(ctx), "utf8")) as { excluded?: unknown };
+    return Array.isArray(value.excluded) ? value.excluded.filter((name): name is string => typeof name === "string") : [];
+  } catch { return []; }
+}
+
+function writeHandoffRecord(ctx: Context, names: readonly string[]): void {
+  const path = handoffRecordPath(ctx);
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ project: realpathOf(ctx.repoRoot) ?? resolve(ctx.repoRoot), excluded: [...new Set(names)].sort() }, null, 2)}\n`);
+  renameSync(temporary, path);
+}
+
+/** A project-scope selection of `name` that is not inheritance: the operator asked for it here. */
+function explicitlySelected(binding: ResolvedBinding | undefined): boolean {
+  return Boolean(binding?.origins.some((origin) => origin.scope === "project" && origin.kind !== "inherit"));
+}
+
+/**
  * PJAN-176: hand BMAD-installed skills over from Skillex, under skillex's own
- * activation lock so a concurrent sync never interleaves. Two records change:
+ * activation lock so a concurrent sync never interleaves:
  *
- * - the project manifest's `exclude` gains every selected name the installer
- *   provides (operator exclusions are kept; nothing is ever removed), and
+ * - the project manifest's `exclude` gains every INHERITED selected name the
+ *   installer provides (a name the project selects explicitly is the
+ *   operator's call and keeps colliding), and loses a name pjangler excluded
+ *   earlier once the installer stops providing it, so the catalog skill comes
+ *   back; operator exclusions are never touched;
  * - the activation receipt drops its claim on any link the installer replaced
  *   with a real directory (`pj init` links the inherited bmad pack before
  *   bmad.scaffold runs, then the installer writes over those links, which
  *   skillex reports as E_OWNERSHIP_CHANGED). Dropping a claim never deletes
  *   anything: the content stays and skillex treats it as foreign.
  *
- * A dry run computes both and writes neither.
+ * Nothing is handed off while a set replaces the root (skillex refuses
+ * exclusions beside a set) or while the receipt carries an interrupted
+ * operation's journal (skillex must recover that first; rewriting the links
+ * under it leaves a receipt skillex can no longer read). A dry run computes
+ * everything and writes nothing.
  */
 export async function handOffInstallerSkills(ctx: Context): Promise<InstallerSkillHandoff> {
-  const none: InstallerSkillHandoff = { excluded: [], released: [], changedFiles: [] };
+  const none: InstallerSkillHandoff = { excluded: [], restored: [], released: [], changedFiles: [] };
   const installed = bmadInstalledSkills(ctx.repoRoot);
-  if (!installed.size) return none;
+  const recorded = readHandoffRecord(ctx);
+  if (!installed.size && !recorded.length) return none;
   const options = skillCoreOptions(ctx);
   const lock = { home: ctx.homeDir, env: process.env };
   const plan = async (): Promise<InstallerSkillHandoff & { apply: () => Promise<void> }> => {
+    const skip = (skipped: string) => ({ ...none, skipped, apply: async () => {} });
     const declaration = await readSelectionManifest(options.project);
     if (!declaration.exists || !declaration.raw) return { ...none, apply: async () => {} };
-    const selected = new Set((await projectBindings(ctx)).map((binding) => binding.name));
+    if (Array.isArray(declaration.raw.sets) && declaration.raw.sets.length) {
+      return skip("a set replaces the project skills root, so installer-provided skills cannot be excluded beside it");
+    }
+    const receipt = await readActivationReceipt<{ links?: Record<string, { kind?: string }>; pending?: unknown }>(realpathSync(ctx.repoRoot), lock);
+    if (receipt.document?.data?.pending !== undefined) {
+      return skip("the activation receipt records an interrupted skillex operation; run pj skills sync to recover it first");
+    }
+    const bindings = new Map((await projectBindings(ctx)).map((binding) => [binding.name, binding]));
     const current = Array.isArray(declaration.raw.exclude)
       ? declaration.raw.exclude.filter((name): name is string => typeof name === "string") : [];
-    const excluded = [...installed].filter((name) => selected.has(name) && !current.includes(name)).sort();
-    const receipt = await readActivationReceipt<{ links?: Record<string, { kind?: string }> }>(realpathSync(ctx.repoRoot), lock);
+    const excluded = [...installed].filter((name) => bindings.has(name) && !explicitlySelected(bindings.get(name)) && !current.includes(name)).sort();
+    const restored = recorded.filter((name) => !installed.has(name) && current.includes(name)).sort();
     const links = receipt.document?.data?.links ?? {};
     const released = Object.keys(links).filter((path) => {
       if (!installerSkillPath(ctx, path, installed)) return false;
       try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; }
     }).sort();
-    const changedFiles = [...(excluded.length ? [declaration.path] : []), ...(released.length ? [receipt.path] : [])];
+    const record = [...recorded.filter((name) => installed.has(name) && current.includes(name)), ...excluded];
+    const recordChanged = record.length !== recorded.length || record.some((name) => !recorded.includes(name));
+    const manifestChanged = excluded.length > 0 || restored.length > 0;
+    const changedFiles = [...(manifestChanged ? [declaration.path] : []), ...(released.length ? [receipt.path] : [])];
     return {
-      excluded, released: released.map((path) => basename(path)), changedFiles,
+      excluded, restored, released: released.map((path) => basename(path)), changedFiles,
       apply: async () => {
-        if (excluded.length) await writeSelectionManifest(declaration, { ...declaration.raw, exclude: [...current, ...excluded] });
+        if (manifestChanged) {
+          const next = [...current.filter((name) => !restored.includes(name)), ...excluded];
+          const { exclude: _exclude, ...rest } = declaration.raw!;
+          await writeSelectionManifest(declaration, next.length ? { ...rest, exclude: next } : rest);
+        }
         if (released.length && receipt.document) {
           const kept = Object.fromEntries(Object.entries(links).filter(([path]) => !released.includes(path)));
           await writeActivationReceipt(receipt, { ...receipt.document.data, links: kept }, lock);
         }
+        if (recordChanged) writeHandoffRecord(ctx, record);
       },
     };
   };
@@ -223,9 +285,24 @@ export async function handOffInstallerSkills(ctx: Context): Promise<InstallerSki
   }, lock);
 }
 
+/**
+ * Every refusal is at an installer-provided name the handoff covers, and the
+ * full root classification (not just skillex's first refusal) finds no
+ * blocker anywhere else.
+ */
+async function installerRefusalsResolvable(ctx: Context, errors: readonly Diagnostic[], handoff: InstallerSkillHandoff): Promise<boolean> {
+  if (handoff.skipped) return false;
+  const installed = bmadInstalledSkills(ctx.repoRoot);
+  const covered = new Set([...handoff.excluded, ...handoff.released]);
+  if (!errors.every((finding) => installerOwnedFinding(ctx, finding, installed) && covered.has(basename(finding.path!)))) return false;
+  return (await predictRootCollisions(ctx, [])).every(({ path, decision }) => decision.action !== "block" || covered.has(basename(path)));
+}
+
 function handOffDetails(handoff: InstallerSkillHandoff, dryRun: boolean): string[] {
   const verb = dryRun ? "would " : "";
   return [
+    ...(handoff.skipped ? [`installer skill handoff skipped: ${handoff.skipped}`] : []),
+    ...handoff.restored.map((name) => `${verb}withdraw the exclusion of ${name}: the bmad-method installer no longer provides it, so the inherited catalog skill returns`),
     ...handoff.excluded.map((name) => `${verb}exclude ${name}: .agents/skills/${name} is the bmad-method installer's copy, which satisfies the inherited selection`),
     ...handoff.released.map((name) => `${verb}release receipt ownership of .agents/skills/${name}: the bmad-method installer replaced the Skillex link with its own copy`),
   ];
@@ -248,8 +325,12 @@ export async function classifyRootCollision(ctx: Context, path: string): Promise
   let stat;
   try { stat = lstatSync(path); } catch { return { action: "block", detail: `${label} disappeared while resolving a root collision` }; }
   if (!stat.isSymbolicLink()) {
-    return bmadInstalledSkills(ctx.repoRoot).has(basename(path)) ? bmadInstallerCopy(label, basename(path))
-      : realEntryCollision(label, basename(path), stat.isDirectory());
+    const name = basename(path);
+    if (!bmadInstalledSkills(ctx.repoRoot).has(name)) return realEntryCollision(label, name, stat.isDirectory());
+    if (explicitlySelected((await projectBindings(ctx)).find((binding) => binding.name === name))) {
+      return { action: "block", detail: `${label} is the bmad-method installer's copy of ${name}, which this project also selects explicitly; drop one of them` };
+    }
+    return bmadInstallerCopy(label, name);
   }
   let real: string | undefined;
   try { real = realpathSync(path); } catch { real = undefined; }
@@ -360,11 +441,15 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
     }
   }
   // PJAN-176: refusals only at skills the BMAD installer provides are exactly
-  // what migrate's handoff resolves (exclusion + receipt release).
-  const installed = bmadInstalledSkills(ctx.repoRoot);
+  // what migrate's handoff resolves (exclusion + receipt release). skillex
+  // reports its FIRST refusal only, so the verdict also needs the full
+  // root-collision classification to find no blocker behind it.
+  const handoff = await handOffInstallerSkills({ ...ctx, dryRun: true });
   const errors = result.findings.filter((finding) => finding.severity === "error");
-  const installerOnly = errors.length > 0 && errors.every((finding) => installerOwnedFinding(ctx, finding, installed));
+  const installerOnly = errors.length > 0 && await installerRefusalsResolvable(ctx, errors, handoff);
   if (installerOnly) details.push("resolvable: every refusal is at a skill the bmad-method installer provides; migrate excludes the inherited selection and releases the replaced links");
+  if (handoff.skipped) details.push(`installer skill handoff unavailable: ${handoff.skipped}`);
+  if (handoff.restored.length) details.push(...handoff.restored.map((name) => `stale exclusion: ${name} was excluded for the bmad-method installer's copy, which is gone; migrate restores the inherited catalog skill`));
   if (result.exit === 2 || result.exit === 3) details.push(migrationGuidance(ctx));
   // PJAN-141: the receipt records the catalog commit it was written against, so
   // ANY commit to all-skills leaves every project's receipt stale while every
@@ -377,15 +462,16 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
     && changes.every((change) => change.action === "write-receipt")
     && !result.findings.some((finding) => finding.severity === "error");
   if (receiptOnly) details.push("advisory: only the activation receipt is stale (the catalog moved); every link already resolves to its selected skill");
+  const staleHandoff = handoff.restored.length > 0;
   return {
     id: "skills.project-manifest",
     title: "Skillex project skills",
-    status: result.exit === 0 ? "pass" : result.exit === 4 || receiptOnly ? "warn" : "fail",
+    status: result.exit === 0 ? (staleHandoff ? "warn" : "pass") : result.exit === 4 || receiptOnly ? "warn" : "fail",
     summary: result.exit === 0 ? "Skillex declaration and activation are in parity"
       : receiptOnly ? "Skillex activation is in parity; its receipt predates the current catalog commit"
       : `Skillex inspection returned exit ${result.exit}`,
     details,
-    fixable: result.exit === 0 || result.exit === 6 || conflictResolvable || installerOnly
+    fixable: result.exit === 0 || result.exit === 6 || conflictResolvable || installerOnly || staleHandoff
       || result.findings.some((finding) => finding.code === "E_NO_PROJECT_MANIFEST"),
   };
 }
@@ -442,7 +528,6 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
     changedFiles.push(...handoff.changedFiles);
     details.push(...handOffDetails(handoff, Boolean(ctx.dryRun)));
     const handedOff = new Set([...handoff.excluded, ...handoff.released]);
-    const installed = bmadInstalledSkills(ctx.repoRoot);
     const unlinked = new Set<string>();
     let rehanded = false;
     for (let round = 0; ; round++) {
@@ -477,6 +562,7 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
           for (const { decision } of excludable.filter(({ path }) => !handedOff.has(basename(path)))) {
             details.push(`would exclude: ${decision.detail}`);
           }
+          changedFiles.push(...(result.data?.changes ?? []).map((change) => change.path));
           return { ok: true, changedFiles: [...new Set(changedFiles)], details };
         }
         const fresh = replaceable.filter(({ path }) => !unlinked.has(path));
@@ -507,7 +593,7 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
       // names it hands off; those refusals are what the handoff resolves.
       const errors = result.findings.filter((finding) => finding.severity === "error");
       const previewResolved = Boolean(ctx.dryRun) && !result.ok && errors.length > 0
-        && errors.every((finding) => installerOwnedFinding(ctx, finding, installed) && handedOff.has(basename(finding.path!)));
+        && await installerRefusalsResolvable(ctx, errors, handoff);
       if (previewResolved) return { ok: true, changedFiles: [...new Set(changedFiles)], details };
       details.push(...skillDiagnostics(result.findings));
       if (!result.ok) details.push(migrationGuidance(ctx));

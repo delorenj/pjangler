@@ -3800,7 +3800,11 @@ function withInstallerSkillHandoff(check: RecipeOwnedCheck): RecipeOwnedCheck {
     migrate: async (ctx, finding) => {
       const result = await check.migrate(ctx, finding);
       if (ctx.dryRun || result.status !== "applied") return result;
-      const handoff = await reconcileInstallerSkills(ctx);
+      // The install already happened; a handoff failure is reported beside it,
+      // never in place of it.
+      let handoff;
+      try { handoff = await reconcileInstallerSkills(ctx); }
+      catch (error) { handoff = { ok: false, changedFiles: [], details: [error instanceof Error ? error.message : String(error)] }; }
       return {
         ...result,
         changedFiles: [...new Set([...result.changedFiles, ...handoff.changedFiles])],
