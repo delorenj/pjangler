@@ -238,16 +238,24 @@ export async function handOffInstallerSkills(ctx: Context): Promise<InstallerSki
   const lock = { home: ctx.homeDir, env: process.env };
   const plan = async (): Promise<InstallerSkillHandoff & { apply: () => Promise<void> }> => {
     const skip = (skipped: string) => ({ ...none, skipped, apply: async () => {} });
-    const declaration = await readSelectionManifest(options.project);
+    // An unreadable declaration is skillex's finding to report (the audit and
+    // sync both relay it); the handoff never turns it into a crash.
+    let declaration: Awaited<ReturnType<typeof readSelectionManifest>>;
+    try { declaration = await readSelectionManifest(options.project); }
+    catch (error) { return skip(`the project skills manifest is invalid (${error instanceof Error ? error.message : String(error)})`); }
     if (!declaration.exists || !declaration.raw) return { ...none, apply: async () => {} };
     if (Array.isArray(declaration.raw.sets) && declaration.raw.sets.length) {
       return skip("a set replaces the project skills root, so installer-provided skills cannot be excluded beside it");
     }
-    const receipt = await readActivationReceipt<{ links?: Record<string, { kind?: string }>; pending?: unknown }>(realpathSync(ctx.repoRoot), lock);
+    let receipt: Awaited<ReturnType<typeof readActivationReceipt<{ links?: Record<string, { kind?: string }>; pending?: unknown }>>>;
+    try { receipt = await readActivationReceipt(realpathSync(ctx.repoRoot), lock); }
+    catch (error) { return skip(`the activation receipt is unreadable (${error instanceof Error ? error.message : String(error)})`); }
+    let bindings: Map<string, ResolvedBinding>;
+    try { bindings = new Map((await projectBindings(ctx)).map((binding) => [binding.name, binding])); }
+    catch (error) { return skip(`the project selection does not resolve (${error instanceof Error ? error.message : String(error)})`); }
     if (receipt.document?.data?.pending !== undefined) {
       return skip("the activation receipt records an interrupted skillex operation; run pj skills sync to recover it first");
     }
-    const bindings = new Map((await projectBindings(ctx)).map((binding) => [binding.name, binding]));
     const current = Array.isArray(declaration.raw.exclude)
       ? declaration.raw.exclude.filter((name): name is string => typeof name === "string") : [];
     const excluded = [...installed].filter((name) => bindings.has(name) && !explicitlySelected(bindings.get(name)) && !current.includes(name)).sort();
