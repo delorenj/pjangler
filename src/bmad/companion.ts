@@ -290,7 +290,7 @@ export function captureTreeBackup(root: string, current = root, backup: TreeBack
     throw error;
   }
   const rel = relative(root, current) || ".";
-  if (excludedFromTreeSnapshot(rel)) return backup;
+  if (excludedFromTreeSnapshot(rel, current)) return backup;
   if (stat.isSymbolicLink()) {
     backup.set(rel, { kind: "link", target: readlinkSync(current) });
   } else if (stat.isFile()) {
@@ -342,6 +342,11 @@ function restoreSingleEntry(root: string, rel: string, entry: TreeBackupEntry): 
 
 export function restoreTreeBackup(root: string, backup: TreeBackup): void {
   const current = captureTreeBackup(root);
+  // Removing an entry needs write permission on its parent, so every present
+  // directory is owner-writable before anything is unlinked.
+  for (const [rel, entry] of current.entries()) {
+    if (entry.kind === "dir" && (entry.mode & 0o700) !== 0o700) chmodSync(rel === "." ? root : join(root, rel), entry.mode | 0o700);
+  }
   const removed = [...current.keys()]
     .filter((rel) => rel !== "." && !backup.has(rel))
     .sort((a, b) => b.split(/[\\/]/).length - a.split(/[\\/]/).length || b.localeCompare(a));
@@ -591,13 +596,18 @@ export function verifyProtectedBmadStateAfterCompanion(projectRoot: string, stat
   return violations;
 }
 
-/** Roll back without letting a restore failure mask the error that caused it. */
-function rollbackTree(root: string, backup: TreeBackup): string[] {
+/**
+ * Roll back without letting a restore failure mask the error that caused it.
+ * An incomplete rollback reports what it left behind instead of claiming none.
+ */
+function rollbackTree(root: string, backup: TreeBackup, before: ReturnType<typeof snapshotTree>): { details: string[]; changedFiles: string[] } {
   try {
     restoreTreeBackup(root, backup);
-    return [];
+    return { details: [], changedFiles: [] };
   } catch (error) {
-    return [`rollback incomplete; recover with git: ${error instanceof Error ? error.message : String(error)}`];
+    const details = [`rollback incomplete; recover with git: ${error instanceof Error ? error.message : String(error)}`];
+    try { return { details, changedFiles: changedTreePaths(root, before, snapshotTree(root)) }; }
+    catch (snapshotError) { return { details: [...details, `Could not inventory unrestored paths: ${String(snapshotError)}`], changedFiles: [] }; }
   }
 }
 
@@ -642,11 +652,12 @@ export async function runBmadUpdateWithCompanionPreservation(
     }
     const install = options.runInstaller();
     if (!install.ok) {
+      const rollback = rollbackTree(root, state.backup, beforeSnapshot);
       return {
         ok: false,
         error: install.error ?? "Failed to run bmad-method install",
-        details: [install.error ?? "Unknown error", ...rollbackTree(root, state.backup)],
-        changedFiles: [],
+        details: [install.error ?? "Unknown error", ...rollback.details],
+        changedFiles: rollback.changedFiles,
         companion: preflight,
       };
     }
@@ -654,7 +665,7 @@ export async function runBmadUpdateWithCompanionPreservation(
     const companion = await runG33Companion(root, false, "bmad-install", { allowPostUpdateConflictPlan: true });
     const violations = verifyProtectedBmadStateAfterCompanion(root, state);
     if (!["changed", "unchanged"].includes(companion.status) || !companion.evidence.length || violations.length) {
-      const rollback = rollbackTree(root, state.backup);
+      const rollback = rollbackTree(root, state.backup, beforeSnapshot);
       const failedCompanion: CompanionResult = violations.length && ["changed", "unchanged"].includes(companion.status)
         ? {
             ...companion,
@@ -667,8 +678,8 @@ export async function runBmadUpdateWithCompanionPreservation(
       return {
         ok: false,
         error: failedCompanion.summary,
-        details: [...companionDetails(failedCompanion), ...rollback],
-        changedFiles: [],
+        details: [...companionDetails(failedCompanion), ...rollback.details],
+        changedFiles: rollback.changedFiles,
         companion: failedCompanion,
       };
     }
@@ -680,13 +691,14 @@ export async function runBmadUpdateWithCompanionPreservation(
       companion,
     };
   } catch (error) {
+    const rollback = rollbackTree(root, state.backup, beforeSnapshot);
     const failedCompanion: CompanionResult = {
       schemaVersion: 1,
       moduleId: "g33",
       optional: true,
       status: "error",
       summary: "BMAD update with g33 preservation failed",
-      details: [error instanceof Error ? error.message : String(error), ...rollbackTree(root, state.backup)],
+      details: [error instanceof Error ? error.message : String(error), ...rollback.details],
       evidence: [],
       changedFiles: [],
       ...(preflight.adapter ? { adapter: preflight.adapter } : {}),
@@ -695,7 +707,7 @@ export async function runBmadUpdateWithCompanionPreservation(
       ok: false,
       error: failedCompanion.summary,
       details: companionDetails(failedCompanion),
-      changedFiles: [],
+      changedFiles: rollback.changedFiles,
       companion: failedCompanion,
     };
   }

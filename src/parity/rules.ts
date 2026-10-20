@@ -1864,11 +1864,23 @@ function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoR
  * Quick-update copies each external module's channel from the manifest, so a
  * stable installer upgrading an install whose externals ride `next` still
  * clones their main HEAD — and TEA's main dropped the `src/module.yaml` the
- * 6.12.x registry expects. A stable target therefore takes the full update
- * path with every external on its stable/registry pin.
+ * 6.12.x registry expects. A stable installer on an existing install therefore
+ * takes the full update path with every external on its stable/registry pin,
+ * re-asserting the operator's explicit pins (`--pin` outranks `--all-stable`).
+ * Fresh installs have no channel history and take the installer's defaults.
  */
-function bmadUpgradeChannelArgs(version: string): string[] {
-  return /^\d+\.\d+\.\d+$/.test(version) ? ["--action", "update", "--all-stable"] : [];
+function bmadUpgradeChannelArgs(repoRoot: string, version: string): string[] {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return [];
+  const raw = safeReadText(join(repoRoot, "_bmad", "_config", "manifest.yaml"));
+  if (!raw) return [];
+  let modules: unknown;
+  try { modules = (YAML.parse(raw) as { modules?: unknown } | undefined)?.modules; }
+  catch { return []; }
+  const pins = (Array.isArray(modules) ? modules : [])
+    .filter((entry): entry is { name: string; version: string; channel: string } =>
+      typeof entry?.name === "string" && typeof entry?.version === "string" && entry?.channel === "pinned")
+    .flatMap((entry) => ["--pin", `${entry.name}=${entry.version}`]);
+  return ["--action", "update", "--all-stable", ...pins];
 }
 
 
@@ -3832,6 +3844,7 @@ return [
       const hadTomlG33 = Boolean(configuredBmadModuleSelection(ctx.repoRoot)?.hasG33);
       const installedBmad = isInstalledBmadProject(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       const preservation = g33BmadUpdateBoundary(ctx.repoRoot, hadManifestG33 || hadTomlG33);
+      const channelArgs = bmadUpgradeChannelArgs(ctx.repoRoot, BMAD_INSTALLER_VERSION);
       if (preservation) return {
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
@@ -3861,7 +3874,7 @@ return [
           summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
           changedFiles,
           details: [
-            `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules)}`,
+            `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs)}`,
             ...companionDetails(companion),
           ],
           bmadCompanion: companion,
@@ -3883,7 +3896,7 @@ return [
             const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
             return { changedFiles: evictedChanges, details };
           },
-          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules),
+          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs),
         });
         if (!update.ok) {
           return {
@@ -3891,7 +3904,7 @@ return [
             title: finding.title,
             status: "blocked",
             summary: update.error ?? "Failed to run bmad-method install",
-            changedFiles: [],
+            changedFiles: update.changedFiles,
             details: update.details,
             bmadCompanion: update.companion,
           };
@@ -3921,7 +3934,7 @@ return [
       // that no longer holds the pack, and the installer must be able to write
       // real directories at those names.
       const evicted = evictLegacyBmadPackState(ctx, changedFiles, await skillActivations(ctx));
-      const install = await runBmadInstall(ctx.repoRoot, selectedModules);
+      const install = await runBmadInstall(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs);
       if (!install.ok) {
         // What was already evicted is reported, not hidden behind "blocked".
         return {
@@ -4096,7 +4109,7 @@ return [
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
       };
-      const channelArgs = bmadUpgradeChannelArgs(available ?? BMAD_TARGET_CHANNEL);
+      const channelArgs = bmadUpgradeChannelArgs(ctx.repoRoot, available ?? BMAD_TARGET_CHANNEL);
 
       if (ctx.dryRun) {
         const companion = await runG33Companion(ctx.repoRoot, true, "bmad-install");
@@ -4142,7 +4155,7 @@ return [
             title: finding.title,
             status: "blocked",
             summary: update.error ?? "Failed to upgrade BMAD via installer",
-            changedFiles: [],
+            changedFiles: update.changedFiles,
             details: update.details,
             bmadCompanion: update.companion,
           };
