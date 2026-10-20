@@ -1,8 +1,10 @@
-import { lstatSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   initScope,
   inspectStatus,
+  withLock,
+  writeSelectionManifest,
   readActivationReceipt,
   readSelectionManifest,
   resolveSelection,
@@ -106,8 +108,61 @@ async function canonicalSkillPath(ctx: Context, name: string): Promise<string | 
 }
 
 export interface RootCollisionDecision {
-  action: "unlink" | "block";
+  /** exclude: mask the inherited binding in the project manifest (PJAN-176). */
+  action: "unlink" | "block" | "exclude";
   detail: string;
+}
+
+/**
+ * PJAN-176: the skills bmad-method installed into this project. The installer
+ * writes each one as a real directory under `.agents/skills` and records it in
+ * `_bmad/_config/skill-manifest.csv`. The global selection inherits the same
+ * names from the Skillex `bmad` pack, so skillex saw foreign content under a
+ * selected name and refused every project with BMAD installed (and rolled back
+ * every real `pj init`). The installed copy IS the project's copy of that skill:
+ * it satisfies the selection, which pjangler records by excluding the inherited
+ * binding. Only a real directory with a SKILL.md that the installer manifest
+ * lists qualifies; links, files, and unlisted directories keep their verdicts.
+ */
+export function bmadInstalledSkills(repoRoot: string): Set<string> {
+  const installed = new Set<string>();
+  let text: string;
+  try { text = readFileSync(join(resolve(repoRoot), "_bmad", "_config", "skill-manifest.csv"), "utf8"); }
+  catch { return installed; }
+  const [header, ...rows] = text.replace(/\r\n/g, "\n").split("\n");
+  if (!/^"?canonicalId"?,/.test(header ?? "")) return installed;
+  for (const row of rows) {
+    const name = /^"?([^",]+)"?,/.exec(row)?.[1];
+    if (!name || name.includes("/") || name.startsWith(".")) continue;
+    const dir = join(resolve(repoRoot), ".agents", "skills", name);
+    try {
+      const stat = lstatSync(dir);
+      if (stat.isDirectory() && !stat.isSymbolicLink() && existsSync(join(dir, "SKILL.md"))) installed.add(name);
+    } catch { /* not installed here */ }
+  }
+  return installed;
+}
+
+function bmadInstallerCopy(label: string, name: string): RootCollisionDecision {
+  return { action: "exclude", detail: `${label} is the bmad-method installer's copy of ${name}; the project selection excludes the inherited ${name}` };
+}
+
+/**
+ * Record installer-provided skills in the project manifest's `exclude` under
+ * skillex's own activation lock (the resource its selection edits take), so a
+ * concurrent sync never interleaves. Operator exclusions are kept; nothing is
+ * ever removed from the list.
+ */
+async function excludeInstallerSkills(ctx: Context, names: readonly string[]): Promise<{ path: string; added: string[] }> {
+  const options = skillCoreOptions(ctx);
+  return withLock("skillex:activation:v2", async () => {
+    const snapshot = await readSelectionManifest(options.project);
+    if (!snapshot.exists || !snapshot.raw) throw new Error(`No project skills manifest at ${snapshot.path}`);
+    const current = Array.isArray(snapshot.raw.exclude) ? snapshot.raw.exclude.filter((name): name is string => typeof name === "string") : [];
+    const added = names.filter((name) => !current.includes(name));
+    if (added.length) await writeSelectionManifest(snapshot, { ...snapshot.raw, exclude: [...current, ...[...added].sort()] });
+    return { path: snapshot.path, added };
+  }, { home: ctx.homeDir, env: process.env });
 }
 
 /**
@@ -119,13 +174,17 @@ export interface RootCollisionDecision {
  * checkout, an old registry path), is a legacy projection: replace it. A link to
  * this repository's OWN content is a deliberate local override unless that
  * content is the same skill as the catalog copy (PJAN-142: vendor provenance and
- * bytecode caches aside, byte-identical). A real directory is never touched.
+ * bytecode caches aside, byte-identical). A real directory is never touched; one
+ * the BMAD installer owns satisfies the selection instead (PJAN-176).
  */
 export async function classifyRootCollision(ctx: Context, path: string): Promise<RootCollisionDecision> {
   const label = relative(resolve(ctx.repoRoot), path) || path;
   let stat;
   try { stat = lstatSync(path); } catch { return { action: "block", detail: `${label} disappeared while resolving a root collision` }; }
-  if (!stat.isSymbolicLink()) return realEntryCollision(label, basename(path), stat.isDirectory());
+  if (!stat.isSymbolicLink()) {
+    return bmadInstalledSkills(ctx.repoRoot).has(basename(path)) ? bmadInstallerCopy(label, basename(path))
+      : realEntryCollision(label, basename(path), stat.isDirectory());
+  }
   let real: string | undefined;
   try { real = realpathSync(path); } catch { real = undefined; }
   return classifyCollidingLink(ctx, basename(path), label, readlinkSync(path), real);
@@ -283,6 +342,7 @@ export interface SkillSynchronizationOptions {
  * The public core owns manifests, receipts, alias publication and pruning.
  * PJangler only clears legacy links that collide with a selected skill
  * (classifyRootCollision), one refusal at a time, and never adopts anything.
+ * A collision the BMAD installer owns is recorded as a project exclusion.
  */
 export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchronizationOptions = {}): Promise<SkillSynchronization> {
   const options = skillCoreOptions(ctx);
@@ -305,6 +365,7 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
       }
     }
     const unlinked = new Set<string>();
+    const excluded = new Set<string>();
     for (let round = 0; ; round++) {
       const result = await sync({ ...options, dryRun: Boolean(ctx.dryRun) });
       const conflict = result.ok ? undefined : activationConflict(ctx, result.findings);
@@ -320,9 +381,11 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
         const predictions = await predictRootCollisions(ctx, ctx.dryRun ? extra.incoming ?? [] : []);
         const blocking = predictions.filter(({ decision }) => decision.action === "block");
         const replaceable = predictions.filter(({ decision }) => decision.action === "unlink");
+        const excludable = predictions.filter(({ decision }) => decision.action === "exclude");
         if (blocking.length) {
           details.push(...blocking.map(({ decision }) => `blocked: ${decision.detail}`));
-          if (replaceable.length) details.push(`left in place until the blocked collision(s) above are resolved: ${replaceable.map(({ path }) => relative(resolve(ctx.repoRoot), path)).join(", ")}`);
+          const waiting = [...replaceable, ...excludable];
+          if (waiting.length) details.push(`left in place until the blocked collision(s) above are resolved: ${waiting.map(({ path }) => relative(resolve(ctx.repoRoot), path)).join(", ")}`);
           details.push(migrationGuidance(ctx));
           return { ok: false, changedFiles: [...new Set(changedFiles)], details };
         }
@@ -331,15 +394,27 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
             changedFiles.push(path);
             details.push(`would ${decision.detail.replace(/^replaced/, "replace")}`);
           }
+          if (excludable.length) {
+            changedFiles.push(join(resolve(ctx.repoRoot), ".agents", "skills.json"));
+            details.push(...excludable.map(({ decision }) => `would exclude: ${decision.detail}`));
+          }
           return { ok: true, changedFiles: [...new Set(changedFiles)], details };
         }
         const fresh = replaceable.filter(({ path }) => !unlinked.has(path));
-        if (fresh.length && round < MAX_ROOT_COLLISION_ROUNDS) {
+        const freshExclusions = excludable.filter(({ path }) => !excluded.has(basename(path)));
+        if ((fresh.length || freshExclusions.length) && round < MAX_ROOT_COLLISION_ROUNDS) {
           for (const { path, decision } of fresh) {
             unlinkSync(path);
             unlinked.add(path);
             changedFiles.push(path);
             details.push(decision.detail);
+          }
+          if (freshExclusions.length) {
+            const names = freshExclusions.map(({ path }) => basename(path));
+            const recorded = await excludeInstallerSkills(ctx, names);
+            names.forEach((name) => excluded.add(name));
+            if (recorded.added.length) changedFiles.push(recorded.path);
+            details.push(...freshExclusions.map(({ decision }) => `excluded: ${decision.detail}`));
           }
           continue;
         }
