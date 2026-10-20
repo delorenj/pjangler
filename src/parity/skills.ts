@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   initScope,
@@ -502,6 +502,12 @@ export interface SkillSynchronizationOptions {
   pendingAliases?: readonly string[];
   /** Dry run only: the entries that plan moves into `.agents/skills` (SkillRootsPlan.incoming). */
   incoming?: readonly SkillRootIncoming[];
+  /**
+   * Dry run only (PJAN-144): the legacy registry field is planned for removal,
+   * but this preview still resolves through it. A divergence between the cache
+   * clone and the catalog checkout is exactly what the drop removes.
+   */
+  registryDropPending?: boolean;
 }
 
 /**
@@ -603,6 +609,12 @@ export async function synchronizeProjectSkills(ctx: Context, extra: SkillSynchro
       const previewResolved = Boolean(ctx.dryRun) && !result.ok && errors.length > 0
         && await installerRefusalsResolvable(ctx, errors, handoff);
       if (previewResolved) return { ok: true, changedFiles: [...new Set(changedFiles)], details };
+      const divergenceOnly = Boolean(ctx.dryRun && extra.registryDropPending) && !result.ok && errors.length > 0
+        && errors.every((finding) => finding.code === "E_DIVERGENT_CANONICAL_NAME");
+      if (divergenceOnly) {
+        details.push(`sync preview resolved through the legacy registry field; once it is dropped every scope resolves from one catalog (${errors.map((finding) => finding.name ?? finding.path).join(", ")})`);
+        return { ok: true, changedFiles: [...new Set(changedFiles)], details };
+      }
       details.push(...skillDiagnostics(result.findings));
       if (!result.ok) details.push(migrationGuidance(ctx));
       return { ok: result.ok, changedFiles: [...new Set(changedFiles)], details };
@@ -653,19 +665,66 @@ export async function legacyRegistryField(ctx: Context): Promise<{ path: string;
 }
 
 /**
- * Drop the legacy `"registry"` field under skillex's activation lock, keeping
- * every other key and its order. A dry run reports the change and writes nothing.
+ * Does the project still resolve once the field is gone? A project can select
+ * something only the cache clone holds (a skill never committed to the catalog
+ * checkout, as diagram-design was); dropping the field there would leave it
+ * unresolvable with nothing left to restore. Resolution is read-only and runs
+ * against a temporary copy of the field-less declaration.
  */
-export async function dropLegacyRegistryField(ctx: Context): Promise<{ changedFiles: string[]; details: string[] }> {
+async function resolvesWithoutRegistry(ctx: Context, raw: Readonly<Record<string, unknown>>): Promise<string | undefined> {
+  const scratch = mkdtempSync(join(tmpdir(), "pj-registry-drop-"));
+  try {
+    const { registry: _registry, ...rest } = raw;
+    mkdirSync(join(scratch, ".agents"), { recursive: true });
+    writeFileSync(join(scratch, ".agents", "skills.json"), `${JSON.stringify(rest, null, 2)}\n`);
+    const result = await resolveSelection({ ...skillCoreOptions(ctx), cwd: scratch, project: scratch });
+    const errors = result.findings.filter((finding) => finding.severity === "error");
+    return result.ok && !errors.length ? undefined
+      : skillDiagnostics(errors).join("; ") || `skillex resolution exited ${result.exit}`;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+export interface RegistryFieldDrop {
+  changedFiles: string[];
+  details: string[];
+  /** The field was present and stays: dropping it is unsafe or failed. */
+  blocked?: string;
+  /** A dry run planned the drop; its sync preview still resolves through the field. */
+  pending?: boolean;
+}
+
+/**
+ * Drop the legacy `"registry"` field under skillex's activation lock, keeping
+ * every other key and its order, but only when the project resolves without
+ * it. A dry run reports the change and writes nothing. Never throws: a lock or
+ * write failure is reported, so steps migrate already applied stay reported.
+ */
+export async function dropLegacyRegistryField(ctx: Context): Promise<RegistryFieldDrop> {
   const found = await legacyRegistryField(ctx);
   if (!found) return { changedFiles: [], details: [] };
-  const detail = `${ctx.dryRun ? "would drop" : "dropped"} the legacy registry field (${JSON.stringify(found.value)}) from ${found.path}: it pinned resolution to the never-fetched ~/.agents/.cache registry clone`;
-  if (ctx.dryRun) return { changedFiles: [found.path], details: [detail] };
-  return withLock(ACTIVATION_LOCK, async () => {
+  const value = JSON.stringify(found.value);
+  try {
     const snapshot = await readSelectionManifest(resolve(ctx.repoRoot));
-    if (!snapshot.exists || !snapshot.raw || !("registry" in snapshot.raw)) return { changedFiles: [], details: [] };
-    const { registry: _registry, ...rest } = snapshot.raw;
-    await writeSelectionManifest(snapshot, rest);
-    return { changedFiles: [snapshot.path], details: [detail] };
-  }, { home: ctx.homeDir, env: process.env });
+    const unsafe = snapshot.raw ? await resolvesWithoutRegistry(ctx, snapshot.raw) : "the manifest is unreadable";
+    if (unsafe) {
+      const blocked = `kept the legacy registry field (${value}): without it the project does not resolve from the catalog checkout (${unsafe}); bring the catalog current first`;
+      return { changedFiles: [], details: [blocked], blocked };
+    }
+    const detail = `${ctx.dryRun ? "would drop" : "dropped"} the legacy registry field (${value}) from ${found.path}: it pinned resolution to the never-fetched ~/.agents/.cache registry clone`;
+    if (ctx.dryRun) return { changedFiles: [found.path], details: [detail], pending: true };
+    return await withLock(ACTIVATION_LOCK, async () => {
+      const current = await readSelectionManifest(resolve(ctx.repoRoot));
+      if (!current.exists || !current.raw || !("registry" in current.raw)) return { changedFiles: [], details: [] };
+      const { registry: _registry, ...rest } = current.raw;
+      await writeSelectionManifest(current, rest);
+      return { changedFiles: [current.path], details: [detail] };
+    }, { home: ctx.homeDir, env: process.env });
+  } catch (error) {
+    const blocked = `could not drop the legacy registry field (${value}): ${error instanceof Error ? error.message : String(error)}`;
+    return { changedFiles: [], details: [blocked], blocked };
+  }
 }

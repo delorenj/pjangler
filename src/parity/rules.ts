@@ -3106,11 +3106,14 @@ return [
       const mise = safeReadText(join(ctx.repoRoot, "mise.toml"));
       // PJAN-144: a legacy registry field is fixable drift, like the wiring.
       const registryField = await legacyRegistryField(ctx);
-      const wiring = [...skillsWiringIssues(mise), ...(registryField
+      // A drop that would leave the project unresolvable is reported, not fixable.
+      const registryDrop = registryField ? await dropLegacyRegistryField({ ...ctx, dryRun: true }) : undefined;
+      const wiring = [...skillsWiringIssues(mise), ...(registryField && !registryDrop?.blocked
         ? [`Drop the legacy "registry" field (${JSON.stringify(registryField.value)}) from .agents/skills.json; it pins resolution to the never-fetched ~/.agents/.cache registry clone`] : [])];
+      const registryBlocked = registryDrop?.blocked ? [`blocked: ${registryDrop.blocked}`] : [];
       const retired = retiredSkillsScripts(ctx);
       const unsafe = retired.filter((path) => lstatIfPresent(path)?.isDirectory());
-      const details = [...finding.details, ...wiring, ...retired.map((path) => unsafe.includes(path)
+      const details = [...finding.details, ...wiring, ...registryBlocked, ...retired.map((path) => unsafe.includes(path)
         ? `Inspect and preserve retired script directory: ${path}` : `${path} is a retired skill writer`)];
       // PJAN-135: fixable means "migrate makes progress", not "migrate reaches
       // parity". Retiring writer files, retiring the skills:sync task, and
@@ -3119,7 +3122,7 @@ return [
       // folded in the CLI skills-root plan and root-collision verdict.
       // A retired path that is a directory is never touched, so it still gates.
       const miseDrift = mise !== null && upsertLinkAgentfilesBlock(mise, ctx) !== mise;
-      return { ...finding, status: wiring.length || retired.length ? "fail" as const : finding.status,
+      return { ...finding, status: wiring.length || retired.length || registryBlocked.length ? "fail" as const : finding.status,
         fixable: unsafe.length ? false : finding.fixable || wiring.length > 0 || retired.length > 0 || miseDrift,
         summary: details.length ? `${details.length} Skillex finding(s)` : finding.summary, details };
     },
@@ -3164,6 +3167,7 @@ return [
       const registryField = await dropLegacyRegistryField(ctx);
       changedFiles.push(...registryField.changedFiles);
       details.push(...registryField.details);
+      if (registryField.blocked) details.push(`blocked: ${registryField.blocked}`);
       // (4) Lossless CLI skills-root conversion. A blocked root stays untouched
       // and makes the sync below refuse at that alias, which is reported.
       const roots = applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
@@ -3174,10 +3178,11 @@ return [
       const reconciled = await synchronizeProjectSkills(ctx, {
         pendingAliases: roots.plan.aliases.filter((entry) => entry.operations.length).map((entry) => entry.alias),
         incoming: roots.plan.incoming,
+        registryDropPending: registryField.pending,
       });
       changedFiles.push(...reconciled.changedFiles);
       details.push(...reconciled.details);
-      if (!reconciled.ok || !roots.ok) {
+      if (!reconciled.ok || !roots.ok || registryField.blocked) {
         return result(changedFiles.length ? "partial" : "blocked", "Skillex requires attention before project migration");
       }
       return changedFiles.length
