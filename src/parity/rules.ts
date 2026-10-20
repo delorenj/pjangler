@@ -1838,7 +1838,7 @@ function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION): BmadInstalle
 }
 
 
-function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
+function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoRoot), extraArgs: string[] = []): string[] {
   // bmad-method treats a missing/falsy --modules under --yes as "installed +
   // defaults", which can silently add bmm. The installer-supported explicit
   // no-optional-modules representation is `--modules core`; core is mandatory
@@ -1855,7 +1855,20 @@ function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoR
     BMAD_INSTALL_TOOLS.join(","),
     "--set",
     `core.project_name=${canonicalBmadProjectName(repoRoot)}`,
+    ...extraArgs,
   ];
+}
+
+
+/**
+ * Quick-update copies each external module's channel from the manifest, so a
+ * stable installer upgrading an install whose externals ride `next` still
+ * clones their main HEAD — and TEA's main dropped the `src/module.yaml` the
+ * 6.12.x registry expects. A stable target therefore takes the full update
+ * path with every external on its stable/registry pin.
+ */
+function bmadUpgradeChannelArgs(version: string): string[] {
+  return /^\d+\.\d+\.\d+$/.test(version) ? ["--action", "update", "--all-stable"] : [];
 }
 
 
@@ -1863,9 +1876,10 @@ function bmadInstallDisplay(
   repoRoot: string,
   modules = selectedBmadModules(repoRoot),
   version = BMAD_INSTALLER_VERSION,
+  extraArgs: string[] = [],
 ): string {
   const invocation = bmadInstallerInvocation(version);
-  return [invocation.command, ...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)]
+  return [invocation.command, ...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules, extraArgs)]
     .join(" ")
     .replace(BMAD_INSTALL_TOOLS.join(","), "...");
 }
@@ -1916,14 +1930,18 @@ function invokeBmadInstallerProcess(
   repoRoot: string,
   modules = selectedBmadModules(repoRoot),
   version = BMAD_INSTALLER_VERSION,
+  extraArgs: string[] = [],
 ): { ok: boolean; error?: string } {
   const invocation = bmadInstallerInvocation(version);
-  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)], { encoding: "utf8" });
+  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules, extraArgs)], { encoding: "utf8" });
   if (result.status !== 0) {
     // bmad-method reports its own failures on stdout ("Installation failed:
     // ..."), leaving stderr empty, so stderr alone surfaced as "Unknown error".
+    // npm's own `npm notice run ...` chatter on stderr is not the failure either.
+    const stderr = result.stderr?.split("\n").filter((line) => !line.startsWith("npm notice")).join("\n").trim();
     const stdoutTail = result.stdout?.trim().split("\n").slice(-12).join("\n");
-    return { ok: false, error: result.stderr?.trim() || stdoutTail || result.error?.message || `installer exited ${result.status}` };
+    const error = stderr || stdoutTail;
+    return { ok: false, error: error || result.error?.message || `installer exited ${result.status}` };
   }
   return { ok: true };
 }
@@ -1933,11 +1951,12 @@ async function runBmadInstall(
   repoRoot: string,
   modules = selectedBmadModules(repoRoot),
   version = BMAD_INSTALLER_VERSION,
+  extraArgs: string[] = [],
 ): Promise<{ ok: boolean; error?: string; companion?: CompanionResult }> {
   const installedSelection = manifestBmadModules(repoRoot);
   const preservation = g33BmadUpdateBoundary(repoRoot, (installedSelection.status === "valid" && installedSelection.hasG33) || configuredBmadModuleSelection(repoRoot)?.hasG33);
   if (preservation) return { ok: false, error: preservation.summary, companion: preservation };
-  const invoked = invokeBmadInstallerProcess(repoRoot, modules, version);
+  const invoked = invokeBmadInstallerProcess(repoRoot, modules, version, extraArgs);
   if (!invoked.ok) return invoked;
   return { ok: true, companion: await runG33Companion(repoRoot, false, "bmad-install") };
 }
@@ -4077,6 +4096,7 @@ return [
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
       };
+      const channelArgs = bmadUpgradeChannelArgs(available ?? BMAD_TARGET_CHANNEL);
 
       if (ctx.dryRun) {
         const companion = await runG33Companion(ctx.repoRoot, true, "bmad-install");
@@ -4098,7 +4118,7 @@ return [
           summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
           changedFiles: [manifestPath],
           details: [
-            `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL)}`,
+            `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs)}`,
             ...companionDetails(companion),
           ],
           bmadCompanion: companion,
@@ -4114,7 +4134,7 @@ return [
             const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
             return { changedFiles: evictedChanges, details };
           },
-          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL),
+          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs),
         });
         if (!update.ok) {
           return {
@@ -4144,7 +4164,7 @@ return [
         };
       }
 
-      const install = await runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL);
+      const install = await runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs);
       if (!install.ok) {
         return {
           id: finding.id,

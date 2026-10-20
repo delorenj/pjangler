@@ -332,7 +332,13 @@ function restoreSingleEntry(root: string, rel: string, entry: TreeBackupEntry): 
     symlinkSync(entry.target, full);
     return;
   }
-  if (currentStat && (!currentStat.isFile() || currentStat.isSymbolicLink())) {
+  if (currentStat?.isFile() && !currentStat.isSymbolicLink()) {
+    // Untouched entries (the bulk of a whole-tree backup) are left alone; a
+    // read-only file (git pack objects are 0444) is replaced via unlink, which
+    // needs write permission on the directory, not the file.
+    if ((currentStat.mode & 0o7777) === entry.mode && readFileSync(full).equals(entry.bytes)) return;
+    unlinkSync(full);
+  } else if (currentStat) {
     rmSync(full, { recursive: true, force: true });
   }
   writeFileSync(full, entry.bytes);
@@ -355,15 +361,15 @@ export function restoreTreeBackup(root: string, backup: TreeBackup): void {
     }
   }
   const dirs = [...backup.entries()]
-    .filter(([, entry]) => entry.kind === "dir")
+    .filter((pair): pair is [string, Extract<TreeBackupEntry, { kind: "dir" }>] => pair[1].kind === "dir")
     .sort(([a], [b]) => (a === "." ? -1 : b === "." ? 1 : a.split(/[\\/]/).length - b.split(/[\\/]/).length || a.localeCompare(b)));
-  for (const [rel, entry] of dirs) restoreSingleEntry(root, rel, entry);
+  // Owner-writable while children are restored; exact modes are re-applied last.
+  for (const [rel, entry] of dirs) restoreSingleEntry(root, rel, { ...entry, mode: entry.mode | 0o700 });
   for (const [rel, entry] of backup.entries()) {
     if (entry.kind !== "dir") restoreSingleEntry(root, rel, entry);
   }
   for (const [rel, entry] of [...dirs].reverse()) {
-    const full = rel === "." ? root : join(root, rel);
-    if (entry.kind === "dir") chmodSync(full, entry.mode);
+    chmodSync(rel === "." ? root : join(root, rel), entry.mode);
   }
 }
 
@@ -590,6 +596,16 @@ export function verifyProtectedBmadStateAfterCompanion(projectRoot: string, stat
   return violations;
 }
 
+/** Roll back without letting a restore failure mask the error that caused it. */
+function rollbackTree(root: string, backup: TreeBackup): string[] {
+  try {
+    restoreTreeBackup(root, backup);
+    return [];
+  } catch (error) {
+    return [`rollback incomplete; recover with git: ${error instanceof Error ? error.message : String(error)}`];
+  }
+}
+
 export interface BmadUpdateWithPreservationResult {
   ok: boolean;
   error?: string;
@@ -631,11 +647,10 @@ export async function runBmadUpdateWithCompanionPreservation(
     }
     const install = options.runInstaller();
     if (!install.ok) {
-      restoreTreeBackup(root, state.backup);
       return {
         ok: false,
         error: install.error ?? "Failed to run bmad-method install",
-        details: [install.error ?? "Unknown error"],
+        details: [install.error ?? "Unknown error", ...rollbackTree(root, state.backup)],
         changedFiles: [],
         companion: preflight,
       };
@@ -644,7 +659,7 @@ export async function runBmadUpdateWithCompanionPreservation(
     const companion = await runG33Companion(root, false, "bmad-install", { allowPostUpdateConflictPlan: true });
     const violations = verifyProtectedBmadStateAfterCompanion(root, state);
     if (!["changed", "unchanged"].includes(companion.status) || !companion.evidence.length || violations.length) {
-      restoreTreeBackup(root, state.backup);
+      const rollback = rollbackTree(root, state.backup);
       const failedCompanion: CompanionResult = violations.length && ["changed", "unchanged"].includes(companion.status)
         ? {
             ...companion,
@@ -657,7 +672,7 @@ export async function runBmadUpdateWithCompanionPreservation(
       return {
         ok: false,
         error: failedCompanion.summary,
-        details: companionDetails(failedCompanion),
+        details: [...companionDetails(failedCompanion), ...rollback],
         changedFiles: [],
         companion: failedCompanion,
       };
@@ -670,14 +685,13 @@ export async function runBmadUpdateWithCompanionPreservation(
       companion,
     };
   } catch (error) {
-    restoreTreeBackup(root, state.backup);
     const failedCompanion: CompanionResult = {
       schemaVersion: 1,
       moduleId: "g33",
       optional: true,
       status: "error",
       summary: "BMAD update with g33 preservation failed",
-      details: [error instanceof Error ? error.message : String(error)],
+      details: [error instanceof Error ? error.message : String(error), ...rollbackTree(root, state.backup)],
       evidence: [],
       changedFiles: [],
       ...(preflight.adapter ? { adapter: preflight.adapter } : {}),
