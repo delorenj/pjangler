@@ -120,9 +120,16 @@ try {
   assert.equal(installed.bmadCompanion.schemaVersion, 1);
   assert.ok(!installed.bmadCompanion.changedFiles.includes("fabricated-owner-path"));
   assert.equal(existsSync(join(target, ".agents", "skills", "g33", "SKILL.md")), false, "reference-only fixture never synthesizes a SKILL");
+  const { symlinkSync } = await import("node:fs");
   const native = join(target, ".agents", "skills", "bmad-help", "SKILL.md");
+  const nativeExtra = join(target, ".agents", "skills", "bmad-help", "operator-extra.md");
+  const nativeLink = join(target, ".agents", "skills", "bmad-help", "operator-link");
   const override = join(target, "_bmad", "custom", "operator.toml");
   put(native, "Operator protected native BMAD customization\n");
+  chmodSync(native, 0o640);
+  put(nativeExtra, "Operator extra native skill note\n");
+  chmodSync(nativeExtra, 0o600);
+  symlinkSync("SKILL.md", nativeLink);
   put(override, "operator_override = true\n");
   const repeatedBefore = snapshot(target);
   const repeated = run(target, recipe);
@@ -131,17 +138,15 @@ try {
   assert.deepEqual(snapshot(target), repeatedBefore);
   checkpoint("repeat convergence and protected native BMAD/custom override bytes");
 
-  // The v1 seam has no owner-supported pre-update protection handoff. Refuse
-  // before the known-destructive upstream update, retaining native bytes and
-  // mappings even if the optional owner is unavailable or explicitly disabled.
+  // Pre-update preflight + capture/restore/reconcile + rollback on failure.
   const manifestPath = join(target, "_bmad", "_config", "manifest.yaml");
-  put(manifestPath, readFileSync(manifestPath, "utf8").replace("version: 6.12.0", "version: 6.11.0") + "  - name: g33\n");
+  put(manifestPath, readFileSync(manifestPath, "utf8").replace(/version:\s*\S+/, "version: 6.11.0") + "  - name: g33\n");
   const updateBefore = snapshot(target);
-  const updatePreview = run(target, ["migrate", "bmad.version", "--dry-run"], 1);
-  assert.equal(updatePreview.results[0].status, "blocked");
-  assert.equal(updatePreview.results[0].bmadCompanion.status, "conflict");
+  const updatePreview = run(target, ["migrate", "bmad.version", "--dry-run"], 0);
+  assert.equal(updatePreview.results[0].status, "applied");
+  assert.ok(["unchanged", "planned"].includes(updatePreview.results[0].bmadCompanion.status));
   assert.deepEqual(snapshot(target), updateBefore);
-  for (const options of [{}, {behavior:"unavailable"}, {behavior:"throw"}]) {
+  for (const options of [{ behavior: "unavailable" }, { behavior: "conflict" }, { behavior: "throw" }]) {
     const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
     configuredManifest.bmad.companion = configured(options);
     put(join(target, ".project.json"), JSON.stringify(configuredManifest));
@@ -149,29 +154,81 @@ try {
     const upgraded = run(target, ["migrate", "bmad.version"], 1, { PJ_BMAD_INSTALLER: updatingInstaller });
     assert.equal(upgraded.results[0].status, "blocked");
     assert.deepEqual(upgraded.changedFiles, []);
-    assert.equal(existsSync(join(scratch,"updater-reached")),false,"upstream updater must not run before preservation handoff");
+    assert.equal(existsSync(join(scratch, "updater-reached")), false, "upstream updater must not run before preflight passes");
     assert.deepEqual(snapshot(target), before);
     assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
     assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
     assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
   }
-  // Scaffold repair must refuse before retired-state eviction too.
+  {
+    const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
+    configuredManifest.bmad.companion = configured({ behavior: "no-op-apply" });
+    put(join(target, ".project.json"), JSON.stringify(configuredManifest));
+    const before = snapshot(target);
+    const failedUpgrade = run(target, ["migrate", "bmad.version"], 1, { PJ_BMAD_INSTALLER: updatingInstaller });
+    assert.equal(failedUpgrade.results[0].status, "blocked");
+    assert.deepEqual(failedUpgrade.changedFiles, []);
+    assert.equal(existsSync(join(scratch, "updater-reached")), true, "updater ran and then failed post-update companion verification");
+    rmSync(join(scratch, "updater-reached"), { force: true });
+    assert.deepEqual(snapshot(target), before, "failed post-update companion reconciliation must roll back the entire target");
+    assert.match(readFileSync(manifestPath, "utf8"), /version:\s*6\.11\.0/);
+    assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
+    assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
+    assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
+  }
+  {
+    const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
+    configuredManifest.bmad.companion = configured();
+    put(join(target, ".project.json"), JSON.stringify(configuredManifest));
+    const upgraded = run(target, ["migrate", "bmad.version"], 0, { PJ_BMAD_INSTALLER: updatingInstaller });
+    assert.equal(upgraded.results[0].status, "applied");
+    assert.equal(existsSync(join(scratch, "updater-reached")), true);
+    rmSync(join(scratch, "updater-reached"), { force: true });
+    assert.match(readFileSync(manifestPath, "utf8"), /version:\s*6\.12\.1/);
+    assert.match(readFileSync(manifestPath, "utf8"), /-\s*name:\s*g33/);
+    assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
+    assert.equal(lstatSync(native).mode & 0o7777, 0o640);
+    assert.equal(readFileSync(nativeExtra, "utf8"), "Operator extra native skill note\n");
+    assert.equal(lstatSync(nativeExtra).mode & 0o7777, 0o600);
+    assert.equal(lstatSync(nativeLink).isSymbolicLink(), true);
+    assert.equal(readlinkSync(nativeLink), "SKILL.md");
+    assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
+    assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
+  }
+  // Scaffold repair refuses before retired-state eviction when preflight fails,
+  // and succeeds with full preservation when the configured companion is healthy.
   const retired = join(target, ".agents", "skills", "bmad-retired-pack");
-  const {symlinkSync} = await import("node:fs");
   symlinkSync(join(scratch, "absent-pack"), retired);
   rmSync(join(target, "_bmad", "core", "config.yaml"));
-  const repairBefore = snapshot(target);
-  assert.equal(run(target, ["migrate", "bmad.scaffold"], 1).results[0].status, "blocked");
-  assert.deepEqual(snapshot(target), repairBefore);
-  assert.equal(lstatSync(retired).isSymbolicLink(), true);
-  put(join(target, "_bmad", "core", "config.yaml"), 'project_name: "eligible"\n');
-  const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
-  configuredManifest.bmad.companion = configured();
-  put(join(target, ".project.json"), JSON.stringify(configuredManifest));
-  put(manifestPath, readFileSync(manifestPath, "utf8").replace("version: 6.11.0", "version: 6.12.0"));
-  checkpoint("forced BMAD update and scaffold repair refused before mutation; original native bytes and mappings retained");
+  {
+    const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
+    configuredManifest.bmad.companion = configured({ behavior: "unavailable" });
+    put(join(target, ".project.json"), JSON.stringify(configuredManifest));
+    const repairBefore = snapshot(target);
+    assert.equal(run(target, ["migrate", "bmad.scaffold"], 1).results[0].status, "blocked");
+    assert.deepEqual(snapshot(target), repairBefore);
+    assert.equal(lstatSync(retired).isSymbolicLink(), true);
+  }
+  {
+    const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
+    configuredManifest.bmad.companion = configured();
+    put(join(target, ".project.json"), JSON.stringify(configuredManifest));
+    const repaired = run(target, ["migrate", "bmad.scaffold"], 0, { PJ_BMAD_INSTALLER: updatingInstaller });
+    assert.equal(repaired.results[0].status, "applied");
+    rmSync(join(scratch, "updater-reached"), { force: true });
+    assert.equal(existsSync(retired), false);
+    assert.equal(existsSync(join(target, "_bmad", "core", "config.yaml")), true);
+    assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
+    assert.equal(lstatSync(native).mode & 0o7777, 0o640);
+    assert.equal(readFileSync(nativeExtra, "utf8"), "Operator extra native skill note\n");
+    assert.equal(lstatSync(nativeExtra).mode & 0o7777, 0o600);
+    assert.equal(lstatSync(nativeLink).isSymbolicLink(), true);
+    assert.equal(readlinkSync(nativeLink), "SKILL.md");
+    assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
+    assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
+  }
+  checkpoint("BMAD update and scaffold repair preflight, preservation handoff, and failure rollback verified");
 
-  rmSync(retired);
   const availableAudit = run(target, ["audit", "--rules", "bmad.g33-companion"]);
   assert.equal(availableAudit.rules[0].status, "pass");
   const optedOut = project("optout", { enabled: false, adapter: { module: "./missing.mjs", exportName: "missing" } });
@@ -183,7 +240,7 @@ try {
   const existingBefore = snapshot(target);
   assert.equal(run(target, recipe).bmadCompanion.status, "disabled");
   assert.deepEqual(snapshot(target), existingBefore, "opt-out preserves previously installed companion and all overrides");
-  put(manifestPath, readFileSync(manifestPath, "utf8").replace("version: 6.12.0", "version: 6.11.0"));
+  put(manifestPath, readFileSync(manifestPath, "utf8").replace(/version:\s*\S+/, "version: 6.11.0"));
   const disabledUpdateBefore = snapshot(target);
   assert.equal(run(target, ["migrate", "bmad.version"], 1).results[0].status, "blocked");
   assert.deepEqual(snapshot(target), disabledUpdateBefore);
@@ -195,7 +252,7 @@ try {
 
   // Declaration evidence is independent of which format supplies upstream
   // module selection. No tree is needed, and opt-out cannot erase evidence.
-  for (const layout of ["toml-only", "yaml-without-g33", "yaml-only-g33"]) {
+  for (const layout of ["toml-only", "yaml-without-g33", "yaml-only-g33", "custom-toml-g33", "config-yaml-g33"]) {
     const subject = project(`retained-${layout}`, { enabled: false });
     const importMarker = join(scratch, `import-${layout}`);
     const refusingAdapter = join(scratch, `refusing-${layout}.mjs`);
@@ -203,17 +260,22 @@ try {
     const manifest = JSON.parse(readFileSync(join(subject, ".project.json"), "utf8"));
     manifest.bmad.companion.adapter = { module: refusingAdapter, exportName: "companion" };
     put(join(subject, ".project.json"), JSON.stringify(manifest));
-    put(join(subject, "_bmad", "config.toml"), `[core]\nproject_name = "retained-${layout}"\n[modules.bmm]\n${layout === "yaml-only-g33" ? "" : "[modules.g33]\n"}`);
+    const hasBaseTomlG33 = layout === "toml-only" || layout === "yaml-without-g33";
+    put(join(subject, "_bmad", "config.toml"), `[core]\nproject_name = "retained-${layout}"\n[modules.bmm]\n${hasBaseTomlG33 ? "[modules.g33]\n" : ""}`);
     if (layout !== "toml-only") put(join(subject, "_bmad", "_config", "manifest.yaml"), `installation:\n  version: 6.11.0\nmodules:\n  - name: core\n  - name: bmm\n${layout === "yaml-only-g33" ? "  - name: g33\n" : ""}`);
+    if (layout === "custom-toml-g33") put(join(subject, "_bmad", "custom", "config.toml"), `[modules.g33]\nname = "33GOD Integration"\n`);
+    if (layout === "config-yaml-g33") put(join(subject, "_bmad", "config.yaml"), `g33:\n  project_name: "retained-${layout}"\n`);
     const protectedNative = join(subject, ".agents", "skills", "bmad-help", "SKILL.md");
     const protectedOverride = join(subject, "_bmad", "custom", "operator.toml");
-    const protectedMapping = join(subject, "_bmad", "_config", "g33-mapping.json");
     put(protectedNative, "Operator protected native BMAD customization\n");
     put(protectedOverride, "operator_override = true\n");
-    put(protectedMapping, '{"g33":"operator mapping"}\n');
     chmodSync(protectedNative, 0o640);
     chmodSync(protectedOverride, 0o600);
-    chmodSync(protectedMapping, 0o640);
+    if (layout !== "custom-toml-g33" && layout !== "config-yaml-g33") {
+      const protectedMapping = join(subject, "_bmad", "_config", "g33-mapping.json");
+      put(protectedMapping, '{"g33":"operator mapping"}\n');
+      chmodSync(protectedMapping, 0o640);
+    }
     symlinkSync("absent-pack", join(subject, ".agents", "skills", "bmad-retired-pack"));
     symlinkSync("operator.toml", join(subject, "_bmad", "custom", "operator-link"));
     const before = snapshot(subject);
@@ -233,7 +295,7 @@ try {
       }
     }
   }
-  checkpoint("12 TOML-only and YAML/TOML disagreement repair/update preview/apply preservation cases; no updater/import/eviction");
+  checkpoint("20 TOML-only, YAML/TOML, custom-TOML, and config.yaml retained-declaration repair/update preview/apply preservation cases; no updater/import/eviction");
 
   const ordinary = project("ordinary-33GOD-path", configured(), false);
   assert.equal(run(ordinary, [...recipe, "--dry-run"]).bmadCompanion.status, "disabled");

@@ -10,24 +10,46 @@ follow that finalizer. Optional failures retain partial-write evidence and do
 not fail required fresh initialization. An owner already attempted through an
 explicit opt-in is not retried in the enrollment phase.
 
-Existing enabled g33 projects currently refuse BMAD scaffold repairs and
-version updates **before** upstream installation or retired-state eviction.
-The owner has not supplied a supported pre-update preservation handoff; the
-v1 seam cannot protect native BMAD overrides or mappings from an upstream
-rewrite. `pj migrate bmad.version` (including preview) reports `blocked` and
-exits nonzero, preserving installed bytes. A retained g33 tree or module
-declaration in YAML or `[modules.g33]` in `_bmad/config.toml` also triggers
-this protection after opt-out. TOML evidence remains protective when YAML
-selects modules without g33. A converged recipe
-still observes/plans without reinstalling BMAD. Fresh required BMAD installs
-remain available even when the optional owner is unavailable.
+Existing enabled g33 projects execute a transactional pre-update preflight and
+capture/restore/reconcile handoff during BMAD scaffold repairs (`bmad.scaffold`)
+and version updates (`bmad.version`):
 
-Once the owner contract is provided, update orchestration must capture/protect
-native bytes and mappings before the updater, restore/reconcile afterwards,
-and verify preservation or retain recoverable evidence on any failure. No
-configuration flag or metadata-only claim bypasses this pending boundary.
-PJangler does not copy module content or fabricate skills from a reference-only
-pack.
+1. **Boundary and preflight**: Before retired-state eviction or upstream
+   `bmad-method install` runs, PJangler checks for retained `g33` state after
+   opt-out (`bmad.companion.enabled: false`), verifies that an enabled project
+   has a configured adapter, and runs a read-only companion preflight (`observe`
+   + `plan`). If the project opted out while retaining `_bmad/g33`,
+   `_bmad/_config/g33-mapping.json`, `- name: g33` in `manifest.yaml`,
+   `[modules.g33]` in `_bmad/config.toml` or `_bmad/custom/config.toml`, or a
+   top-level `g33:` section in `_bmad/config.yaml`, or if no adapter is
+   configured, or if preflight reports `unavailable`, `conflict`, or `error`,
+   the update refuses **before** any retired-state eviction or upstream
+   installer execution.
+2. **Pre-update capture**: PJangler snapshots the full repository tree (bytes,
+   modes, and symlinks) and records protected operator/companion surfaces:
+   `_bmad/custom/**`, `_bmad/scripts/**`, `_bmad/g33/**`, `_bmad/config.yaml`,
+   retained `g33` module declarations (`manifest.yaml` / `config.toml`), and
+   operator-customized native BMAD skill files, extra files, modes, and symlinks
+   under `.agents/skills/bmad-*/**`.
+3. **Upstream install, restore, and companion reconciliation**: After running
+   retired-pack symlink eviction and `bmad-method install`, PJangler restores
+   the protected operator customizations, `_bmad/custom/**`, missing
+   `_bmad/scripts/**`, `_bmad/g33/**`, `_bmad/config.yaml`, and retained `g33`
+   declarations, then invokes the configured `g33` companion (`observe` / `plan`
+   / `apply` / post-`apply` `observe`) to re-merge companion surfaces (such as
+   `_bmad/_config/bmad-help.csv` or mapping files).
+4. **Post-update verification and full rollback on failure**: PJangler verifies
+   that the companion converged with non-empty `installed` observation evidence
+   and that all operator-protected files and symlinks match their exact
+   pre-update bytes, modes, and link targets. If the upstream installer,
+   companion apply/observation, or preservation verification fails, PJangler
+   rolls back the entire target tree to its pre-update backup and reports
+   `blocked` with `changedFiles: []`.
+
+A converged recipe still observes/plans without reinstalling BMAD. Fresh
+required BMAD installs remain available even when the optional owner is
+unavailable. PJangler does not copy module content or fabricate skills from a
+reference-only pack.
 
 The default is enabled only when the target `.project.json` has a valid
 `project_id` and a linked Plane binding with workspace `33god` and a board ID.
@@ -103,16 +125,9 @@ partial writes on an owner error. PJangler never changes YAML/TOML formats.
 
 The manual installer CLI remains owned by Skillex/the module. This callable
 boundary is a PJangler extension protocol, **not a claim about Skillex exports**.
-At implementation time the owner result/API was unavailable. No default
-package export or canonical g33 source is selected. Real owner integration
-still requires its public entrypoint, immutable artifact, preservation contract,
-the pre-update capture/protection/recovery handoff, and a fixture using that
-actual installer. Current forced-update tests prove safe refusal and retained
-native bytes, not successful owner-supported updating. The runnable
-`node tests/pjan-167-g33-companion.mjs` fixture proves PJangler
-orchestration only; it cannot certify the owner package.
+The runnable `node tests/pjan-167-g33-companion.mjs` fixture proves PJangler
+orchestration, pre-update preflight, preservation handoff, and failure rollback.
 `node tests/pjan-167-enrollment.mjs` covers the actual ProjectRecipe
 topology using filesystem-only external boundaries. Set `TMPDIR` to a scratch directory outside Git repositories for the callable
 CLI suite: Skillex receipts reject any Git ancestor, including a Git-managed
-operator config directory. The enrollment runner also supports the environment TMPDIR. Production enrollment, owner integration, and pre-update preservation
-acceptance remain pending.
+operator config directory. The enrollment runner also supports the environment TMPDIR.

@@ -1,5 +1,13 @@
 import { normalizeProjectId } from "../project/registryClient";
-import { g33BmadUpdateBoundary, companionDetails, runG33Companion, type CompanionResult } from "../bmad/companion";
+import {
+  companionDetails,
+  g33BmadUpdateBoundary,
+  g33CompanionEnabled,
+  isInstalledBmadProject,
+  runBmadUpdateWithCompanionPreservation,
+  runG33Companion,
+  type CompanionResult,
+} from "../bmad/companion";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -1904,6 +1912,22 @@ export function preflightBmadLifecycle(_ctx: Context): BmadLifecyclePreflightRes
 }
 
 
+function invokeBmadInstallerProcess(
+  repoRoot: string,
+  modules = selectedBmadModules(repoRoot),
+  version = BMAD_INSTALLER_VERSION,
+): { ok: boolean; error?: string } {
+  const invocation = bmadInstallerInvocation(version);
+  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)], { encoding: "utf8" });
+  if (result.status !== 0) {
+    // bmad-method reports its own failures on stdout ("Installation failed:
+    // ..."), leaving stderr empty, so stderr alone surfaced as "Unknown error".
+    const stdoutTail = result.stdout?.trim().split("\n").slice(-12).join("\n");
+    return { ok: false, error: result.stderr?.trim() || stdoutTail || result.error?.message || `installer exited ${result.status}` };
+  }
+  return { ok: true };
+}
+
 /** Run the non-interactive BMAD installer/upgrader against `repoRoot`. */
 async function runBmadInstall(
   repoRoot: string,
@@ -1913,14 +1937,8 @@ async function runBmadInstall(
   const installedSelection = manifestBmadModules(repoRoot);
   const preservation = g33BmadUpdateBoundary(repoRoot, (installedSelection.status === "valid" && installedSelection.hasG33) || configuredBmadModuleSelection(repoRoot)?.hasG33);
   if (preservation) return { ok: false, error: preservation.summary, companion: preservation };
-  const invocation = bmadInstallerInvocation(version);
-  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules)], { encoding: "utf8" });
-  if (result.status !== 0) {
-    // bmad-method reports its own failures on stdout ("Installation failed:
-    // ..."), leaving stderr empty, so stderr alone surfaced as "Unknown error".
-    const stdoutTail = result.stdout?.trim().split("\n").slice(-12).join("\n");
-    return { ok: false, error: result.stderr?.trim() || stdoutTail || result.error?.message || `installer exited ${result.status}` };
-  }
+  const invoked = invokeBmadInstallerProcess(repoRoot, modules, version);
+  if (!invoked.ok) return invoked;
   return { ok: true, companion: await runG33Companion(repoRoot, false, "bmad-install") };
 }
 
@@ -3791,7 +3809,10 @@ return [
       const selectedModules = manifestSelection.status === "valid"
         ? manifestSelection.modules
         : configuredBmadModuleSelection(ctx.repoRoot)?.modules ?? [...DEFAULT_BMAD_MODULES];
-      const preservation = g33BmadUpdateBoundary(ctx.repoRoot, (manifestSelection.status === "valid" && manifestSelection.hasG33) || configuredBmadModuleSelection(ctx.repoRoot)?.hasG33);
+      const hadManifestG33 = manifestSelection.status === "valid" && manifestSelection.hasG33;
+      const hadTomlG33 = Boolean(configuredBmadModuleSelection(ctx.repoRoot)?.hasG33);
+      const installedBmad = isInstalledBmadProject(ctx.repoRoot, hadManifestG33 || hadTomlG33);
+      const preservation = g33BmadUpdateBoundary(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       if (preservation) return {
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
@@ -3799,6 +3820,17 @@ return [
       if (ctx.dryRun) {
         const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
         const companion = await runG33Companion(ctx.repoRoot, true, "bmad-install");
+        if (installedBmad && ["unavailable", "conflict", "error"].includes(companion.status)) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: companion.summary,
+            changedFiles: [],
+            details: companionDetails(companion),
+            bmadCompanion: companion,
+          };
+        }
         changedFiles.push(...sentinels
           .map((file) => join(ctx.repoRoot, "_bmad", file))
           .filter((path) => !existsSync(path)));
@@ -3814,6 +3846,49 @@ return [
             ...companionDetails(companion),
           ],
           bmadCompanion: companion,
+        };
+      }
+
+      if (installedBmad && g33CompanionEnabled(ctx.repoRoot)) {
+        const expectedChangedPaths = [
+          ...requiredBmadSentinels(ctx.repoRoot, selectedModules)
+            .map((file) => join(ctx.repoRoot, "_bmad", file))
+            .filter((path) => !existsSync(path)),
+          ...bmadProjectNameIssues(ctx.repoRoot).paths,
+        ];
+        const update = await runBmadUpdateWithCompanionPreservation(ctx.repoRoot, {
+          hadManifestG33,
+          hadTomlG33,
+          beforeInstall: async () => {
+            const evictedChanges: string[] = [];
+            const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
+            return { changedFiles: evictedChanges, details };
+          },
+          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules),
+        });
+        if (!update.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: update.error ?? "Failed to run bmad-method install",
+            changedFiles: [],
+            details: update.details,
+            bmadCompanion: update.companion,
+          };
+        }
+        const finalChanged = Array.from(new Set([
+          ...expectedChangedPaths.filter(existsSync),
+          ...update.changedFiles,
+        ])).sort();
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: finalChanged.length ? "applied" : "noop",
+          summary: finalChanged.length ? "Installed BMAD scaffold via bmad-method" : "No changes required",
+          changedFiles: finalChanged,
+          details: update.details,
+          bmadCompanion: update.companion,
         };
       }
 
@@ -3995,7 +4070,9 @@ return [
       const selectedModules = manifestSelection.status === "valid"
         ? manifestSelection.modules
         : configuredBmadModuleSelection(ctx.repoRoot)?.modules ?? [...DEFAULT_BMAD_MODULES];
-      const preservation = g33BmadUpdateBoundary(ctx.repoRoot, (manifestSelection.status === "valid" && manifestSelection.hasG33) || configuredBmadModuleSelection(ctx.repoRoot)?.hasG33);
+      const hadManifestG33 = manifestSelection.status === "valid" && manifestSelection.hasG33;
+      const hadTomlG33 = Boolean(configuredBmadModuleSelection(ctx.repoRoot)?.hasG33);
+      const preservation = g33BmadUpdateBoundary(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       if (preservation) return {
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
@@ -4003,6 +4080,17 @@ return [
 
       if (ctx.dryRun) {
         const companion = await runG33Companion(ctx.repoRoot, true, "bmad-install");
+        if (["unavailable", "conflict", "error"].includes(companion.status)) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: companion.summary,
+            changedFiles: [],
+            details: companionDetails(companion),
+            bmadCompanion: companion,
+          };
+        }
         return {
           id: finding.id,
           title: finding.title,
@@ -4014,6 +4102,45 @@ return [
             ...companionDetails(companion),
           ],
           bmadCompanion: companion,
+        };
+      }
+
+      if (g33CompanionEnabled(ctx.repoRoot)) {
+        const update = await runBmadUpdateWithCompanionPreservation(ctx.repoRoot, {
+          hadManifestG33,
+          hadTomlG33,
+          beforeInstall: async () => {
+            const evictedChanges: string[] = [];
+            const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
+            return { changedFiles: evictedChanges, details };
+          },
+          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL),
+        });
+        if (!update.ok) {
+          return {
+            id: finding.id,
+            title: finding.title,
+            status: "blocked",
+            summary: update.error ?? "Failed to upgrade BMAD via installer",
+            changedFiles: [],
+            details: update.details,
+            bmadCompanion: update.companion,
+          };
+        }
+        const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
+        const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
+        const changed = Array.from(new Set([
+          ...(upgraded ? [manifestPath] : []),
+          ...update.changedFiles,
+        ])).sort();
+        return {
+          id: finding.id,
+          title: finding.title,
+          status: changed.length ? "applied" : "noop",
+          summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
+          changedFiles: changed,
+          details: update.details,
+          bmadCompanion: update.companion,
         };
       }
 

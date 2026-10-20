@@ -13,7 +13,13 @@ export function snapshotTree(root: string, current = root, snapshot: TreeSnapsho
     throw error;
   }
   const rel = relative(root, current) || ".";
-  if (rel === ".git" || rel.startsWith(`.git${process.platform === "win32" ? "\\" : "/"}`)) return snapshot;
+  const sep = process.platform === "win32" ? "\\" : "/";
+  if (
+    rel === ".git"
+    || rel.startsWith(`.git${sep}`)
+    || rel === ".worktrees"
+    || rel.startsWith(`.worktrees${sep}`)
+  ) return snapshot;
   if (stat.isSymbolicLink()) {
     snapshot.set(rel, `link:${readlinkSync(current)}`);
   } else if (stat.isFile()) {

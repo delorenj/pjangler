@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import type { RecipeOwnedCheck } from "../parity/rules";
@@ -124,7 +124,12 @@ function reply(value: unknown, operation: CompanionRequest["operation"]): Compan
 }
 
 /** Optional outcomes never throw into required BMAD initialization/rollback. */
-export async function runG33Companion(projectRoot: string, dryRun: boolean, reason: CompanionRequest["reason"] = "recipe"): Promise<CompanionResult> {
+export async function runG33Companion(
+  projectRoot: string,
+  dryRun: boolean,
+  reason: CompanionRequest["reason"] = "recipe",
+  options: { allowPostUpdateConflictPlan?: boolean } = {},
+): Promise<CompanionResult> {
   projectRoot = resolve(projectRoot);
   const result: CompanionResult = { schemaVersion: 1, moduleId: "g33", optional: true, status: "unavailable", summary: "g33 companion unavailable", details: [], evidence: [], changedFiles: [] };
   let before: ReturnType<typeof snapshotTree> | undefined;
@@ -157,7 +162,8 @@ export async function runG33Companion(projectRoot: string, dryRun: boolean, reas
       return value;
     };
     const observed = await invoke("observe");
-    if (["unavailable", "conflict", "error"].includes(observed.status)) return { ...result, ...observed };
+    const allowPostUpdateConflictPlan = Boolean(options.allowPostUpdateConflictPlan && !dryRun && observed.status === "conflict");
+    if (["unavailable", "conflict", "error"].includes(observed.status) && !allowPostUpdateConflictPlan) return { ...result, ...observed };
     const plan = await invoke("plan");
     if (["unavailable", "conflict", "error"].includes(plan.status)) return { ...result, ...plan };
     if (plan.status === "unchanged" && observed.status !== "installed") throw new Error("g33 plan claims convergence but owner observation does not prove installation");
@@ -183,6 +189,42 @@ export async function runG33Companion(projectRoot: string, dryRun: boolean, reas
   }
 }
 
+function safeFileText(path: string): string {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile()) return "";
+    return readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+export function hasRetainedG33State(projectRoot: string, retainedG33Declaration = false): boolean {
+  if (
+    retainedG33Declaration
+    || localEntryPresent(join(projectRoot, "_bmad", "g33"))
+    || localEntryPresent(join(projectRoot, "_bmad", "_config", "g33-mapping.json"))
+  ) {
+    return true;
+  }
+  const tomlPattern = /^\[modules\.g33\]\s*(?:#.*)?$/m;
+  if (
+    tomlPattern.test(safeFileText(join(projectRoot, "_bmad", "config.toml")))
+    || tomlPattern.test(safeFileText(join(projectRoot, "_bmad", "custom", "config.toml")))
+  ) {
+    return true;
+  }
+  return /^(?:g33|"g33"|'g33')\s*:/m.test(safeFileText(join(projectRoot, "_bmad", "config.yaml")));
+}
+
+export function isInstalledBmadProject(projectRoot: string, retainedG33Declaration = false): boolean {
+  const retainedG33 = hasRetainedG33State(projectRoot, retainedG33Declaration);
+  return retainedG33
+    || localEntryPresent(join(projectRoot, "_bmad", "_config", "manifest.yaml"))
+    || localEntryPresent(join(projectRoot, "_bmad", "core"))
+    || localEntryPresent(join(projectRoot, "_bmad", "config.toml"));
+}
 
 function localEntryPresent(path: string): boolean {
   try { lstatSync(path); return true; }
@@ -193,11 +235,11 @@ function localEntryPresent(path: string): boolean {
 }
 
 /**
- * Fail closed BEFORE any upstream updater or retired-state eviction. Existing
- * enabled g33 projects need the owner's pre-update preservation handoff; the
- * v1 observe/plan/apply seam cannot safely protect native overrides or mappings
- * from an upstream rewrite. Fresh required BMAD installs remain independent.
- * A retained g33 tree is also protected after opt-out (not installation proof).
+ * Fail closed BEFORE any upstream updater or retired-state eviction when an
+ * installed project has retained g33 state/declarations after opt-out or is
+ * enabled for g33 without a configured adapter. Enabled projects with a
+ * configured adapter proceed to the pre-update preflight + capture/restore/reconcile
+ * handoff. Fresh required BMAD installs remain independent.
  */
 export function g33BmadUpdateBoundary(projectRoot: string, retainedG33Declaration = false): CompanionResult | undefined {
   const result: CompanionResult = {
@@ -208,18 +250,445 @@ export function g33BmadUpdateBoundary(projectRoot: string, retainedG33Declaratio
     evidence: [], changedFiles: [],
   };
   try {
-    const retainedG33 = retainedG33Declaration || localEntryPresent(join(projectRoot, "_bmad", "g33"));
-    const installedBmad = retainedG33 || localEntryPresent(join(projectRoot, "_bmad", "_config", "manifest.yaml"))
-      || localEntryPresent(join(projectRoot, "_bmad", "core"));
+    const retainedG33 = hasRetainedG33State(projectRoot, retainedG33Declaration);
+    const installedBmad = retainedG33
+      || localEntryPresent(join(projectRoot, "_bmad", "_config", "manifest.yaml"))
+      || localEntryPresent(join(projectRoot, "_bmad", "core"))
+      || localEntryPresent(join(projectRoot, "_bmad", "config.toml"));
     if (!installedBmad) return undefined;
     const selection = select(projectRoot);
     if (!selection.enabled && !retainedG33) return undefined;
-    if (selection.module && selection.exportName) result.adapter = { module: selection.module, exportName: selection.exportName };
-    result.details.unshift(retainedG33 ? "Retained g33 tree or module declaration requires preservation, including after opt-out." : selection.reason);
-    return result;
+    if (!selection.enabled && retainedG33) {
+      result.details.unshift("Retained g33 tree or module declaration requires preservation, including after opt-out.");
+      return result;
+    }
+    if (!selection.module || !selection.exportName) {
+      result.summary = "BMAD update withheld: optional g33 companion adapter is not configured";
+      result.details.unshift(selection.reason);
+      return result;
+    }
+    return undefined;
   } catch (error) {
     return { ...result, status: "error", summary: "BMAD update withheld: companion configuration or preservation inspection failed",
       details: [...result.details, error instanceof Error ? error.message : String(error)] };
+  }
+}
+
+type TreeBackupEntry =
+  | { kind: "dir"; mode: number }
+  | { kind: "link"; target: string }
+  | { kind: "file"; mode: number; bytes: Buffer };
+
+export type TreeBackup = Map<string, TreeBackupEntry>;
+
+export function captureTreeBackup(root: string, current = root, backup: TreeBackup = new Map()): TreeBackup {
+  let stat;
+  try { stat = lstatSync(current); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return backup;
+    throw error;
+  }
+  const rel = relative(root, current) || ".";
+  const sep = process.platform === "win32" ? "\\" : "/";
+  if (
+    rel === ".git"
+    || rel.startsWith(`.git${sep}`)
+    || rel === ".worktrees"
+    || rel.startsWith(`.worktrees${sep}`)
+  ) return backup;
+  if (stat.isSymbolicLink()) {
+    backup.set(rel, { kind: "link", target: readlinkSync(current) });
+  } else if (stat.isFile()) {
+    backup.set(rel, { kind: "file", mode: stat.mode & 0o7777, bytes: Buffer.from(readFileSync(current)) });
+  } else if (stat.isDirectory()) {
+    backup.set(rel, { kind: "dir", mode: stat.mode & 0o7777 });
+    for (const name of readdirSync(current).sort()) captureTreeBackup(root, join(current, name), backup);
+  }
+  return backup;
+}
+
+function restoreSingleEntry(root: string, rel: string, entry: TreeBackupEntry): void {
+  const full = rel === "." ? root : join(root, rel);
+  let currentStat;
+  try { currentStat = lstatSync(full); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (entry.kind === "dir") {
+    if (currentStat && (!currentStat.isDirectory() || currentStat.isSymbolicLink())) {
+      rmSync(full, { recursive: true, force: true });
+      currentStat = undefined;
+    }
+    if (!currentStat) mkdirSync(full, { recursive: true });
+    chmodSync(full, entry.mode);
+    return;
+  }
+  if (rel !== ".") mkdirSync(dirname(full), { recursive: true });
+  if (entry.kind === "link") {
+    if (currentStat) {
+      if (currentStat.isSymbolicLink() && readlinkSync(full) === entry.target) return;
+      rmSync(full, { recursive: true, force: true });
+    }
+    symlinkSync(entry.target, full);
+    return;
+  }
+  if (currentStat && (!currentStat.isFile() || currentStat.isSymbolicLink())) {
+    rmSync(full, { recursive: true, force: true });
+  }
+  writeFileSync(full, entry.bytes);
+  chmodSync(full, entry.mode);
+}
+
+export function restoreTreeBackup(root: string, backup: TreeBackup): void {
+  const current = captureTreeBackup(root);
+  const removed = [...current.keys()]
+    .filter((rel) => rel !== "." && !backup.has(rel))
+    .sort((a, b) => b.split(/[\\/]/).length - a.split(/[\\/]/).length || b.localeCompare(a));
+  for (const rel of removed) {
+    const full = join(root, rel);
+    try {
+      const stat = lstatSync(full);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) rmSync(full, { recursive: true, force: true });
+      else unlinkSync(full);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  const dirs = [...backup.entries()]
+    .filter(([, entry]) => entry.kind === "dir")
+    .sort(([a], [b]) => (a === "." ? -1 : b === "." ? 1 : a.split(/[\\/]/).length - b.split(/[\\/]/).length || a.localeCompare(b)));
+  for (const [rel, entry] of dirs) restoreSingleEntry(root, rel, entry);
+  for (const [rel, entry] of backup.entries()) {
+    if (entry.kind !== "dir") restoreSingleEntry(root, rel, entry);
+  }
+  for (const [rel, entry] of [...dirs].reverse()) {
+    const full = rel === "." ? root : join(root, rel);
+    if (entry.kind === "dir") chmodSync(full, entry.mode);
+  }
+}
+
+const G33_MANAGED_CUSTOM_REL = new Set([
+  "_bmad/custom/config.toml",
+  "_bmad/custom/bmad-build.toml",
+  "_bmad/custom/bmad-code-review.toml",
+  "_bmad/custom/bmad-prd.toml",
+  "_bmad/custom/bmad-spec.toml",
+  "_bmad/custom/bmad-architecture.toml",
+]);
+
+function parseSimpleCsvRows(text: string): Record<string, string>[] {
+  const lines = text.replace(/\r\n/g, "\n").split("\n").filter((line) => line.trim() !== "");
+  if (lines.length < 2) return [];
+  const splitLine = (line: string): string[] => {
+    const cells: string[] = [];
+    let current = "";
+    let quoted = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]!;
+      if (quoted) {
+        if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+        else if (ch === '"') quoted = false;
+        else current += ch;
+      } else if (ch === '"') quoted = true;
+      else if (ch === ",") { cells.push(current); current = ""; }
+      else current += ch;
+    }
+    cells.push(current);
+    return cells;
+  };
+  const headers = splitLine(lines[0]!);
+  return lines.slice(1).map((line) => {
+    const values = splitLine(line);
+    return Object.fromEntries(headers.map((header, idx) => [header, values[idx] ?? ""]));
+  });
+}
+
+function skillManifestSourceMap(backup: TreeBackup): Map<string, string> {
+  const map = new Map<string, string>();
+  const entry = backup.get("_bmad/_config/skill-manifest.csv") ?? backup.get(join("_bmad", "_config", "skill-manifest.csv"));
+  if (!entry || entry.kind !== "file") return map;
+  for (const row of parseSimpleCsvRows(entry.bytes.toString("utf8"))) {
+    const id = (row.canonicalId ?? "").trim();
+    const skillPath = (row.path ?? "").trim().replace(/\\/g, "/");
+    if (id && skillPath.endsWith("/SKILL.md")) {
+      map.set(id, skillPath.slice(0, -"/SKILL.md".length));
+    }
+  }
+  return map;
+}
+
+export interface ProtectedBmadState {
+  backup: TreeBackup;
+  hadManifestG33: boolean;
+  hadTomlG33: boolean;
+  customEntries: Map<string, TreeBackupEntry>;
+  operatorCustomEntries: Map<string, TreeBackupEntry>;
+  scriptEntries: Map<string, TreeBackupEntry>;
+  companionEntries: Map<string, TreeBackupEntry>;
+  operatorNativeSkills: Map<string, TreeBackupEntry>;
+}
+
+export function captureProtectedBmadState(
+  projectRoot: string,
+  options: { hadManifestG33: boolean; hadTomlG33: boolean },
+): ProtectedBmadState {
+  const root = resolve(projectRoot);
+  const backup = captureTreeBackup(root);
+  const customEntries = new Map<string, TreeBackupEntry>();
+  const operatorCustomEntries = new Map<string, TreeBackupEntry>();
+  const scriptEntries = new Map<string, TreeBackupEntry>();
+  const companionEntries = new Map<string, TreeBackupEntry>();
+  const operatorNativeSkills = new Map<string, TreeBackupEntry>();
+  const sourceMap = skillManifestSourceMap(backup);
+  const claudeSkillsEntry = backup.get(join(".claude", "skills"));
+  const claudeSkillsIsRealDir = claudeSkillsEntry?.kind === "dir";
+
+  for (const [rel, entry] of backup.entries()) {
+    const norm = rel.replace(/\\/g, "/");
+    if (norm === "_bmad/custom" || norm.startsWith("_bmad/custom/")) {
+      customEntries.set(rel, entry);
+      if (norm !== "_bmad/custom" && !G33_MANAGED_CUSTOM_REL.has(norm)) {
+        operatorCustomEntries.set(rel, entry);
+      }
+    }
+    if (norm === "_bmad/scripts" || norm.startsWith("_bmad/scripts/")) {
+      scriptEntries.set(rel, entry);
+    }
+    if (
+      norm === "_bmad/g33"
+      || norm.startsWith("_bmad/g33/")
+      || norm === "_bmad/config.yaml"
+    ) {
+      companionEntries.set(rel, entry);
+    }
+    if (norm.startsWith(".agents/skills/bmad-") && (entry.kind === "file" || entry.kind === "link")) {
+      const parts = norm.split("/");
+      const skill = parts[2] ?? "";
+      const relInSkill = parts.slice(3).join("/");
+      if (!skill || !relInSkill) continue;
+      let customized = false;
+      const moduleDir = sourceMap.get(skill);
+      if (entry.kind === "link") {
+        customized = true;
+      } else {
+        if (moduleDir) {
+          const sourceEntry = backup.get(join(...moduleDir.split("/"), ...relInSkill.split("/")));
+          if (sourceEntry?.kind !== "file" || !sourceEntry.bytes.equals(entry.bytes) || sourceEntry.mode !== entry.mode) {
+            customized = true;
+          }
+        }
+        if (!customized && claudeSkillsIsRealDir) {
+          const claudeEntry = backup.get(join(".claude", "skills", skill, ...relInSkill.split("/")));
+          if (claudeEntry?.kind !== "file" || !claudeEntry.bytes.equals(entry.bytes) || claudeEntry.mode !== entry.mode) {
+            customized = true;
+          }
+        }
+        if (!customized && !moduleDir && !claudeSkillsIsRealDir) {
+          const text = entry.bytes.toString("utf8").replace(/\r\n/g, "\n");
+          if (
+            relInSkill !== "SKILL.md"
+            || !text.startsWith(`---\nname: ${skill}\n`)
+            || (entry.mode !== 0o644 && entry.mode !== 0o664)
+          ) {
+            customized = true;
+          }
+        }
+      }
+      if (customized) {
+        operatorNativeSkills.set(rel, entry);
+      }
+    }
+  }
+
+  return {
+    backup,
+    hadManifestG33: options.hadManifestG33,
+    hadTomlG33: options.hadTomlG33,
+    customEntries,
+    operatorCustomEntries,
+    scriptEntries,
+    companionEntries,
+    operatorNativeSkills,
+  };
+}
+
+export function restoreProtectedBmadStateBeforeCompanion(projectRoot: string, state: ProtectedBmadState): void {
+  const root = resolve(projectRoot);
+  const applyGroup = (entries: Map<string, TreeBackupEntry>, onlyIfMissing = false) => {
+    const sorted = [...entries.entries()].sort(([a, entryA], [b, entryB]) => {
+      if (entryA.kind === "dir" && entryB.kind !== "dir") return -1;
+      if (entryA.kind !== "dir" && entryB.kind === "dir") return 1;
+      return a.split(/[\\/]/).length - b.split(/[\\/]/).length || a.localeCompare(b);
+    });
+    for (const [rel, entry] of sorted) {
+      if (onlyIfMissing && localEntryPresent(join(root, rel))) continue;
+      restoreSingleEntry(root, rel, entry);
+    }
+  };
+  applyGroup(state.customEntries);
+  applyGroup(state.scriptEntries, true);
+  applyGroup(state.companionEntries);
+  applyGroup(state.operatorNativeSkills);
+
+  if (state.hadManifestG33) {
+    const manifestPath = join(root, "_bmad", "_config", "manifest.yaml");
+    if (existsSync(manifestPath)) {
+      const text = readFileSync(manifestPath, "utf8");
+      if (!/^\s*-\s*name:\s*g33\s*$/m.test(text)) {
+        writeFileSync(manifestPath, `${text.endsWith("\n") ? text : `${text}\n`}  - name: g33\n`);
+      }
+    }
+  }
+  if (state.hadTomlG33) {
+    const tomlPath = join(root, "_bmad", "config.toml");
+    if (existsSync(tomlPath)) {
+      const text = readFileSync(tomlPath, "utf8");
+      if (!/^\[modules\.g33\]\s*$/m.test(text)) {
+        writeFileSync(tomlPath, `${text.endsWith("\n") ? text : `${text}\n`}\n[modules.g33]\n`);
+      }
+    }
+  }
+}
+
+export function verifyProtectedBmadStateAfterCompanion(projectRoot: string, state: ProtectedBmadState): string[] {
+  const root = resolve(projectRoot);
+  const violations: string[] = [];
+  const checkEntry = (rel: string, expected: TreeBackupEntry, label: string) => {
+    const full = join(root, rel);
+    let stat;
+    try { stat = lstatSync(full); }
+    catch {
+      violations.push(`${label} missing after update: ${rel}`);
+      return;
+    }
+    if (expected.kind === "link") {
+      if (!stat.isSymbolicLink() || readlinkSync(full) !== expected.target) {
+        violations.push(`${label} symlink target changed: ${rel}`);
+      }
+      return;
+    }
+    if (expected.kind === "dir") {
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o7777) !== expected.mode) {
+        violations.push(`${label} directory mode changed: ${rel}`);
+      }
+      return;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      violations.push(`${label} is no longer a regular file: ${rel}`);
+      return;
+    }
+    if ((stat.mode & 0o7777) !== expected.mode || !readFileSync(full).equals(expected.bytes)) {
+      violations.push(`${label} bytes or mode changed: ${rel}`);
+    }
+  };
+  for (const [rel, entry] of state.operatorCustomEntries.entries()) {
+    checkEntry(rel, entry, "Protected operator custom entry");
+  }
+  for (const [rel, entry] of state.operatorNativeSkills.entries()) {
+    checkEntry(rel, entry, "Protected operator native BMAD skill");
+  }
+  return violations;
+}
+
+export interface BmadUpdateWithPreservationResult {
+  ok: boolean;
+  error?: string;
+  details: string[];
+  changedFiles: string[];
+  companion: CompanionResult;
+}
+
+export async function runBmadUpdateWithCompanionPreservation(
+  projectRoot: string,
+  options: {
+    hadManifestG33: boolean;
+    hadTomlG33: boolean;
+    beforeInstall?: () => Promise<{ changedFiles?: string[]; details?: string[] }> | { changedFiles?: string[]; details?: string[] };
+    runInstaller: () => { ok: boolean; error?: string };
+  },
+): Promise<BmadUpdateWithPreservationResult> {
+  const root = resolve(projectRoot);
+  const preflight = await runG33Companion(root, true, "bmad-install");
+  if (!["planned", "unchanged"].includes(preflight.status)) {
+    return {
+      ok: false,
+      error: preflight.summary,
+      details: companionDetails(preflight),
+      changedFiles: [],
+      companion: preflight,
+    };
+  }
+  const beforeSnapshot = snapshotTree(root);
+  const state = captureProtectedBmadState(root, {
+    hadManifestG33: options.hadManifestG33,
+    hadTomlG33: options.hadTomlG33,
+  });
+  let preDetails: string[] = [];
+  try {
+    if (options.beforeInstall) {
+      const pre = await options.beforeInstall();
+      preDetails = pre.details ?? [];
+    }
+    const install = options.runInstaller();
+    if (!install.ok) {
+      restoreTreeBackup(root, state.backup);
+      return {
+        ok: false,
+        error: install.error ?? "Failed to run bmad-method install",
+        details: [install.error ?? "Unknown error"],
+        changedFiles: [],
+        companion: preflight,
+      };
+    }
+    restoreProtectedBmadStateBeforeCompanion(root, state);
+    const companion = await runG33Companion(root, false, "bmad-install", { allowPostUpdateConflictPlan: true });
+    const violations = verifyProtectedBmadStateAfterCompanion(root, state);
+    if (!["changed", "unchanged"].includes(companion.status) || !companion.evidence.length || violations.length) {
+      restoreTreeBackup(root, state.backup);
+      const failedCompanion: CompanionResult = violations.length && ["changed", "unchanged"].includes(companion.status)
+        ? {
+            ...companion,
+            status: "error",
+            summary: "Post-update preservation verification failed",
+            details: [...companion.details, ...violations],
+            changedFiles: [],
+          }
+        : { ...companion, changedFiles: [] };
+      return {
+        ok: false,
+        error: failedCompanion.summary,
+        details: companionDetails(failedCompanion),
+        changedFiles: [],
+        companion: failedCompanion,
+      };
+    }
+    const totalChanged = changedTreePaths(root, beforeSnapshot, snapshotTree(root));
+    return {
+      ok: true,
+      details: [...preDetails, ...companionDetails(companion)],
+      changedFiles: totalChanged,
+      companion,
+    };
+  } catch (error) {
+    restoreTreeBackup(root, state.backup);
+    const failedCompanion: CompanionResult = {
+      schemaVersion: 1,
+      moduleId: "g33",
+      optional: true,
+      status: "error",
+      summary: "BMAD update with g33 preservation failed",
+      details: [error instanceof Error ? error.message : String(error)],
+      evidence: [],
+      changedFiles: [],
+      ...(preflight.adapter ? { adapter: preflight.adapter } : {}),
+    };
+    return {
+      ok: false,
+      error: failedCompanion.summary,
+      details: companionDetails(failedCompanion),
+      changedFiles: [],
+      companion: failedCompanion,
+    };
   }
 }
 
