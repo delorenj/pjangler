@@ -15,7 +15,7 @@ import YAML from "yaml";
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLIS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
-import { auditProjectSkills, currentSkillActivations, reconcileInstallerSkills, synchronizeProjectSkills } from "./skills";
+import { auditProjectSkills, currentSkillActivations, dropLegacyRegistryField, legacyRegistryField, reconcileInstallerSkills, synchronizeProjectSkills } from "./skills";
 import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
 import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
 import {
@@ -3104,7 +3104,10 @@ return [
     audit: async (ctx) => {
       const finding = await auditProjectSkills(ctx);
       const mise = safeReadText(join(ctx.repoRoot, "mise.toml"));
-      const wiring = skillsWiringIssues(mise);
+      // PJAN-144: a legacy registry field is fixable drift, like the wiring.
+      const registryField = await legacyRegistryField(ctx);
+      const wiring = [...skillsWiringIssues(mise), ...(registryField
+        ? [`Drop the legacy "registry" field (${JSON.stringify(registryField.value)}) from .agents/skills.json; it pins resolution to the never-fetched ~/.agents/.cache registry clone`] : [])];
       const retired = retiredSkillsScripts(ctx);
       const unsafe = retired.filter((path) => lstatIfPresent(path)?.isDirectory());
       const details = [...finding.details, ...wiring, ...retired.map((path) => unsafe.includes(path)
@@ -3156,6 +3159,11 @@ return [
         changedFiles.push(misePath);
         if (!ctx.dryRun) writeText(misePath, nextMise);
       }
+      // (3b) PJAN-144: drop the legacy registry field before skillex resolves
+      // anything, so the sync below and its handoff use the configured catalog.
+      const registryField = await dropLegacyRegistryField(ctx);
+      changedFiles.push(...registryField.changedFiles);
+      details.push(...registryField.details);
       // (4) Lossless CLI skills-root conversion. A blocked root stays untouched
       // and makes the sync below refuse at that alias, which is reported.
       const roots = applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });

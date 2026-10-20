@@ -256,3 +256,23 @@ test("PJAN-176: an invalid project manifest is skillex's finding, never a handof
     assert.equal(f.manifestText(), before);
   } finally { f.close(); }
 });
+
+test("PJAN-144: the legacy registry field is fixable drift; migrate drops only that key, in place", async () => {
+  const f = await fixture();
+  try {
+    await f.migrate();
+    const manifestPath = join(f.project, ".agents", "skills.json");
+    put(manifestPath, `${JSON.stringify({ $schema: "s", inherit_global: true, registry: "https://github.com/delorenj/skillex.git", skills: [], exclude: ["beta"] }, null, 2)}\n`);
+    const finding = await f.audit();
+    assert.equal(finding.status, "fail", JSON.stringify(finding.details));
+    assert.equal(finding.fixable, true);
+    assert.match(finding.details.join("\n"), /Drop the legacy "registry" field/);
+    const preview = await f.migrate({ dryRun: true });
+    assert.ok(preview.changedFiles.includes(manifestPath));
+    assert.match(f.manifestText(), /"registry"/, "a preview writes nothing");
+    await f.migrate();
+    assert.deepEqual(Object.keys(f.manifest()), ["$schema", "inherit_global", "skills", "exclude"], "every other key kept, in order");
+    assert.deepEqual(f.manifest().exclude, ["beta"]);
+    assert.equal((await f.audit()).status, "pass");
+  } finally { f.close(); }
+});

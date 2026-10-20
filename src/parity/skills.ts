@@ -628,3 +628,44 @@ export async function reconcileInstallerSkills(ctx: Context): Promise<SkillSynch
   if (ctx.dryRun || !(await readSelectionManifest(resolve(ctx.repoRoot))).exists) return { ok: true, changedFiles: [], details: [] };
   return synchronizeProjectSkills(ctx);
 }
+
+/**
+ * PJAN-144: the legacy `"registry"` field in a project's `.agents/skills.json`.
+ * skillex resolves such a project from the `~/.agents/.cache/registries` clone,
+ * which it never fetches, while the global scope (no field) resolves from the
+ * configured catalog checkout. skillex compares binding paths lexically, so a
+ * project that explicitly re-selects an inherited skill refused with
+ * E_DIVERGENT_CANONICAL_NAME even when both copies were byte-identical (HeyMa),
+ * and every unpulled catalog commit left the project resolving stale content.
+ * skillex's own guidance is to drop the field; the CommonProject template and
+ * `skillex init` no longer write it. Returns the manifest path and the value,
+ * or undefined when absent or when the manifest is unreadable (skillex reports
+ * that itself).
+ */
+export async function legacyRegistryField(ctx: Context): Promise<{ path: string; value: unknown } | undefined> {
+  try {
+    const snapshot = await readSelectionManifest(resolve(ctx.repoRoot));
+    if (!snapshot.exists || !snapshot.raw || !("registry" in snapshot.raw)) return undefined;
+    return { path: snapshot.path, value: snapshot.raw.registry };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Drop the legacy `"registry"` field under skillex's activation lock, keeping
+ * every other key and its order. A dry run reports the change and writes nothing.
+ */
+export async function dropLegacyRegistryField(ctx: Context): Promise<{ changedFiles: string[]; details: string[] }> {
+  const found = await legacyRegistryField(ctx);
+  if (!found) return { changedFiles: [], details: [] };
+  const detail = `${ctx.dryRun ? "would drop" : "dropped"} the legacy registry field (${JSON.stringify(found.value)}) from ${found.path}: it pinned resolution to the never-fetched ~/.agents/.cache registry clone`;
+  if (ctx.dryRun) return { changedFiles: [found.path], details: [detail] };
+  return withLock(ACTIVATION_LOCK, async () => {
+    const snapshot = await readSelectionManifest(resolve(ctx.repoRoot));
+    if (!snapshot.exists || !snapshot.raw || !("registry" in snapshot.raw)) return { changedFiles: [], details: [] };
+    const { registry: _registry, ...rest } = snapshot.raw;
+    await writeSelectionManifest(snapshot, rest);
+    return { changedFiles: [snapshot.path], details: [detail] };
+  }, { home: ctx.homeDir, env: process.env });
+}
