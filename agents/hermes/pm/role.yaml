@@ -17,7 +17,9 @@ profile: pjangler-pm
 
 # Telegram bot identity (one bot per agent — see docs/architecture.md).
 telegram:
+  provisioning_status: "verified"
   bot_username: "pjangler_pm_bot"
+  bot_id: "8538501729"
 
 # Plane board, as Plane names it. A projection of .project.json, which stays
 # canonical; 80-registry.sh copies plane.identifier into the fleet registry,
