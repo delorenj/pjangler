@@ -61,15 +61,20 @@ try {
   assert.ok(existsSync(templateWorkflow), "CommonProject template must ship .github/workflows/code-review.yml.jinja");
   const source = readFileSync(templateWorkflow, "utf8");
   for (const expression of [
-    "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    "${{ secrets.AUTOMATICAI_GATEWAY_TOKEN }}",
+    "${{ secrets.GITHUB_TOKEN }}",
     "${{ github.repository }}",
-    "${{ github.event.pull_request.number }}",
+    "${{ github.event.pull_request.number || inputs.pr }}",
   ]) {
     assert.ok(source.includes(expression), `template must carry the GitHub expression ${expression}`);
   }
   // Hosted runners are billed and the budget is $0: only self-hosted labels.
   assert.match(source, /runs-on: \[self-hosted, Linux, delonet\]/, "code-review must run on the self-hosted delonet runners");
   assert.doesNotMatch(source, /runs-on:\s*(ubuntu|macos|windows)-/, "a GitHub-hosted runner label is billed; use [self-hosted, Linux, delonet]");
+  // AAI-59: inference goes through the AutomaticAI gateway, never Anthropic directly.
+  assert.doesNotMatch(source.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n"),
+    /CLAUDE_CODE_OAUTH_TOKEN|claude_code_oauth_token|api\.anthropic\.com/,
+    "code-review must not use the subscription OAuth token or name api.anthropic.com");
   // Strip every raw block; whatever GitHub expression is left would be eaten by
   // Jinja (`{{ ... }}` -> undefined -> empty string) instead of erroring.
   const outsideRawBlocks = source.split(/\{%\s*raw\s*%\}[\s\S]*?\{%\s*endraw\s*%\}/).join("");
@@ -105,11 +110,12 @@ try {
   // Literal survival of the GitHub expressions through Jinja rendering.
   assert.ok(rendered.includes("uses: anthropics/claude-code-action@v1"), "rendered workflow must pin the v1 action");
   assert.ok(
-    rendered.includes("claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"),
-    "rendered workflow must authenticate with the literal CLAUDE_CODE_OAUTH_TOKEN secret expression",
+    rendered.includes("anthropic_api_key: ${{ secrets.AUTOMATICAI_GATEWAY_TOKEN }}"),
+    "rendered workflow must authenticate with the literal AUTOMATICAI_GATEWAY_TOKEN secret expression",
   );
+  assert.doesNotMatch(rendered, /CLAUDE_CODE_OAUTH_TOKEN/, "rendered workflow must not use the direct Anthropic OAuth token");
   assert.ok(
-    rendered.includes("${{ github.repository }}/pull/${{ github.event.pull_request.number }}"),
+    rendered.includes("${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr }}"),
     "rendered prompt must resolve the PR from the generated repo's own GitHub context",
   );
 
@@ -130,11 +136,23 @@ try {
     contents: "read",
     "pull-requests": "read",
     issues: "read",
-    "id-token": "write",
-  });
+  }, "no id-token: write; the action's OIDC app-token exchange calls api.anthropic.com");
   assert.equal(job.steps[0].uses, "actions/checkout@v4");
-  assert.equal(job.steps[1].uses, "anthropics/claude-code-action@v1");
-  assert.equal(job.steps[1].with.claude_code_oauth_token, "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}");
+  assert.equal(job.steps[1].run, "bash .github/scripts/check-gateway-routing.sh", "the routing guard runs before any model call");
+  const review = job.steps[2];
+  assert.equal(review.uses, "anthropics/claude-code-action@v1");
+  assert.equal(review.with.anthropic_api_key, "${{ secrets.AUTOMATICAI_GATEWAY_TOKEN }}");
+  assert.equal(review.with.classify_inline_comments, "false");
+  assert.equal(review.env.ANTHROPIC_BASE_URL, "https://api.automaticai.io");
+  assert.match(review.with.claude_args, /--model automaticai\//);
+  for (const slot of ["OPUS", "SONNET", "HAIKU"]) {
+    assert.match(review.env[`ANTHROPIC_DEFAULT_${slot}_MODEL`], /^automaticai\//, `${slot} slot must be a gateway route`);
+  }
+  // The rendered project carries the guard and it passes on its own workflow.
+  const guard = join(targetDir, ".github", "scripts", "check-gateway-routing.sh");
+  assert.ok(existsSync(guard), "every rendered project must get the gateway routing guard");
+  const guarded = spawnSync("bash", [guard, join(targetDir, ".github", "workflows")], { encoding: "utf8" });
+  assert.equal(guarded.status, 0, guarded.stdout + guarded.stderr);
 
   // Unconditional: no copier question gates the workflow.
   const copierYml = readFileSync(join(root, "templates", "commonproject", "copier.yml"), "utf8");
@@ -142,7 +160,7 @@ try {
 
   // Documented: the secret is a hard prerequisite, so the README must say so.
   const readme = readFileSync(join(root, "templates", "commonproject", "README.md"), "utf8");
-  assert.match(readme, /CLAUDE_CODE_OAUTH_TOKEN/, "CommonProject README must document the required repo secret");
+  assert.match(readme, /AUTOMATICAI_GATEWAY_TOKEN/, "CommonProject README must document the required repo secret");
 
   console.log("pjan-31a regressions: ok");
 } finally {

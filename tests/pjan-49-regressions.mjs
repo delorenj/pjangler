@@ -151,13 +151,13 @@ try {
   const rendered = readFileSync(renderedPath, "utf8");
   assert.ok(rendered.includes("uses: anthropics/claude-code-action@v1"), "rendered workflow must pin the v1 action");
   assert.ok(
-    rendered.includes("${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"),
-    "rendered workflow must carry the literal CLAUDE_CODE_OAUTH_TOKEN expression",
+    rendered.includes("${{ secrets.AUTOMATICAI_GATEWAY_TOKEN }}"),
+    "rendered workflow must carry the literal AUTOMATICAI_GATEWAY_TOKEN expression",
   );
   assert.doesNotMatch(rendered, /\{%/, "rendered workflow must contain no Jinja block tags");
   assert.doesNotMatch(rendered, /(?<!\$)\{\{/, "rendered workflow must contain no unrendered Jinja variables");
   assert.equal(
-    YAML.parse(rendered).jobs["claude-review"].steps[1].uses,
+    YAML.parse(rendered).jobs["claude-review"].steps[2].uses,
     "anthropics/claude-code-action@v1",
     "rendered workflow must parse as YAML with the review step intact",
   );
