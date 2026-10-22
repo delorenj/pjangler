@@ -34,7 +34,7 @@ import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import type { TrustedCopierIdentity } from "../lifecycle/preflight";
 import type { NotebookPlanV1 } from "../notebook/observation";
 import { NotebookRecipe } from "./NotebookRecipe";
-import { companionDetails, g33CompanionEnabled, runG33Companion, type CompanionResult } from "../bmad/companion";
+import { companionDetails, enrollG33Companion, enrollmentDetails, g33CompanionEnabled, runG33Companion, type CompanionResult } from "../bmad/companion";
 
 export interface ProjectRecipeInput {
   plan: ProjectInitPlan;
@@ -562,6 +562,19 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       // into required transaction failures or a fresh-target rollback.
       if (errors.length === 0 && registryFinalizerEligible && mode === "create" && g33DeferredForEnrollment
         && plan.project.ticket_provider.state === "linked") {
+        // A linked project with no adapter is enrolled first (skill + adapter
+        // block). Optional like the companion: a failure is an advisory, and the
+        // companion still runs so its own "not configured" message stays truthful.
+        const enrollment = await enrollG33Companion({ ...transactionContext, repoRoot: targetDir, dryRun: ctx.dryRun });
+        logs.push(...enrollmentDetails(enrollment));
+        changedFiles.push(...enrollment.changedFiles);
+        phases.push({
+          id: "project.optional:g33-enrollment",
+          status: enrollment.status === "enrolled" ? "changed" : enrollment.status === "planned" ? "planned"
+            : enrollment.status === "already-configured" ? "unchanged" : "skipped",
+          changedFiles: enrollment.changedFiles,
+          message: `Optional g33 enrollment (${enrollment.status}): ${enrollment.summary}`,
+        });
         bmadCompanion = await runG33Companion(targetDir, ctx.dryRun);
         logs.push(...companionDetails(bmadCompanion));
         changedFiles.push(...bmadCompanion.changedFiles);

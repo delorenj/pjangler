@@ -3,7 +3,9 @@ import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../utils/tree-diff";
-import type { RecipeOwnedCheck } from "../parity/rules";
+import { enableSelection } from "@delorenj/skillex";
+import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
+import type { Context, RecipeOwnedCheck } from "../parity/rules";
 
 /** PJangler's callable boundary; an owner adapter translates its public API. */
 export interface CompanionRequest {
@@ -47,6 +49,15 @@ function optionalObject(parent: Record<string, unknown>, key: string, label: str
   return value as Record<string, unknown>;
 }
 
+/** The one eligibility rule: a registered project with a linked 33god Plane board. */
+function linkedG33Project(manifest: Record<string, unknown>): boolean {
+  const binding = record(manifest.ticket_provider);
+  const registered = typeof manifest.project_id === "string" && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i.test(manifest.project_id) && manifest.project_id.length <= 128;
+  return registered && binding.type === "plane" && binding.state === "linked"
+    && typeof binding.workspace === "string" && binding.workspace.trim().toLowerCase() === "33god"
+    && typeof binding.board_id === "string" && binding.board_id.trim() !== "";
+}
+
 function select(projectRoot: string): Selection {
   const path = join(projectRoot, ".project.json");
   const manifest = existsSync(path) ? record(JSON.parse(readFileSync(path, "utf8"))) : {};
@@ -58,11 +69,7 @@ function select(projectRoot: string): Selection {
   // A project opt-out always wins, including over host adapter configuration.
   if (config.enabled === false) return { enabled: false, reason: "g33 explicitly disabled in .project.json", options: {} };
   if (config.enabled !== undefined && config.enabled !== true) throw new Error("bmad.companion.enabled must be boolean");
-  const binding = record(manifest.ticket_provider);
-  const registered = typeof manifest.project_id === "string" && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i.test(manifest.project_id) && manifest.project_id.length <= 128;
-  const eligible = registered && binding.type === "plane" && binding.state === "linked"
-    && typeof binding.workspace === "string" && binding.workspace.trim().toLowerCase() === "33god"
-    && typeof binding.board_id === "string" && binding.board_id.trim() !== "";
+  const eligible = linkedG33Project(manifest);
   if (!eligible && config.enabled !== true) return { enabled: false, reason: "g33 defaults off without a registered linked 33god project or explicit opt-in", options: {} };
   const module = adapter.module ?? (process.env.PJ_G33_ADAPTER_MODULE?.trim() || undefined);
   const exportName = adapter.exportName ?? (process.env.PJ_G33_ADAPTER_EXPORT?.trim() || undefined);
@@ -188,6 +195,82 @@ export async function runG33Companion(
     }
     return { ...result, status: "error", summary: "Optional g33 companion could not be reconciled", details: [...result.details, error instanceof Error ? error.message : String(error)] };
   }
+}
+
+/** The owner adapter shipped by the skillex catalog skill; new linked projects get exactly this block. */
+export const G33_SKILL = "g33-33god-integration";
+export const G33_BRIDGE_ADAPTER = Object.freeze({ module: `./.agents/skills/${G33_SKILL}/scripts/g33_pjangler_bridge.mjs`, exportName: "g33Companion" });
+
+export interface G33EnrollmentResult {
+  status: "enrolled" | "already-configured" | "skipped" | "planned" | "error";
+  summary: string;
+  details: string[];
+  changedFiles: string[];
+}
+
+/**
+ * Optional, like the companion itself: never throws, and every failure is an
+ * advisory the caller records. Activates the owner skill, then writes the
+ * adapter block, for an eligible, non-opted-out project with no adapter
+ * configured (manifest or PJ_G33_ADAPTER_* env). An existing adapter, an
+ * explicit `enabled: false` and `adapter.options` are never touched. The
+ * manifest is written only after the bridge the block points at resolves.
+ */
+export async function enrollG33Companion(ctx: Context): Promise<G33EnrollmentResult> {
+  const projectRoot = resolve(ctx.repoRoot);
+  const result: G33EnrollmentResult = { status: "skipped", summary: "skipped", details: [], changedFiles: [] };
+  const retry = `Run: ${PJ_SKILLS} enable skill ${G33_SKILL}, then add bmad.companion.adapter ${JSON.stringify(G33_BRIDGE_ADAPTER)} to .project.json`;
+  let before: ReturnType<typeof snapshotTree> | undefined;
+  try {
+    const path = join(projectRoot, ".project.json");
+    if (!existsSync(path)) return { ...result, summary: "skipped: no .project.json" };
+    const manifest = record(JSON.parse(readFileSync(path, "utf8")));
+    const bmad = optionalObject(manifest, "bmad", "bmad");
+    const config = optionalObject(bmad, "companion", "bmad.companion");
+    const adapter = optionalObject(config, "adapter", "bmad.companion.adapter");
+    optionalObject(adapter, "options", "bmad.companion.adapter.options");
+    if (config.enabled === false) return { ...result, summary: "skipped: g33 explicitly disabled in .project.json" };
+    if (config.enabled !== undefined && config.enabled !== true) throw new Error("bmad.companion.enabled must be boolean");
+    if (!linkedG33Project(manifest)) return { ...result, summary: "skipped: not a registered linked 33god project" };
+    const configured = adapter.module !== undefined || adapter.exportName !== undefined
+      || Boolean(process.env.PJ_G33_ADAPTER_MODULE?.trim() || process.env.PJ_G33_ADAPTER_EXPORT?.trim());
+    if (configured) return { ...result, status: "already-configured", summary: "g33 adapter already configured; enrollment not needed" };
+    if (ctx.dryRun) return {
+      ...result, status: "planned", summary: `would activate ${G33_SKILL} and write bmad.companion.adapter`,
+      details: [`Would run ${PJ_SKILLS} enable skill ${G33_SKILL} and set bmad.companion.adapter to ${JSON.stringify(G33_BRIDGE_ADAPTER)}; nothing written.`],
+    };
+    before = snapshotTree(projectRoot);
+    // enableSelection reconciles the whole scope; a refusal is an envelope, not a throw.
+    const enabled = await enableSelection("skill", G33_SKILL, { ...skillCoreOptions(ctx), dryRun: false });
+    if (!enabled.ok) {
+      const found = skillDiagnostics(enabled.findings);
+      return { ...result, status: "error", summary: `could not activate ${G33_SKILL}`, details: [...found, retry],
+        changedFiles: changedTreePaths(projectRoot, before, snapshotTree(projectRoot)) };
+    }
+    if (!existsSync(resolve(projectRoot, G33_BRIDGE_ADAPTER.module))) {
+      return { ...result, status: "error", summary: `activated ${G33_SKILL} but its bridge is not in the project`,
+        details: [`Missing ${G33_BRIDGE_ADAPTER.module}; the adapter was not written.`, retry],
+        changedFiles: changedTreePaths(projectRoot, before, snapshotTree(projectRoot)) };
+    }
+    // Re-read: activation reconciles under a lock and the manifest may have moved.
+    const current = record(JSON.parse(readFileSync(path, "utf8")));
+    const currentBmad = optionalObject(current, "bmad", "bmad");
+    const currentConfig = optionalObject(currentBmad, "companion", "bmad.companion");
+    if (!Object.hasOwn(currentBmad, "companion")) currentBmad.companion = currentConfig;
+    if (!Object.hasOwn(current, "bmad")) current.bmad = currentBmad;
+    currentConfig.adapter = { ...optionalObject(currentConfig, "adapter", "bmad.companion.adapter"), ...G33_BRIDGE_ADAPTER };
+    writeFileSync(path, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+    return { ...result, status: "enrolled", summary: `activated ${G33_SKILL} and wrote bmad.companion.adapter`,
+      changedFiles: changedTreePaths(projectRoot, before, snapshotTree(projectRoot)) };
+  } catch (error) {
+    let changedFiles: string[] = [];
+    try { if (before) changedFiles = changedTreePaths(projectRoot, before, snapshotTree(projectRoot)); } catch { /* the inventory is best effort */ }
+    return { ...result, status: "error", summary: "could not be completed", details: [error instanceof Error ? error.message : String(error), retry], changedFiles };
+  }
+}
+
+export function enrollmentDetails(result: G33EnrollmentResult): string[] {
+  return [`g33 enrollment${result.status === "enrolled" ? "" : ` (${result.status})`}: ${result.summary}`, ...result.details];
 }
 
 function safeFileText(path: string): string {
