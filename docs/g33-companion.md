@@ -112,6 +112,10 @@ touched). One read-only rule, `g33Enrollability`, decides this for every caller.
   `partial` (some writes), with the `pj skills enable skill ...` hint. A missing
   catalog skill is therefore a warn/advisory, never a hard fail of the audit.
   `--dry-run` reports the planned enrollment and writes nothing.
+  The audit advertises the fix only when this host's catalog resolves the skill
+  and its bridge; otherwise it is a non-fixable warn naming the catalog problem.
+  The rule is ordered before `bmad.version`, whose update is withheld until an
+  adapter exists, so one `migrate --all` enrolls and then upgrades BMAD.
 
 Recipe JSON includes `bmadCompanion`, separate from required BMAD success.
 Missing configuration/source and owner conflicts/errors remain actionable

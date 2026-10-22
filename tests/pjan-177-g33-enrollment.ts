@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
@@ -429,5 +430,47 @@ try {
     assert.equal(post?.status, "pass", JSON.stringify(post));
     console.log("PASS migrate: RecipeRegistry selects the rule, migrates it, and the re-audit passes");
   }
-  console.log("PJAN-177 g33 enrollment: 8 topology scenarios, 6 direct checks and 5 migrate checks passed; live board and the real skillex catalog remain unverified here.");
+  {
+    // Review follow-up (host state): the audit advertises a fix only when THIS host's catalog can run it.
+    // A missing or bridge-less catalog skill is a non-fixable warn with the reason, never a fail.
+    for (const kind of ["empty", "nobridge"] as const) {
+      const { dir, ctx } = migrateProject(`audit-catalog-${kind}`);
+      process.env.PJ_SKILLS_REGISTRY_ROOT = catalog(kind);
+      try {
+        const before = snapshotTree(dir);
+        const audited = await check.audit(ctx);
+        assert.equal(audited.status, "warn", kind);
+        assert.equal(audited.fixable, false, `${kind}: no fix is advertised that cannot run here`);
+        assert.match(audited.summary, /not enrollable on this host/, kind);
+        assert.match(audited.details.join("\n"), /pj migrate bmad\.g33-companion/, kind);
+        assert.deepEqual(snapshotTree(dir), before, `${kind}: audit stays read-only`);
+      } finally { process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("full"); }
+    }
+    console.log("PASS migrate: audit downgrades to a non-fixable warn when the host catalog cannot enroll");
+  }
+  {
+    // Review follow-up (convergence): bmad.version is withheld until the companion adapter is
+    // configured, and g33 enrollment configures it, so one `migrate --all` must enroll FIRST.
+    const { dir, ctx } = migrateProject("converge");
+    // A real (fixture) install, then rolled back to an old version so bmad.version has work to do.
+    execFileSync(process.env.PJ_BMAD_INSTALLER!, ["install", "--directory", dir, "--modules", "core", "--yes"], { stdio: "pipe" });
+    const installedManifest = join(dir, "_bmad", "_config", "manifest.yaml");
+    writeFileSync(installedManifest, readFileSync(installedManifest, "utf8").replace(/(installation:\s*\n\s*version:)\s*\S+/, "$1 6.0.0"));
+    const registry = new RecipeRegistry([noop("mise"), noop("agent-hooks", ["mise"]), new BmadRecipe()]);
+    const ids = registry.listRuleIds();
+    assert.ok(ids.indexOf("bmad.g33-companion") < ids.indexOf("bmad.version"), `g33 enrollment is ordered before bmad.version: ${ids}`);
+    const audit = await registry.auditRecipes(ctx);
+    const version = audit.rules.find((rule) => rule.id === "bmad.version");
+    assert.ok(version?.fixable && version.status === "warn", `bmad.version is behind stable and fixable: ${JSON.stringify(version)}`);
+    const report = await registry.migrateAll(ctx);
+    const versionResult = report.results.find((result) => result.id === "bmad.version");
+    assert.doesNotMatch(JSON.stringify(versionResult), /withheld/, `bmad.version was not blocked by the g33 boundary: ${JSON.stringify(versionResult)}`);
+    assert.equal(report.results.find((result) => result.id === "bmad.g33-companion")?.status, "applied", JSON.stringify(report.results));
+    const post = await registry.auditRecipes(ctx);
+    for (const id of ["bmad.g33-companion", "bmad.version"]) {
+      assert.equal(post.rules.find((rule) => rule.id === id)?.status, "pass", `${id} converged in one pass: ${JSON.stringify(post.rules.find((rule) => rule.id === id))}`);
+    }
+    console.log("PASS migrate: one migrate --all enrolls then upgrades BMAD (no second pass)");
+  }
+  console.log("PJAN-177 g33 enrollment: 8 topology scenarios, 6 direct checks and 7 migrate checks passed; live board and the real skillex catalog remain unverified here.");
 } finally { rmSync(scratch, { recursive: true, force: true }); }

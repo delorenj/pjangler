@@ -8,7 +8,14 @@ import type { LifecycleContext, RecipeInitResult, RecipeMetadata } from "./types
 /** Owns BMAD installation, version currency, and supported CLI projections. */
 export class BmadRecipe extends Recipe {
   private readonly requiredChecks = createBmadChecks();
-  readonly checks = [...this.requiredChecks, createG33CompanionCheck()];
+  // g33 enrollment runs BEFORE bmad.version: the version rule's update is withheld
+  // while a linked project has no companion adapter, and enrolling is what lifts
+  // that, so one `migrate --all` converges instead of needing a second pass.
+  readonly checks = (() => {
+    const g33 = createG33CompanionCheck();
+    const at = this.requiredChecks.findIndex((check) => check.id === "bmad.version");
+    return at < 0 ? [...this.requiredChecks, g33] : [...this.requiredChecks.slice(0, at), g33, ...this.requiredChecks.slice(at)];
+  })();
   readonly metadata: RecipeMetadata = {
     id: "bmad",
     name: "bmad",

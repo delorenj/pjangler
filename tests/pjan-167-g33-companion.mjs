@@ -316,8 +316,17 @@ try {
   const optionalAudit = run(unavailable, ["audit", "--rules", "bmad.g33-companion"]);
   assert.equal(optionalAudit.ok, true);
   assert.equal(optionalAudit.rules[0].status, "warn");
+  // PJAN-177: this linked project is enrollable, and the empty catalog cannot enroll it, so
+  // nothing was written: blocked (still exit 1, never applied). The audit does not advertise a fix.
+  assert.equal(optionalAudit.rules[0].fixable, false, "no fix is advertised that this host's catalog cannot run");
   const repair = run(unavailable, ["migrate", "bmad.g33-companion"], 1);
-  assert.equal(repair.results[0].status, "partial");
+  assert.equal(repair.results[0].status, "blocked");
+  assert.match(repair.results[0].summary, /g33 enrollment failed/);
+  // Not enrollable (explicit opt-in, no board): the companion's own repair keeps its truthful partial.
+  const optInUnavailable = project("unavailable-optin", { enabled: true }, false);
+  assert.equal(run(optInUnavailable, recipe).bmadCompanion.status, "unavailable");
+  const optInRepair = run(optInUnavailable, ["migrate", "bmad.g33-companion"], 1);
+  assert.equal(optInRepair.results[0].status, "partial");
   const missingSource = project("missing-source", { adapter: { module: "./missing.mjs", exportName: "owner" } });
   assert.equal(run(missingSource, [...recipe, "--dry-run"]).bmadCompanion.status, "unavailable");
   checkpoint("fresh BMAD survives absent optional installer, audit warns, explicit repair truthful");

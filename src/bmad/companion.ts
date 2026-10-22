@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../utils/tree-diff";
-import { enableSelection, readSelectionManifest } from "@delorenj/skillex";
+import { enableSelection, readSelectionManifest, showSkill } from "@delorenj/skillex";
 import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
 import type { Context, MigrationRuleResult, RecipeOwnedCheck } from "../parity/rules";
 
@@ -245,6 +245,24 @@ export async function g33Enrollability(ctx: Context): Promise<G33Enrollability> 
     return skipped("skipped: a set replaces the project skills root", [`Enrolling would derive a new set inside the skills catalog. ${enrollRetry()}`]);
   }
   return { enrollable: true, reason: "eligible 33god project has no companion adapter" };
+}
+
+/**
+ * Host state, read-only: does THIS machine's catalog resolve the g33 skill with the
+ * bridge the adapter points at. The audit uses it so it advertises only a fix that
+ * can run here; a miss is an advisory about the host, never a project failure.
+ */
+export async function g33CatalogProblem(ctx: Context): Promise<string | undefined> {
+  try {
+    const { cwd, home, env, registryRoot } = skillCoreOptions(ctx);
+    const shown = await showSkill(G33_SKILL, { cwd, home, env, ...(registryRoot ? { registryRoot } : {}) });
+    if (!shown.ok || !shown.data) return `the skill catalog on this host does not resolve ${G33_SKILL}`;
+    const bridge = join(shown.data.skill.path, "scripts", "g33_pjangler_bridge.mjs");
+    if (!existsSync(bridge)) return `${G33_SKILL} in the catalog has no scripts/g33_pjangler_bridge.mjs`;
+    return undefined;
+  } catch (error) {
+    return `the skill catalog on this host could not be read (${error instanceof Error ? error.message : String(error)})`;
+  }
 }
 
 const enrollRetry = (): string => `Run: ${PJ_SKILLS} enable skill ${G33_SKILL}, then add bmad.companion.adapter ${JSON.stringify(G33_BRIDGE_ADAPTER)} to .project.json`;
@@ -840,10 +858,17 @@ export function createG33CompanionCheck(): RecipeOwnedCheck {
       // companion audit, which reports it in its own words.
       let verdict: G33Enrollability | undefined;
       try { verdict = await g33Enrollability(ctx); } catch { /* reported by the companion audit below */ }
-      if (verdict?.enrollable) return {
-        id, title, status: "warn", summary: `g33 enrollable: ${verdict.reason}`, fixable: true,
-        details: [`Run pj migrate ${id} to activate ${G33_SKILL} and write bmad.companion.adapter, then install the companion.`],
-      };
+      if (verdict?.enrollable) {
+        const problem = await g33CatalogProblem(ctx);
+        if (problem) return {
+          id, title, status: "warn", summary: `g33 enrollable but not enrollable on this host: ${verdict.reason}`, fixable: false,
+          details: [problem, `Fix the catalog on this machine, then run pj migrate ${id}. ${enrollRetry()}`],
+        };
+        return {
+          id, title, status: "warn", summary: `g33 enrollable: ${verdict.reason}`, fixable: true,
+          details: [`Run pj migrate ${id} to activate ${G33_SKILL} and write bmad.companion.adapter, then install the companion.`],
+        };
+      }
       // Read-only observation and planning remain independent of application.
       const result = await runG33Companion(ctx.repoRoot, true, "audit");
       return {
