@@ -93,6 +93,26 @@ pj migrate bmad.g33-companion --dry-run --json
 pj migrate bmad.g33-companion --json
 ```
 
+## Enrollment (init and migrate)
+
+An eligible project (above), not opted out, with no adapter configured (manifest
+or `PJ_G33_ADAPTER_*`) and `.agents/skills.json` not selecting a set, is
+*enrollable*: PJangler activates the `g33-33god-integration` catalog skill through
+Skillex and writes `bmad.companion.adapter` into `.project.json` (other keys and
+`adapter.options` preserved; an existing adapter or `enabled: false` is never
+touched). One read-only rule, `g33Enrollability`, decides this for every caller.
+
+- **`pj init`**: enrollment runs after the board links, before the companion.
+  Failures are advisories and never fail or roll back init.
+- **`pj migrate bmad.g33-companion`** (and `migrate --all`): `pj audit` reports an
+  enrollable project as a fixable warn, "g33 enrollable: eligible 33god project
+  has no companion adapter", without writing. Migrate enrolls, then reconciles
+  the companion, and reports `applied` only when the owner proves installation
+  (else `partial`). A failed enrollment is `blocked` (nothing written) or
+  `partial` (some writes), with the `pj skills enable skill ...` hint. A missing
+  catalog skill is therefore a warn/advisory, never a hard fail of the audit.
+  `--dry-run` reports the planned enrollment and writes nothing.
+
 Recipe JSON includes `bmadCompanion`, separate from required BMAD success.
 Missing configuration/source and owner conflicts/errors remain actionable
 optional outcomes. They do not fail required fresh BMAD initialization or its

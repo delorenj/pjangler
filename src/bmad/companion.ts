@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../utils/tree-diff";
 import { enableSelection, readSelectionManifest } from "@delorenj/skillex";
 import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
-import type { Context, RecipeOwnedCheck } from "../parity/rules";
+import type { Context, MigrationRuleResult, RecipeOwnedCheck } from "../parity/rules";
 
 /** PJangler's callable boundary; an owner adapter translates its public API. */
 export interface CompanionRequest {
@@ -208,46 +208,67 @@ export interface G33EnrollmentResult {
   changedFiles: string[];
 }
 
+export type G33Enrollability =
+  | { enrollable: true; reason: string }
+  | { enrollable: false; status: "already-configured" | "skipped"; summary: string; details: string[] };
+
+/**
+ * The ONE rule for "would enrollment act on this project": read-only, shared by
+ * the audit (which must not write) and enrollG33Companion (which does). Eligible,
+ * not opted out, no adapter half configured (manifest or PJ_G33_ADAPTER_* env),
+ * and skills.json not selecting a set. Throws on a malformed manifest; callers
+ * decide whether that is an advisory (enroll) or a fall-through (audit).
+ */
+export async function g33Enrollability(ctx: Context): Promise<G33Enrollability> {
+  const projectRoot = resolve(ctx.repoRoot);
+  const skipped = (summary: string, details: string[] = []): G33Enrollability => ({ enrollable: false, status: "skipped", summary, details });
+  const path = join(projectRoot, ".project.json");
+  if (!existsSync(path)) return skipped("skipped: no .project.json");
+  const manifest = record(JSON.parse(readFileSync(path, "utf8")));
+  const bmad = optionalObject(manifest, "bmad", "bmad");
+  const config = optionalObject(bmad, "companion", "bmad.companion");
+  const adapter = optionalObject(config, "adapter", "bmad.companion.adapter");
+  optionalObject(adapter, "options", "bmad.companion.adapter.options");
+  if (config.enabled === false) return skipped("skipped: g33 explicitly disabled in .project.json");
+  if (config.enabled !== undefined && config.enabled !== true) throw new Error("bmad.companion.enabled must be boolean");
+  if (!linkedG33Project(manifest)) return skipped("skipped: not a registered linked 33god project");
+  // Same merge as select(): each half comes from the manifest or its env var.
+  const hasModule = adapter.module !== undefined || Boolean(process.env.PJ_G33_ADAPTER_MODULE?.trim());
+  const hasExport = adapter.exportName !== undefined || Boolean(process.env.PJ_G33_ADAPTER_EXPORT?.trim());
+  if (hasModule && hasExport) return { enrollable: false, status: "already-configured", summary: "g33 adapter already configured; enrollment not needed", details: [] };
+  if (hasModule || hasExport) return skipped(`skipped: g33 adapter is half-configured (${hasModule ? "exportName" : "module"} is missing)`,
+    [`Set bmad.companion.adapter.${hasModule ? "exportName" : "module"} (or PJ_G33_ADAPTER_${hasModule ? "EXPORT" : "MODULE"}); enrollment never completes or overwrites an adapter someone started.`]);
+  // A set replaces the project skills root and enabling beside it derives a new
+  // set directory inside the shared catalog: not ours to write (see handOffInstallerSkills).
+  const declaration = await readSelectionManifest(skillCoreOptions(ctx).project);
+  if (Array.isArray(declaration.raw?.sets) && declaration.raw.sets.length) {
+    return skipped("skipped: a set replaces the project skills root", [`Enrolling would derive a new set inside the skills catalog. ${enrollRetry()}`]);
+  }
+  return { enrollable: true, reason: "eligible 33god project has no companion adapter" };
+}
+
+const enrollRetry = (): string => `Run: ${PJ_SKILLS} enable skill ${G33_SKILL}, then add bmad.companion.adapter ${JSON.stringify(G33_BRIDGE_ADAPTER)} to .project.json`;
+
 /**
  * Optional, like the companion itself: never throws, and every failure is an
  * advisory the caller records. Activates the owner skill, then writes the
- * adapter block, for an eligible, non-opted-out project with no adapter
- * configured (manifest or PJ_G33_ADAPTER_* env). An existing adapter, an
+ * adapter block, for a project g33Enrollability accepts. An existing adapter, an
  * explicit `enabled: false` and `adapter.options` are never touched. The
  * manifest is written only after the bridge the block points at resolves.
  */
 export async function enrollG33Companion(ctx: Context): Promise<G33EnrollmentResult> {
   const projectRoot = resolve(ctx.repoRoot);
   const result: G33EnrollmentResult = { status: "skipped", summary: "skipped", details: [], changedFiles: [] };
-  const retry = `Run: ${PJ_SKILLS} enable skill ${G33_SKILL}, then add bmad.companion.adapter ${JSON.stringify(G33_BRIDGE_ADAPTER)} to .project.json`;
+  const retry = enrollRetry();
   let before: ReturnType<typeof snapshotTree> | undefined;
   try {
     const path = join(projectRoot, ".project.json");
-    if (!existsSync(path)) return { ...result, summary: "skipped: no .project.json" };
-    const manifest = record(JSON.parse(readFileSync(path, "utf8")));
-    const bmad = optionalObject(manifest, "bmad", "bmad");
-    const config = optionalObject(bmad, "companion", "bmad.companion");
-    const adapter = optionalObject(config, "adapter", "bmad.companion.adapter");
-    optionalObject(adapter, "options", "bmad.companion.adapter.options");
-    if (config.enabled === false) return { ...result, summary: "skipped: g33 explicitly disabled in .project.json" };
-    if (config.enabled !== undefined && config.enabled !== true) throw new Error("bmad.companion.enabled must be boolean");
-    if (!linkedG33Project(manifest)) return { ...result, summary: "skipped: not a registered linked 33god project" };
-    // Same merge as select(): each half comes from the manifest or its env var.
-    const hasModule = adapter.module !== undefined || Boolean(process.env.PJ_G33_ADAPTER_MODULE?.trim());
-    const hasExport = adapter.exportName !== undefined || Boolean(process.env.PJ_G33_ADAPTER_EXPORT?.trim());
-    if (hasModule && hasExport) return { ...result, status: "already-configured", summary: "g33 adapter already configured; enrollment not needed" };
-    if (hasModule || hasExport) return { ...result, summary: `skipped: g33 adapter is half-configured (${hasModule ? "exportName" : "module"} is missing)`,
-      details: [`Set bmad.companion.adapter.${hasModule ? "exportName" : "module"} (or PJ_G33_ADAPTER_${hasModule ? "EXPORT" : "MODULE"}); enrollment never completes or overwrites an adapter someone started.`] };
+    const verdict = await g33Enrollability(ctx);
+    if (!verdict.enrollable) return { ...result, status: verdict.status, summary: verdict.summary, details: verdict.details };
     if (ctx.dryRun) return {
       ...result, status: "planned", summary: `would activate ${G33_SKILL} and write bmad.companion.adapter`,
       details: [`Would run ${PJ_SKILLS} enable skill ${G33_SKILL} and set bmad.companion.adapter to ${JSON.stringify(G33_BRIDGE_ADAPTER)}; nothing written.`],
     };
-    // A set replaces the project skills root and enabling beside it derives a new
-    // set directory inside the shared catalog: not ours to write (see handOffInstallerSkills).
-    const declaration = await readSelectionManifest(skillCoreOptions(ctx).project);
-    if (Array.isArray(declaration.raw?.sets) && declaration.raw.sets.length) {
-      return { ...result, summary: "skipped: a set replaces the project skills root", details: [`Enrolling would derive a new set inside the skills catalog. ${retry}`] };
-    }
     before = snapshotTree(projectRoot);
     // enableSelection reconciles the whole scope; a refusal is an envelope, not a throw.
     const enabled = await enableSelection("skill", G33_SKILL, { ...skillCoreOptions(ctx), dryRun: false });
@@ -810,25 +831,51 @@ export function companionDetails(result: CompanionResult): string[] {
 }
 
 export function createG33CompanionCheck(): RecipeOwnedCheck {
+  const id = "bmad.g33-companion", title = "Optional g33 companion";
   return {
-    id: "bmad.g33-companion", title: "Optional g33 companion",
+    id, title,
     audit: async (ctx) => {
+      // One rule with enrollment, evaluated read-only: an eligible project with no
+      // adapter is a fixable warn. An unreadable manifest falls through to the
+      // companion audit, which reports it in its own words.
+      let verdict: G33Enrollability | undefined;
+      try { verdict = await g33Enrollability(ctx); } catch { /* reported by the companion audit below */ }
+      if (verdict?.enrollable) return {
+        id, title, status: "warn", summary: `g33 enrollable: ${verdict.reason}`, fixable: true,
+        details: [`Run pj migrate ${id} to activate ${G33_SKILL} and write bmad.companion.adapter, then install the companion.`],
+      };
       // Read-only observation and planning remain independent of application.
       const result = await runG33Companion(ctx.repoRoot, true, "audit");
       return {
-        id: "bmad.g33-companion", title: "Optional g33 companion",
+        id, title,
         status: result.status === "disabled" ? "skip" : result.status === "unchanged" && result.evidence.length ? "pass" : "warn",
         summary: result.summary, details: companionDetails(result), fixable: result.status === "planned",
       };
     },
     migrate: async (ctx, finding) => {
-      const result = await runG33Companion(ctx.repoRoot, ctx.dryRun, "repair");
-      return {
-        id: finding.id, title: finding.title,
-        status: result.status === "changed" || result.status === "planned" ? "applied" : result.status === "unchanged" ? "noop"
-          : result.status === "disabled" ? "skipped" : "partial",
-        summary: result.summary, details: companionDetails(result), changedFiles: result.changedFiles,
+      const enrollment = await enrollG33Companion(ctx);
+      const enrolled = enrollmentDetails(enrollment);
+      const base = { id: finding.id, title: finding.title };
+      if (enrollment.status === "error") return {
+        ...base, status: enrollment.changedFiles.length ? "partial" : "blocked",
+        summary: `g33 enrollment failed: ${enrollment.summary}`, details: enrolled, changedFiles: enrollment.changedFiles,
       };
+      // The adapter is written only on a real run, so a preview has no companion to plan yet.
+      if (enrollment.status === "planned") return {
+        ...base, status: "applied", summary: enrollment.summary, changedFiles: [],
+        details: [...enrolled, "The companion plan follows enrollment; no adapter is configured until then."],
+      };
+      const result = await runG33Companion(ctx.repoRoot, ctx.dryRun, "repair");
+      const changedFiles = [...new Set([...enrollment.changedFiles, ...result.changedFiles])].sort();
+      const details = [...enrolled, ...companionDetails(result)];
+      const wrote = enrollment.status === "enrolled";
+      // Postcondition: a real run claims success only on owner-proven installation.
+      const proven = (result.status === "changed" || result.status === "unchanged") && result.evidence.some((item) => item.trim());
+      const status: MigrationRuleResult["status"] = result.status === "disabled" ? "skipped"
+        : ctx.dryRun ? (result.status === "planned" ? "applied" : result.status === "unchanged" ? "noop" : "partial")
+        : !proven ? "partial"
+        : result.status === "changed" || wrote ? "applied" : "noop";
+      return { ...base, status, summary: result.summary, details, changedFiles };
     },
   };
 }

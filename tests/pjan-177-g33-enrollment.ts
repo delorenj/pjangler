@@ -6,7 +6,7 @@ import { BmadRecipe } from "../src/recipes/BmadRecipe";
 import { RecipeRegistry } from "../src/recipes/registry";
 import { NotebookRecipe } from "../src/recipes/NotebookRecipe";
 import { snapshotTree } from "../src/utils/tree-diff";
-import { enrollG33Companion, G33_BRIDGE_ADAPTER, G33_SKILL } from "../src/bmad/companion";
+import { createG33CompanionCheck, enrollG33Companion, g33Enrollability, G33_BRIDGE_ADAPTER, G33_SKILL } from "../src/bmad/companion";
 import type { ProjectInitPlan } from "../src/project/index";
 
 // PJAN-177: a fresh, linked 33god project is enrolled in the g33 companion (skill
@@ -44,13 +44,17 @@ export function g33Companion(req){
   if(req.operation==='plan')return result(valid?'unchanged':'planned',valid?'converged':'would write companion.md');
   mkdirSync(dirname(file),{recursive:true}); writeFileSync(file,'bridge fixture'); return result('changed','written');
 }`;
-function catalog(kind: "full" | "empty" | "nobridge"): string {
+function catalog(kind: "full" | "empty" | "nobridge" | "unproven"): string {
   const withSkill = kind !== "empty";
   const dir = join(scratch, `catalog-${kind}`);
   for (const name of ["all-skills", "sets", "packs"]) mkdirSync(join(dir, name), { recursive: true });
   if (withSkill) {
     put(join(dir, "all-skills", G33_SKILL, "SKILL.md"), `---\nname: ${G33_SKILL}\ndescription: Scratch g33 fixture\n---\n# g33\n`);
     if (kind === "full") put(join(dir, "all-skills", G33_SKILL, "scripts", "g33_pjangler_bridge.mjs"), BRIDGE);
+    // An owner whose apply claims 'changed' but whose observation never reports 'installed'.
+    if (kind === "unproven") put(join(dir, "all-skills", G33_SKILL, "scripts", "g33_pjangler_bridge.mjs"),
+      `const r=(status,evidence=[])=>({schemaVersion:1,status,summary:status,details:[],evidence});
+export function g33Companion(req){ if(req.operation==='observe')return r('missing'); if(req.operation==='plan')return r('planned'); return r('changed'); }`);
   }
   return dir;
 }
@@ -307,5 +311,123 @@ try {
     assert.deepEqual(snapshotTree(dir), before, "a malformed manifest is reported, never rewritten");
   }
   console.log("PASS direct: malformed manifests are advisories");
-  console.log("PJAN-177 g33 enrollment: 8 topology scenarios and 6 direct checks passed; live board and the real skillex catalog remain unverified here.");
+
+  // pj migrate bmad.g33-companion: the audit reports the enrollable project as a fixable
+  // warn without writing, and migrate enrolls, installs and re-audits to pass.
+  const check = createG33CompanionCheck();
+  const migrateProject = (name: string, extra: Record<string, unknown> = {}, id = linked) => {
+    const made = direct(name, { ...id, ...extra });
+    return { ...made, dry: { ...made.ctx, dryRun: true } };
+  };
+  {
+    const { dir, ctx, dry } = migrateProject("migrate");
+    const before = snapshotTree(dir);
+    const audited = await check.audit(ctx);
+    assert.equal(audited.status, "warn");
+    assert.equal(audited.fixable, true);
+    assert.equal(audited.summary, "g33 enrollable: eligible 33god project has no companion adapter");
+    assert.match(audited.details.join("\n"), /pj migrate bmad\.g33-companion/);
+    assert.deepEqual(snapshotTree(dir), before, "the audit is read-only: no activation, no manifest write");
+    assert.equal((await g33Enrollability(ctx)).enrollable, true);
+
+    const preview = await check.migrate(dry, audited);
+    assert.equal(preview.status, "applied", JSON.stringify(preview));
+    assert.deepEqual(preview.changedFiles, []);
+    assert.match(preview.details.join("\n"), /g33 enrollment \(planned\)/);
+    assert.deepEqual(snapshotTree(dir), before, "a migrate dry run writes nothing");
+
+    const applied = await check.migrate(ctx, audited);
+    assert.equal(applied.status, "applied", JSON.stringify(applied));
+    assert.match(applied.details.join("\n"), /g33 enrollment: activated/, "migrate reports the enrollment lines");
+    assert.match(applied.details.join("\n"), /g33 \((changed|unchanged)\)/);
+    for (const path of [linkPath(dir), join(dir, ".project.json"), join(dir, "_bmad", "g33", "companion.md")]) {
+      assert.ok(existsSync(path), path);
+      assert.ok(applied.changedFiles.some((file) => file === path || file === path.slice(dir.length + 1)), `changedFiles records ${path}: ${applied.changedFiles}`);
+    }
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, ".project.json"), "utf8")).bmad.companion.adapter, G33_BRIDGE_ADAPTER);
+    const after = await check.audit(ctx);
+    assert.equal(after.status, "pass", JSON.stringify(after));
+    assert.equal(after.fixable, false);
+    const settled = snapshotTree(dir);
+    assert.equal((await check.migrate(ctx, after)).status, "noop", "converged: a second migrate is a noop");
+    assert.deepEqual(snapshotTree(dir), settled);
+    console.log("PASS migrate: audit warn fixable (read-only), dry run writes nothing, migrate enrolls and re-audits to pass");
+  }
+  {
+    // Not enrollable: the audit is the pre-PJAN-177 audit, never fixable by enrollment.
+    const cases: [string, Record<string, unknown>, Record<string, unknown>][] = [
+      ["optout", { bmad: { companion: { enabled: false } } }, linked],
+      ["configured", { bmad: { companion: { adapter: { module: preconfigured, exportName: "custom" } } } }, linked],
+      ["ineligible", {}, { project_id: "direct", ticket_provider: { type: "plane", workspace: "other", state: "linked", board_id: "b" } }],
+    ];
+    for (const [name, extra, id] of cases) {
+      const { dir, ctx, dry } = migrateProject(`not-${name}`, extra, id as typeof linked);
+      const before = snapshotTree(dir);
+      assert.equal((await g33Enrollability(ctx)).enrollable, false, name);
+      const audited = await check.audit(ctx);
+      assert.ok(!audited.summary.startsWith("g33 enrollable"), `${name}: ${audited.summary}`);
+      if (name === "optout" || name === "ineligible") { assert.equal(audited.status, "skip", name); assert.equal(audited.fixable, false, name); }
+      if (name === "configured") assert.equal(audited.status, "warn", "a configured adapter keeps the companion's own audit");
+      assert.deepEqual(snapshotTree(dir), before, `${name}: audit writes nothing`);
+      const preview = await check.migrate(dry, audited);
+      assert.doesNotMatch(preview.details.join("\n"), /g33 enrollment \(planned\)/, `${name}: no enrollment is planned: ${JSON.stringify(preview)}`);
+      if (name !== "configured") assert.equal(preview.status, "skipped", name);
+      const real = await check.migrate(ctx, audited);
+      assert.doesNotMatch(real.details.join("\n"), /g33 enrollment: activated/, `${name}: nothing enrolled`);
+      assert.equal(existsSync(linkPath(dir)), false, `${name}: nothing enrolled`);
+    }
+    console.log("PASS migrate: opted-out, configured and ineligible projects keep their audit and are never enrolled");
+  }
+  {
+    // Host-state rule: a missing catalog skill is an advisory result, not a crash or a fail.
+    const { dir, ctx } = migrateProject("migrate-catalog-missing");
+    process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("empty");
+    try {
+      const audited = await check.audit(ctx);
+      assert.equal(audited.status, "warn");
+      const before = snapshotTree(dir);
+      const result = await check.migrate(ctx, audited);
+      assert.equal(result.status, "blocked", JSON.stringify(result));
+      assert.match(result.details.join("\n"), new RegExp(`pj skills enable skill ${G33_SKILL}`));
+      assert.deepEqual(snapshotTree(dir), before, "nothing was written");
+    } finally { process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("full"); }
+    const partial = migrateProject("migrate-nobridge");
+    process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("nobridge");
+    try {
+      const result = await check.migrate(partial.ctx, await check.audit(partial.ctx));
+      assert.equal(result.status, "partial", "a partial activation is reported as partial with its writes");
+      assert.ok(result.changedFiles.length > 0);
+    } finally { process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("full"); }
+    console.log("PASS migrate: a missing or bridge-less catalog skill is blocked/partial with the retry hint");
+  }
+  {
+    // A fixer must verify its own postcondition: an adapter that cannot prove installation is not 'applied'.
+    const { dir, ctx } = migrateProject("migrate-postcondition");
+    const audited = await check.audit(ctx);
+    process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("unproven");
+    try {
+      const result = await check.migrate(ctx, audited);
+      assert.equal(result.status, "partial", JSON.stringify(result));
+      assert.match(result.summary, /did not establish an installed owner observation/);
+    } finally { process.env.PJ_SKILLS_REGISTRY_ROOT = catalog("full"); }
+    console.log("PASS migrate: unproven installation after apply is partial, never applied");
+    void dir;
+  }
+  {
+    // Registry level: the rule is fixable in the audit and migrateRules actually runs it.
+    const { dir, ctx } = migrateProject("registry");
+    const registry = new RecipeRegistry([noop("mise"), noop("agent-hooks", ["mise"]), new BmadRecipe()]);
+    const audit = await registry.auditRecipes(ctx);
+    const rule = audit.rules.find((entry) => entry.id === "bmad.g33-companion");
+    assert.ok(rule, "the rule is registered");
+    assert.ok((rule.status === "warn" || rule.status === "fail") && rule.fixable, `migrate --all selects failing+fixable rules: ${JSON.stringify(rule)}`);
+    const report = await registry.migrateRules(ctx, [rule.id]);
+    const entry = report.results.find((result) => result.id === "bmad.g33-companion");
+    assert.equal(entry?.status, "applied", JSON.stringify(report.results));
+    assert.ok(existsSync(linkPath(dir)) && existsSync(join(dir, "_bmad", "g33", "companion.md")));
+    const post = (await registry.auditRecipes(ctx)).rules.find((candidate) => candidate.id === "bmad.g33-companion");
+    assert.equal(post?.status, "pass", JSON.stringify(post));
+    console.log("PASS migrate: RecipeRegistry selects the rule, migrates it, and the re-audit passes");
+  }
+  console.log("PJAN-177 g33 enrollment: 8 topology scenarios, 6 direct checks and 5 migrate checks passed; live board and the real skillex catalog remain unverified here.");
 } finally { rmSync(scratch, { recursive: true, force: true }); }
