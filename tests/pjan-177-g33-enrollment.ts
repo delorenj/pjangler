@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
 import { BmadRecipe } from "../src/recipes/BmadRecipe";
@@ -67,11 +67,12 @@ const noop = (id: string, dependencies: string[] = []) => ({ metadata: { id, nam
   init: async () => outcome(id), audit: async () => [], migrate: async () => [] });
 const linkPath = (target: string) => join(target, ".agents", "skills", G33_SKILL);
 
-type Scenario = { name: string; workspace?: string; companion?: Record<string, unknown>; catalog?: "full" | "empty" | "nobridge" };
+type Scenario = { name: string; prelinked?: boolean; workspace?: string; companion?: Record<string, unknown>; catalog?: "full" | "empty" | "nobridge" };
 async function topology(scenario: Scenario) {
   process.env.PJ_SKILLS_REGISTRY_ROOT = catalog(scenario.catalog ?? "full");
   const target = join(scratch, scenario.name);
-  const binding = { type: "plane", workspace: scenario.workspace ?? "33god", identifier: "PROB", identifier_source: "provider", board_id: "", state: "planned" };
+  const binding = { type: "plane", workspace: scenario.workspace ?? "33god", identifier: "PROB", identifier_source: "provider",
+    ...(scenario.prelinked ? { board_id: "fixture-board", state: "linked", board_confirmed_at: "2026-10-04T00:00:00Z" } : { board_id: "", state: "planned" }) };
   const manifest: Record<string, unknown> = { project_id: `enrollment-${scenario.name}`, project_name: scenario.name, project_description: "topology fixture", repo_path: target, agents: {},
     ticket_provider: binding, custom_key: { keep: ["me"] }, ...(scenario.companion ? { bmad: { companion: scenario.companion } } : {}) };
   const project = { name: scenario.name, project_id: manifest.project_id, slug: manifest.project_id, repo_path: target, description: "topology fixture", ticket_provider: binding, agents: {},
@@ -96,7 +97,8 @@ async function topology(scenario: Scenario) {
           put(join(target, ".agents", "skills", "bmad-fixture", "SKILL.md"), "Native BMAD topology fixture");
           changedFiles.push(action.path);
         } else if (action.kind === "ticket-provider.create-or-link") {
-          assert.equal(existsSync(linkPath(target)), false, "nothing is enrolled while the board is only planned");
+          if (!scenario.prelinked) assert.equal(existsSync(linkPath(target)), false, "nothing is enrolled while the board is only planned");
+          if (scenario.prelinked) continue; // the manifest already carried the link; a rewrite would clobber enrollment
           Object.assign(binding, { board_id: "fixture-board", state: "linked", board_confirmed_at: "2026-10-04T00:00:00Z" });
           project.ticket_provider = binding;
           put(join(target, ".project.json"), JSON.stringify(manifest)); changedFiles.push(join(target, ".project.json"));
@@ -150,6 +152,17 @@ try {
     assert.ok(r.result.logs.some((line) => line === `g33 enrollment: activated ${G33_SKILL} and wrote bmad.companion.adapter`), r.result.logs.join("\n"));
     assert.ok(!r.result.logs.some((line) => line.includes("not configured")));
     console.log("PASS enroll: eligible, unconfigured project is activated, wired and installed");
+  }
+  {
+    const r = await topology({ name: "prelinked", prelinked: true });
+    assert.equal(r.result.ok, true, JSON.stringify(r.result.errors));
+    assert.equal(r.enrollment?.status, "changed", JSON.stringify({ phases: r.result.phases, logs: r.result.logs }));
+    assert.deepEqual(r.parsed.bmad.companion.adapter, G33_BRIDGE_ADAPTER);
+    assert.equal(r.result.phases.find((entry) => entry.id === "bmad.g33-companion")?.status, "changed", "the BMAD pass itself installed through the adapter");
+    assert.ok(existsSync(join(r.target, "_bmad", "g33", "companion.md")));
+    assert.ok(!r.result.logs.some((line) => line.includes("not configured")), "no premature 'not configured' from the BMAD pass");
+    assert.equal(r.result.phases.filter((entry) => entry.id === "project.optional:g33-enrollment").length, 1, "enrolled exactly once");
+    console.log("PASS prelinked: a board linked at plan time is enrolled before the BMAD pass");
   }
   {
     const r = await topology({ name: "options-only", companion: { adapter: { options: { keep: "me" } } } });
@@ -247,12 +260,43 @@ try {
   {
     const { dir, ctx } = direct("env", linked);
     process.env.PJ_G33_ADAPTER_MODULE = "some-owner-package";
+    process.env.PJ_G33_ADAPTER_EXPORT = "owner";
     try {
       const before = snapshotTree(dir);
       assert.equal((await enrollG33Companion(ctx)).status, "already-configured");
       assert.deepEqual(snapshotTree(dir), before);
-    } finally { process.env.PJ_G33_ADAPTER_MODULE = ""; }
+    } finally { process.env.PJ_G33_ADAPTER_MODULE = ""; process.env.PJ_G33_ADAPTER_EXPORT = ""; }
     console.log("PASS direct: PJ_G33_ADAPTER_* counts as configured");
+  }
+  for (const [name, adapter, env] of [["module", { module: "./owner.mjs" }, {}], ["export", { exportName: "owner" }, {}], ["env-module", {}, { PJ_G33_ADAPTER_MODULE: "pkg" }]] as const) {
+    const { dir, ctx } = direct(`half-${name}`, { ...linked, bmad: { companion: { adapter } } });
+    Object.assign(process.env, env);
+    try {
+      const before = snapshotTree(dir);
+      const result = await enrollG33Companion(ctx);
+      assert.equal(result.status, "skipped", name);
+      assert.match(result.summary, /half-configured \((exportName|module) is missing\)/);
+      assert.deepEqual(snapshotTree(dir), before, "a half-configured adapter is reported, never completed");
+    } finally { process.env.PJ_G33_ADAPTER_MODULE = ""; }
+  }
+  console.log("PASS direct: half-configured adapter is an advisory naming the missing half");
+  {
+    // A set replaces the skills root and enabling beside it derives a set dir in the shared catalog.
+    const { dir, ctx } = direct("sets", linked);
+    put(join(dir, ".agents", "skills.json"), '{"inherit_global":false,"sets":["myset"]}');
+    const catalogRoot = process.env.PJ_SKILLS_REGISTRY_ROOT!;
+    put(join(catalogRoot, "all-skills", "set-member", "SKILL.md"), "---\nname: set-member\ndescription: Scratch set member\n---\n");
+    mkdirSync(join(catalogRoot, "sets", "myset"), { recursive: true });
+    symlinkSync("../../all-skills/set-member", join(catalogRoot, "sets", "myset", "set-member"));
+    const beforeCatalog = snapshotTree(catalogRoot);
+    const beforeProject = snapshotTree(dir);
+    const result = await enrollG33Companion(ctx);
+    assert.equal(result.status, "skipped", JSON.stringify(result));
+    assert.match(result.summary, /a set replaces the project skills root/);
+    assert.match(result.details.join("\n"), /pj skills enable skill/);
+    assert.deepEqual(snapshotTree(catalogRoot), beforeCatalog, "the shared catalog is never written");
+    assert.deepEqual(snapshotTree(dir), beforeProject, "the project is untouched");
+    console.log("PASS direct: a project selecting a set is skipped, catalog untouched");
   }
   for (const [name, text] of [["json", "{not json"], ["shape", JSON.stringify({ ...linked, bmad: [] })]] as const) {
     const { dir, ctx } = direct(`bad-${name}`, undefined, text);
@@ -263,5 +307,5 @@ try {
     assert.deepEqual(snapshotTree(dir), before, "a malformed manifest is reported, never rewritten");
   }
   console.log("PASS direct: malformed manifests are advisories");
-  console.log("PJAN-177 g33 enrollment: 7 topology scenarios and 4 direct checks passed; live board and the real skillex catalog remain unverified here.");
+  console.log("PJAN-177 g33 enrollment: 8 topology scenarios and 6 direct checks passed; live board and the real skillex catalog remain unverified here.");
 } finally { rmSync(scratch, { recursive: true, force: true }); }

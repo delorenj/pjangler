@@ -288,6 +288,18 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
     };
     let bmadCompanion: CompanionResult | undefined;
     let g33DeferredForEnrollment = false;
+    const enrollG33 = async () => {
+      const enrollment = await enrollG33Companion({ ...transactionContext, repoRoot: targetDir, dryRun: ctx.dryRun });
+      logs.push(...enrollmentDetails(enrollment));
+      changedFiles.push(...enrollment.changedFiles);
+      phases.push({
+        id: "project.optional:g33-enrollment",
+        status: enrollment.status === "enrolled" ? "changed" : enrollment.status === "planned" ? "planned"
+          : enrollment.status === "already-configured" ? "unchanged" : "skipped",
+        changedFiles: enrollment.changedFiles,
+        message: `Optional g33 enrollment (${enrollment.status}): ${enrollment.summary}`,
+      });
+    };
     let migrationReport: MigrationReport | undefined;
     let audit: AuditReport | undefined;
     let notebookPlan: NotebookPlanV1 | undefined;
@@ -338,8 +350,12 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         // Record policy before dependencies. Only automatic enrollment that was
         // disabled here gets a later attempt; explicit opt-ins/linked projects
         // already ran their optional owner, including any failed partial apply.
-        try { g33DeferredForEnrollment = !g33CompanionEnabled(targetDir); }
-        catch { /* BmadRecipe reports malformed optional configuration. */ }
+        try {
+          g33DeferredForEnrollment = !g33CompanionEnabled(targetDir);
+          // Already linked when the manifest landed: eligible now, so enroll before the
+          // BMAD pass runs the companion, or it reports "not configured" first.
+          if (!g33DeferredForEnrollment && plan.project.ticket_provider.state === "linked") await enrollG33();
+        } catch { /* BmadRecipe reports malformed optional configuration. */ }
         const dependencyResult = await this.registry.initDependencies(this.metadata.id, transactionContext, normalized, ["notebook"]);
         logs.push(...dependencyResult.logs);
         errors.push(...dependencyResult.errors);
@@ -565,16 +581,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         // A linked project with no adapter is enrolled first (skill + adapter
         // block). Optional like the companion: a failure is an advisory, and the
         // companion still runs so its own "not configured" message stays truthful.
-        const enrollment = await enrollG33Companion({ ...transactionContext, repoRoot: targetDir, dryRun: ctx.dryRun });
-        logs.push(...enrollmentDetails(enrollment));
-        changedFiles.push(...enrollment.changedFiles);
-        phases.push({
-          id: "project.optional:g33-enrollment",
-          status: enrollment.status === "enrolled" ? "changed" : enrollment.status === "planned" ? "planned"
-            : enrollment.status === "already-configured" ? "unchanged" : "skipped",
-          changedFiles: enrollment.changedFiles,
-          message: `Optional g33 enrollment (${enrollment.status}): ${enrollment.summary}`,
-        });
+        await enrollG33();
         bmadCompanion = await runG33Companion(targetDir, ctx.dryRun);
         logs.push(...companionDetails(bmadCompanion));
         changedFiles.push(...bmadCompanion.changedFiles);

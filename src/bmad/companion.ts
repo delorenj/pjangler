@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../utils/tree-diff";
-import { enableSelection } from "@delorenj/skillex";
+import { enableSelection, readSelectionManifest } from "@delorenj/skillex";
 import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
 import type { Context, RecipeOwnedCheck } from "../parity/rules";
 
@@ -232,13 +232,22 @@ export async function enrollG33Companion(ctx: Context): Promise<G33EnrollmentRes
     if (config.enabled === false) return { ...result, summary: "skipped: g33 explicitly disabled in .project.json" };
     if (config.enabled !== undefined && config.enabled !== true) throw new Error("bmad.companion.enabled must be boolean");
     if (!linkedG33Project(manifest)) return { ...result, summary: "skipped: not a registered linked 33god project" };
-    const configured = adapter.module !== undefined || adapter.exportName !== undefined
-      || Boolean(process.env.PJ_G33_ADAPTER_MODULE?.trim() || process.env.PJ_G33_ADAPTER_EXPORT?.trim());
-    if (configured) return { ...result, status: "already-configured", summary: "g33 adapter already configured; enrollment not needed" };
+    // Same merge as select(): each half comes from the manifest or its env var.
+    const hasModule = adapter.module !== undefined || Boolean(process.env.PJ_G33_ADAPTER_MODULE?.trim());
+    const hasExport = adapter.exportName !== undefined || Boolean(process.env.PJ_G33_ADAPTER_EXPORT?.trim());
+    if (hasModule && hasExport) return { ...result, status: "already-configured", summary: "g33 adapter already configured; enrollment not needed" };
+    if (hasModule || hasExport) return { ...result, summary: `skipped: g33 adapter is half-configured (${hasModule ? "exportName" : "module"} is missing)`,
+      details: [`Set bmad.companion.adapter.${hasModule ? "exportName" : "module"} (or PJ_G33_ADAPTER_${hasModule ? "EXPORT" : "MODULE"}); enrollment never completes or overwrites an adapter someone started.`] };
     if (ctx.dryRun) return {
       ...result, status: "planned", summary: `would activate ${G33_SKILL} and write bmad.companion.adapter`,
       details: [`Would run ${PJ_SKILLS} enable skill ${G33_SKILL} and set bmad.companion.adapter to ${JSON.stringify(G33_BRIDGE_ADAPTER)}; nothing written.`],
     };
+    // A set replaces the project skills root and enabling beside it derives a new
+    // set directory inside the shared catalog: not ours to write (see handOffInstallerSkills).
+    const declaration = await readSelectionManifest(skillCoreOptions(ctx).project);
+    if (Array.isArray(declaration.raw?.sets) && declaration.raw.sets.length) {
+      return { ...result, summary: "skipped: a set replaces the project skills root", details: [`Enrolling would derive a new set inside the skills catalog. ${retry}`] };
+    }
     before = snapshotTree(projectRoot);
     // enableSelection reconciles the whole scope; a refusal is an envelope, not a throw.
     const enabled = await enableSelection("skill", G33_SKILL, { ...skillCoreOptions(ctx), dryRun: false });
