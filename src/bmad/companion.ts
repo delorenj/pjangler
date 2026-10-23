@@ -163,12 +163,35 @@ function assertNoWrite(operation: "import" | CompanionRequest["operation"], writ
   throw new Error(`g33 adapter violated the no-write ${operation} contract: ${written.slice(0, 10).join(", ")}${written.length > 10 ? ` (+${written.length - 10} more)` : ""}`);
 }
 
-/** Optional outcomes never throw into required BMAD initialization/rollback. */
+/** The owner observations that may be a gap rather than a stop. `error` is never one. */
+export type G33ObserveGap = "missing" | "unavailable" | "conflict";
+
+/**
+ * PJAN-179: a BMAD update is the thing that can make the owner's observe work
+ * (BMAD < 6.12's resolve_customization.py has no --project-root, so the g33
+ * bridge reports `unavailable` until the update lands). So during an update,
+ * both the pre-update preflight and the post-update first observe tolerate an
+ * observation gap, while everything that proves the companion stays mandatory:
+ * the owner PLAN must succeed, and the post-update apply + re-observe must
+ * return `installed` with evidence or the whole update rolls back.
+ */
+export const BMAD_UPDATE_OBSERVE_GAPS: readonly G33ObserveGap[] = Object.freeze(["missing", "unavailable", "conflict"]);
+
+/** Marks the dry-run detail line that records a tolerated pre-update observation gap. */
+export const OBSERVATION_GAP_NOTE = "g33 pre-update observation gap";
+
+const isObservationGapNote = (line: string): boolean => line.startsWith(OBSERVATION_GAP_NOTE);
+
+/**
+ * Optional outcomes never throw into required BMAD initialization/rollback.
+ * `tolerateObserve` names the observe statuses that do not stop the run; the
+ * default (none) keeps every caller but the BMAD update strict.
+ */
 export async function runG33Companion(
   projectRoot: string,
   dryRun: boolean,
   reason: CompanionRequest["reason"] = "recipe",
-  options: { allowPostUpdateConflictPlan?: boolean } = {},
+  options: { tolerateObserve?: readonly G33ObserveGap[] } = {},
 ): Promise<CompanionResult> {
   projectRoot = resolve(projectRoot);
   const result: CompanionResult = { schemaVersion: 1, moduleId: "g33", optional: true, status: "unavailable", summary: "g33 companion unavailable", details: [], evidence: [], changedFiles: [] };
@@ -198,12 +221,23 @@ export async function runG33Companion(
       return value;
     };
     const observed = await invoke("observe");
-    const allowPostUpdateConflictPlan = Boolean(options.allowPostUpdateConflictPlan && !dryRun && observed.status === "conflict");
-    if (["unavailable", "conflict", "error"].includes(observed.status) && !allowPostUpdateConflictPlan) return { ...result, ...observed };
+    const tolerated = new Set<string>(options.tolerateObserve ?? []);
+    if (["unavailable", "conflict", "error"].includes(observed.status) && !tolerated.has(observed.status)) return { ...result, ...observed };
+    // A tolerated observation the owner could not make (as opposed to one it made and found `missing`).
+    const observationGap = observed.status === "unavailable" || observed.status === "conflict";
     const plan = await invoke("plan");
     if (["unavailable", "conflict", "error"].includes(plan.status)) return { ...result, ...plan };
-    if (plan.status === "unchanged" && observed.status !== "installed") throw new Error("g33 plan claims convergence but owner observation does not prove installation");
-    if (dryRun) return { ...result, ...plan, evidence: observed.evidence };
+    // A preview never applies, so a converged plan over a gap proves nothing false;
+    // a real run must still be able to prove installation.
+    if (plan.status === "unchanged" && observed.status !== "installed" && !(dryRun && observationGap)) {
+      throw new Error("g33 plan claims convergence but owner observation does not prove installation");
+    }
+    if (dryRun) return {
+      ...result, ...plan, evidence: observed.evidence,
+      details: observationGap
+        ? [...plan.details, `${OBSERVATION_GAP_NOTE} (${observed.status}): ${observed.summary}. The owner plan succeeded; post-update apply and re-observation are mandatory and the update rolls back if they cannot prove installation.`, ...observed.details]
+        : plan.details,
+    };
     if (plan.status === "unchanged" && observed.status === "installed") return { ...result, ...observed, status: "unchanged" };
     const applied = await invoke("apply");
     result.changedFiles = changedG33Surfaces(projectRoot, before);
@@ -792,6 +826,10 @@ export interface BmadUpdateWithPreservationResult {
  * leave a failed update's writes there un-rolled-back. Unreadable entries
  * still throw from the capture, before the installer runs (fail closed).
  */
+/** The read-only preflight an installed project's BMAD update (or its preview) runs before the installer. */
+export const runG33PreUpdateCompanion = (projectRoot: string): Promise<CompanionResult> =>
+  runG33Companion(projectRoot, true, "bmad-install", { tolerateObserve: BMAD_UPDATE_OBSERVE_GAPS });
+
 export async function runBmadUpdateWithCompanionPreservation(
   projectRoot: string,
   options: {
@@ -802,7 +840,7 @@ export async function runBmadUpdateWithCompanionPreservation(
   },
 ): Promise<BmadUpdateWithPreservationResult> {
   const root = resolve(projectRoot);
-  const preflight = await runG33Companion(root, true, "bmad-install");
+  const preflight = await runG33PreUpdateCompanion(root);
   if (!["planned", "unchanged"].includes(preflight.status)) {
     return {
       ok: false,
@@ -835,7 +873,7 @@ export async function runBmadUpdateWithCompanionPreservation(
       };
     }
     restoreProtectedBmadStateBeforeCompanion(root, state);
-    const companion = await runG33Companion(root, false, "bmad-install", { allowPostUpdateConflictPlan: true });
+    const companion = await runG33Companion(root, false, "bmad-install", { tolerateObserve: BMAD_UPDATE_OBSERVE_GAPS });
     const violations = verifyProtectedBmadStateAfterCompanion(root, state);
     if (!["changed", "unchanged"].includes(companion.status) || !companion.evidence.length || violations.length) {
       const rollback = rollbackTree(root, state.backup, beforeSnapshot);
@@ -859,7 +897,7 @@ export async function runBmadUpdateWithCompanionPreservation(
     const totalChanged = changedTreePaths(root, beforeSnapshot, snapshotTree(root));
     return {
       ok: true,
-      details: [...preDetails, ...companionDetails(companion)],
+      details: [...preDetails, ...preflight.details.filter(isObservationGapNote), ...companionDetails(companion)],
       changedFiles: totalChanged,
       companion,
     };

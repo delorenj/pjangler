@@ -91,6 +91,7 @@ const SUITES = [
   "tests/pjan-167-enrollment.mjs",
   "tests/pjan-177-g33-enrollment.mjs",
   "tests/pjan-178-g33-scoped-contract.mjs",
+  "tests/pjan-179-g33-preupdate-gap.mjs",
   "tests/pjan-57-dogfood-regressions.mjs",
   "tests/generated-project-lifecycle-regressions.mjs",
   "tests/pjan-23-regressions.mjs",

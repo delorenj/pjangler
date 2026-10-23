@@ -6,6 +6,7 @@ import {
   isInstalledBmadProject,
   runBmadUpdateWithCompanionPreservation,
   runG33Companion,
+  runG33PreUpdateCompanion,
   type CompanionResult,
 } from "../bmad/companion";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
@@ -3891,7 +3892,8 @@ return ([
       };
       if (ctx.dryRun) {
         const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
-        const companion = await runG33Companion(ctx.repoRoot, true, "bmad-install");
+        // An installed project's real run goes through the preservation preflight, so the preview mirrors it.
+        const companion = installedBmad ? await runG33PreUpdateCompanion(ctx.repoRoot) : await runG33Companion(ctx.repoRoot, true, "bmad-install");
         if (installedBmad && ["unavailable", "conflict", "error"].includes(companion.status)) {
           return {
             id: finding.id,
@@ -4152,7 +4154,7 @@ return ([
       const channelArgs = bmadUpgradeChannelArgs(ctx.repoRoot, available ?? BMAD_TARGET_CHANNEL);
 
       if (ctx.dryRun) {
-        const companion = await runG33Companion(ctx.repoRoot, true, "bmad-install");
+        const companion = await runG33PreUpdateCompanion(ctx.repoRoot);
         if (["unavailable", "conflict", "error"].includes(companion.status)) {
           return {
             id: finding.id,
