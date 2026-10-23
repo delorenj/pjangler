@@ -33,7 +33,7 @@ export const ZCRANK_SESSION = "Workspace";
 export const ZCRANK_LOG_CAP = 500;
 
 /** Trailing status glyphs and separators zellij appends to tab names. */
-const TAB_STATUS_SUFFIX = /[\s🟢🟡🔴✳✻●·─]+$/u;
+const TAB_STATUS_SUFFIX = /[\s🟢🟡🔴🔔⚫✳✻●·─]+$/u;
 
 /** Command runner seam: tests substitute this to fake redis-cli/zellij. */
 export type Shell = (command: string, args: string[]) => { stdout: string; status: number };
@@ -50,9 +50,12 @@ export function tabDisplay(name: string | undefined): string {
   return TAB_STATUS_SUFFIX.test(trimmed) ? trimmed.replace(TAB_STATUS_SUFFIX, "").trim() : trimmed;
 }
 
-/** Canonical comparison key: display form, lowercased. */
+/**
+ * Canonical comparison key: display form, lowercased, letters and digits only, so
+ * "green-in-between" and GreenInBetween are one tab (WING-7). Same rule as zcrankctl.
+ */
 export function canon(name: string | undefined): string {
-  return tabDisplay(name).toLowerCase();
+  return tabDisplay(name).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 // ---------------------------------------------------------------------------

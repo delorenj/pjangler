@@ -55,11 +55,16 @@ const {
 console.log("canon: status suffixes are stripped the way zcrankctl strips them");
 {
   assert.equal(tabDisplay("gruvato 🟢"), "gruvato");
+  // WING-7: the attention painter's glyphs, and case/punctuation drift between a tab and its key.
+  assert.equal(tabDisplay("Holocene 🔔"), "Holocene");
+  assert.equal(tabDisplay("Flume ⚫"), "Flume");
+  assert.equal(canon("green-in-between"), canon("GreenInBetween"));
+  assert.equal(canon("intelliforia 🔔"), canon("Intelliforia"));
   assert.equal(tabDisplay("Holocene ✳"), "Holocene");
   assert.equal(tabDisplay("  padded  "), "padded");
   assert.equal(tabDisplay(undefined), "");
-  assert.equal(canon("Pile of Dumb Things"), "pile of dumb things");
-  assert.equal(canon("PILE OF DUMB THINGS 🟡"), "pile of dumb things");
+  assert.equal(canon("Pile of Dumb Things"), "pileofdumbthings");
+  assert.equal(canon("PILE OF DUMB THINGS 🟡"), "pileofdumbthings");
 }
 
 // ---------------------------------------------------------------------------
