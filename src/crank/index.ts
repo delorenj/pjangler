@@ -187,25 +187,28 @@ export function resolveTabForProject(
   storedTabs: string[],
 ): TabResolution {
   const candidates = candidateNames(project);
-  // A live tab that already has a key keeps it, even when the name drifted from it
-  // ("green-in-between" vs GreenInBetween, "IPM: Navi" vs IPM). Writing the live spelling
-  // instead minted a second key the engine never read (WING-7).
+  // A live tab that already has a key keeps it, even when the name drifted from it in
+  // case or punctuation ("green-in-between" vs GreenInBetween). Writing the live spelling
+  // instead minted a second key next to it (WING-7). Only an equal canon counts: a colon
+  // head ("IPM: Navi" vs IPM) would make sibling tabs share one switch.
   const keyFor = (tab: LiveTab): string => {
     const display = tabDisplay(tab.name);
     if (storedTabs.includes(display)) return display;
-    for (const form of [display, display.split(":")[0]]) {
-      const stored = storedTabs.find((s) => canon(s) === canon(form));
-      if (stored) return stored;
-    }
-    return display;
+    return storedTabs.find((s) => canon(s) && canon(s) === canon(display)) ?? display;
   };
-  // 1. Exact match on a live tab (live is the authority), whole name or either side of
-  //    a colon: project navi owns the tab "IPM: Navi".
-  for (const candidate of candidates) {
-    for (const tab of live) {
-      const sides = [tab.name, ...tabDisplay(tab.name).split(":")];
-      if (sides.some((side) => canon(side) && canon(side) === canon(candidate))) {
-        return { tab: keyFor(tab), source: "live-exact", matched: candidate, storedAsIs: false };
+  // 1. Exact match on a live tab (live is the authority): whole names first, then either
+  //    side of a colon, so project navi owns the tab "IPM: Navi" but a tab named exactly
+  //    "Navi" wins over it.
+  const sideSets: ((tab: LiveTab) => string[])[] = [
+    (tab) => [tab.name],
+    (tab) => tabDisplay(tab.name).split(":"),
+  ];
+  for (const sides of sideSets) {
+    for (const candidate of candidates) {
+      for (const tab of live) {
+        if (sides(tab).some((side) => canon(side) && canon(side) === canon(candidate))) {
+          return { tab: keyFor(tab), source: "live-exact", matched: candidate, storedAsIs: false };
+        }
       }
     }
   }
@@ -213,7 +216,7 @@ export function resolveTabForProject(
   //    before but is not open now keeps its stored name).
   for (const candidate of candidates) {
     for (const stored of storedTabs) {
-      if (canon(stored) === canon(candidate)) {
+      if (canon(stored) && canon(stored) === canon(candidate)) {
         return { tab: stored, source: "redis-exact", matched: candidate, storedAsIs: false };
       }
     }
@@ -223,6 +226,8 @@ export function resolveTabForProject(
     const canonical = canon(candidate);
     for (const tab of live) {
       const tabCanonical = canon(tab.name);
+      // Empty on either side would match everything (an emoji-only tab, a symbol name).
+      if (!canonical || !tabCanonical) continue;
       if (tabCanonical.startsWith(canonical) || canonical.startsWith(tabCanonical)) {
         return { tab: keyFor(tab), source: "live-prefix", matched: candidate, storedAsIs: false };
       }

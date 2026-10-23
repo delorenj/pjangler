@@ -73,9 +73,17 @@ console.log("resolve: a drifted live tab keeps the key it already has (WING-7)")
     [{ name: "green-in-between", position: 0 }], ["GreenInBetween"]);
   assert.equal(green.tab, "GreenInBetween");
   assert.equal(green.source, "live-exact");
+  // navi owns "IPM: Navi", under that tab's own name: never the IPM key its siblings share.
   const navi = resolveTabForProject({ name: "Navi", agents: [] },
-    [{ name: "IPM: Navi 🔔", position: 3 }], ["IPM", "Holocene"]);
-  assert.equal(navi.tab, "IPM");
+    [{ name: "IPM: Billing", position: 2 }, { name: "IPM: Navi 🔔", position: 3 }], ["IPM", "Holocene"]);
+  assert.equal(navi.tab, "IPM: Navi");
+  // A tab named exactly "Navi" beats a colon side, wherever it sits.
+  const exact = resolveTabForProject({ name: "Navi", agents: [] },
+    [{ name: "IPM: Navi", position: 0 }, { name: "Navi", position: 5 }], []);
+  assert.equal(exact.tab, "Navi");
+  // An emoji-only tab must not swallow every project that misses (empty canon).
+  const lost = resolveTabForProject({ name: "Flume", agents: [] }, [{ name: "★", position: 0 }], []);
+  assert.deepEqual(lost, { tab: "Flume", source: "project-name", matched: "Flume", storedAsIs: true });
   const fresh = resolveTabForProject({ name: "Flume", agents: [] }, [{ name: "Flume ⚫", position: 1 }], []);
   assert.equal(fresh.tab, "Flume");
 }
