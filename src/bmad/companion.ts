@@ -136,12 +136,15 @@ function reply(value: unknown, operation: CompanionRequest["operation"]): Compan
  * plan, apply) and enrollment (skill activation link, skills.json, the CLI
  * aliases skillex reconciles, the adapter block in .project.json) can
  * legitimately touch: _bmad/** (the installer's targets, including the bridge's
- * `_bmad/skills` surface), .agents/** (skills.json and activation links), the
- * bridge's top-level `skills` surface, .project.json and skillex's project CLI
- * aliases. A write anywhere else during the window is a concurrent agent's, not
+ * `_bmad/skills` surface), .agents/** (skills.json and activation links),
+ * .project.json and skillex's project CLI aliases. The bridge also LOOKS UP a
+ * top-level `skills/` dir, but only reads it (g33_install.py writes under
+ * `_bmad/` alone, skillex enables into `.agents/skills` and the CLI aliases),
+ * and that dir is often a project's own actively edited content, so it is not
+ * owned. A write anywhere else during the window is a concurrent agent's, not
  * the adapter's, and is neither a contract violation nor g33's change.
  */
-export const G33_OWNED_SURFACES: readonly string[] = Object.freeze(["_bmad", ".agents", "skills", ".project.json", ...PROJECT_CLI_ALIASES]);
+export const G33_OWNED_SURFACES: readonly string[] = Object.freeze(["_bmad", ".agents", ".project.json", ...PROJECT_CLI_ALIASES]);
 
 /**
  * Scoped to the owned surfaces, and an unreadable entry (a root-owned container

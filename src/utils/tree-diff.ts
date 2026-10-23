@@ -95,7 +95,27 @@ export function snapshotTree(root: string, options: TreeSnapshotOptions = {}): T
       snapshot.set(rel, `other:${stat.mode}`);
     }
   };
-  for (const scoped of options.roots ?? ["."]) walk(join(root, scoped));
+  // A nested root (".claude/skills") is only walked when every ancestor is a
+  // real directory. The whole-tree walk never followed a symlinked `.claude`
+  // (it recorded the link) nor descended a regular file named `.claude`; a scoped
+  // walk must not either, or it would watch paths outside the repo or throw
+  // ENOTDIR. A non-directory ancestor is recorded as the entry it is.
+  const scopedWalk = (scoped: string): void => {
+    const parts = scoped.split(/[\\/]/).filter(Boolean);
+    for (let depth = 1; depth < parts.length; depth++) {
+      const ancestor = join(root, ...parts.slice(0, depth));
+      try {
+        const stat = lstatSync(ancestor);
+        if (stat.isDirectory()) continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      }
+      walk(ancestor); // records a link/file/unreadable ancestor, or throws as the whole-tree walk would
+      return;
+    }
+    walk(join(root, scoped));
+  };
+  for (const scoped of options.roots ?? ["."]) scopedWalk(scoped);
   return snapshot;
 }
 

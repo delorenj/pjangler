@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { snapshotTree } from "../src/utils/tree-diff";
+import { changedTreePaths, snapshotTree } from "../src/utils/tree-diff";
 import {
-  createG33CompanionCheck, enrollG33Companion, G33_BRIDGE_ADAPTER, G33_OWNED_SURFACES, G33_SKILL, runG33Companion,
+  createG33CompanionCheck, enrollG33Companion, G33_BRIDGE_ADAPTER, G33_OWNED_SURFACES, G33_SKILL, runG33Companion, snapshotG33Surfaces,
 } from "../src/bmad/companion";
 
 // PJAN-178: the g33 no-write contract and the g33 write inventories cover only
@@ -87,7 +88,7 @@ try {
     for (const dryRun of when === "apply" ? [false] : [true, false]) {
       const dir = project(`outside-${when}-${dryRun ? "dry" : "real"}`);
       process.env.PJAN178_ROOT = dir;
-      const adapter = writingAdapter(when, ["experiments/meter-llm-ab/score.py", "agents/notes/live.md", ".claude/settings.local.json"]);
+      const adapter = writingAdapter(when, ["experiments/meter-llm-ab/score.py", "agents/notes/live.md", ".claude/settings.local.json", "skills/ltf-framework/references/commands-and-budgets.md"]);
       put(join(dir, ".project.json"), `${JSON.stringify({ project_id: "outside", ...linked, bmad: { companion: { adapter } } }, null, 2)}\n`);
       const result = await runG33Companion(dir, dryRun, "repair");
       assert.equal(result.status, dryRun ? "planned" : "changed", `${when}/${dryRun}: ${JSON.stringify(result)}`);
@@ -101,7 +102,7 @@ try {
 
   // 2. The SAME kind of write INSIDE every owned surface is still a violation, path listed.
   const insideTargets: Record<string, string> = {
-    _bmad: "_bmad/stray.md", ".agents": ".agents/stray.md", skills: "skills/stray/SKILL.md",
+    _bmad: "_bmad/stray.md", ".agents": ".agents/stray.md",
     ".project.json": ".project.json", ".claude/skills": ".claude/skills/stray.md",
   };
   assert.deepEqual(Object.keys(insideTargets).filter((surface) => !G33_OWNED_SURFACES.includes(surface)), [], "every probed surface is owned");
@@ -119,7 +120,31 @@ try {
       assert.ok(result.changedFiles.includes(join(dir, target)), `${when}/${surface}: the partial write is inventoried`);
     }
   }
-  console.log("PASS inside: writes to _bmad, .agents, skills, .project.json and CLI aliases still violate import/observe/plan, path named");
+  console.log("PASS inside: writes to _bmad, .agents, .project.json and CLI aliases still violate import/observe/plan, path named");
+
+  // 2b. A top-level skills/ dir is the project's own content, never g33's: not an owned surface.
+  assert.ok(!G33_OWNED_SURFACES.includes("skills"), "the top-level skills/ dir is read-only to g33");
+
+  // 2c. A scoped root under a NON-directory ancestor must neither throw nor be walked through.
+  {
+    const dir = project("odd-ancestors");
+    writeFileSync(join(dir, ".claude"), "a regular file where the tool dir would be");
+    mkdirSync(join(scratch, "ext", ".codex", "skills", "a"), { recursive: true });
+    writeFileSync(join(scratch, "ext", ".codex", "skills", "a", "SKILL.md"), "outside the repo\n");
+    symlinkSync(join(scratch, "ext", ".codex"), join(dir, ".codex"));
+    const before = snapshotG33Surfaces(dir);
+    assert.equal(before.get(".claude"), `file:${createHash("sha256").update("a regular file where the tool dir would be").digest("hex")}:${statSync(join(dir, ".claude")).mode & 0o7777}`, "a file ancestor is recorded as itself");
+    assert.equal(before.get(".codex"), `link:${join(scratch, "ext", ".codex")}`, "a symlinked ancestor is recorded as a link");
+    assert.ok(![...before.keys()].some((key) => key.startsWith(".codex/") || key.startsWith(".claude/")), "neither is descended");
+    writeFileSync(join(scratch, "ext", ".codex", "skills", "a", "SKILL.md"), "rewritten outside the repo\n");
+    assert.deepEqual(changedTreePaths(dir, before, snapshotG33Surfaces(dir)), [], "a write behind the symlink is not the project's");
+    process.env.PJAN178_ROOT = dir;
+    const adapter = writingAdapter("never", []);
+    put(join(dir, ".project.json"), `${JSON.stringify({ project_id: "odd", ...linked, bmad: { companion: { adapter } } }, null, 2)}\n`);
+    const result = await runG33Companion(dir, false, "repair");
+    assert.equal(result.status, "changed", JSON.stringify(result));
+  }
+  console.log("PASS ancestors: a file or symlink where a tool dir would be neither throws nor is walked through");
 
   // 3. The import violation lists the first 10 paths and a count, like observe/plan.
   {
