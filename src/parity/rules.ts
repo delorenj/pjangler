@@ -13,6 +13,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSy
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
+import { evictReservedModuleEntries, isLegacyReservedModuleEntry } from "../bmad/reserved-modules";
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLIS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
@@ -1645,6 +1646,8 @@ function manifestBmadModules(repoRoot: string): ManifestBmadModuleSelection {
     const declared: string[] = [];
     let hasG33 = false;
     for (const entry of parsed.modules) {
+      // A legacy reserved-name record is evicted before the installer runs; it is not a selection.
+      if (isLegacyReservedModuleEntry(entry)) continue;
       const name = typeof entry === "string"
         ? entry
         : entry && typeof entry === "object"
@@ -3909,6 +3912,8 @@ return ([
           .map((file) => join(ctx.repoRoot, "_bmad", file))
           .filter((path) => !existsSync(path)));
         changedFiles.push(...bmadProjectNameIssues(ctx.repoRoot).paths);
+        const reservedPreview = installedBmad ? evictReservedModuleEntries(ctx.repoRoot, true) : undefined;
+        changedFiles.push(...(reservedPreview?.changedFiles ?? []));
         return {
           id: finding.id,
           title: finding.title,
@@ -3916,6 +3921,7 @@ return ([
           summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
           changedFiles,
           details: [
+            ...(reservedPreview?.details ?? []),
             `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs)}`,
             ...companionDetails(companion),
           ],
@@ -3936,7 +3942,9 @@ return ([
           beforeInstall: async () => {
             const evictedChanges: string[] = [];
             const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
-            return { changedFiles: evictedChanges, details };
+            // Inside the update's backup window: a failed update rolls this edit back with the rest.
+            const reserved = evictReservedModuleEntries(ctx.repoRoot, ctx.dryRun);
+            return { changedFiles: [...evictedChanges, ...reserved.changedFiles], details: [...reserved.details, ...details] };
           },
           runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs),
         });
@@ -3976,7 +3984,14 @@ return ([
       // that no longer holds the pack, and the installer must be able to write
       // real directories at those names.
       const evicted = evictLegacyBmadPackState(ctx, changedFiles, await skillActivations(ctx));
+      // No whole-tree backup on this path, so the manifest edit carries its own undo.
+      const reserved = installedBmad ? evictReservedModuleEntries(ctx.repoRoot, false) : undefined;
+      if (reserved) evicted.unshift(...reserved.details);
       const install = await runBmadInstall(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs);
+      if (!install.ok && reserved?.original !== undefined) {
+        writeFileSync(reserved.changedFiles[0]!, reserved.original, "utf8");
+        evicted.push("restored _bmad/_config/manifest.yaml after the failed install");
+      }
       if (!install.ok) {
         // What was already evicted is reported, not hidden behind "blocked".
         return {
@@ -3989,7 +4004,7 @@ return ([
         };
       }
 
-      changedFiles.push(...expectedChangedPaths.filter(existsSync), ...(install.companion?.changedFiles ?? []));
+      changedFiles.push(...expectedChangedPaths.filter(existsSync), ...(reserved?.changedFiles ?? []), ...(install.companion?.changedFiles ?? []));
 
       return {
         id: finding.id,
@@ -4173,6 +4188,7 @@ return ([
           summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
           changedFiles: [manifestPath],
           details: [
+            ...evictReservedModuleEntries(ctx.repoRoot, true).details,
             `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs)}`,
             ...companionDetails(companion),
           ],
@@ -4187,7 +4203,9 @@ return ([
           beforeInstall: async () => {
             const evictedChanges: string[] = [];
             const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
-            return { changedFiles: evictedChanges, details };
+            // Inside the update's backup window: a failed update rolls this edit back with the rest.
+            const reserved = evictReservedModuleEntries(ctx.repoRoot, ctx.dryRun);
+            return { changedFiles: [...evictedChanges, ...reserved.changedFiles], details: [...reserved.details, ...details] };
           },
           runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs),
         });
@@ -4219,15 +4237,18 @@ return ([
         };
       }
 
+      // No whole-tree backup on this path, so the manifest edit carries its own undo.
+      const reserved = evictReservedModuleEntries(ctx.repoRoot, false);
       const install = await runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs);
       if (!install.ok) {
+        if (reserved.original !== undefined) writeFileSync(reserved.changedFiles[0]!, reserved.original, "utf8");
         return {
           id: finding.id,
           title: finding.title,
           status: "blocked",
           summary: "Failed to upgrade BMAD via installer",
           changedFiles: [],
-          details: [install.error ?? "Unknown error"],
+          details: [...(reserved.original !== undefined ? [...reserved.details, "restored _bmad/_config/manifest.yaml after the failed install"] : []), install.error ?? "Unknown error"],
         };
       }
       const evictedChanges: string[] = [];
@@ -4246,7 +4267,7 @@ return ([
         status: changed.length ? "applied" : "noop",
         summary: upgraded ? `Upgraded BMAD ${installed} -> ${nowInstalled}` : `BMAD reinstalled (${nowInstalled ?? "?"})`,
         changedFiles: changed,
-        details: [...evicted, ...(install.companion ? companionDetails(install.companion) : [])],
+        details: [...reserved.details, ...evicted, ...(install.companion ? companionDetails(install.companion) : [])],
         bmadCompanion: install.companion,
       };
     },

@@ -62,7 +62,7 @@ export function createBmadInstallerFixture(parentDir) {
   const executable = join(parentDir, "bin", "bmad-method-fixture");
   mkdirSync(dirname(executable), { recursive: true });
   writeFileSync(executable, `#!${process.execPath}
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 const version = ${JSON.stringify(BMAD_INSTALLER_FIXTURE_VERSION)};
@@ -97,6 +97,20 @@ const projectName = projectSetting?.startsWith("core.project_name=")
   ? projectSetting.slice("core.project_name=".length)
   : basename(resolve(target));
 const modules = [...new Set(["core", ...modulesValue.split(",").filter((name) => name && name !== "core")])];
+// bmad-method's _removeDeselectedModules deletes _bmad/<id> for every manifest
+// module that --modules does not select (core excepted) -- including a legacy
+// pseudo-module named like a BMAD-owned directory (PJAN-181) -- and the later
+// shared-scripts step then writes _bmad/custom/.gitignore without recreating it.
+const existingManifest = join(target, "_bmad", "_config", "manifest.yaml");
+const previouslyInstalled = existsSync(existingManifest)
+  ? [...readFileSync(existingManifest, "utf8").matchAll(/^\s*-\s+name:\s*(\S+)\s*$/gm)].map((match) => match[1])
+  : [];
+const removedModules = previouslyInstalled.filter((name) => name !== "core" && !modules.includes(name));
+for (const name of removedModules) rmSync(join(target, "_bmad", name), { recursive: true, force: true });
+if (removedModules.includes("custom")) {
+  // No mkdir: the directory was just removed, exactly as upstream's crash.
+  writeFileSync(join(target, "_bmad", "custom", ".gitignore"), "*.user.toml\\n");
+}
 // The real installer writes its skills into .agents/skills AND into every
 // --tools root. bmad.cli-roots audits exactly that, so a fixture that only
 // wrote _bmad/ would pass the install and fail the postcondition — which is
