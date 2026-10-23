@@ -86,6 +86,9 @@ console.log("beat rows: pjangler-written states never count as a run; newest acr
   assert.equal(lastRunMs([logA, logB]), T("2026-10-20T11:00:00Z"), "newest beat across both logs; the later pjangler rows are ignored");
   assert.equal(lastRunMs([[row("2026-10-20T12:00:00Z", "enabled")], []]), undefined, "only pjangler rows -> never run");
   assert.equal(lastRunMs([[]]), undefined);
+  // zcrank.py reads only YYYY-MM-DDTHH:MM:SSZ; fractional seconds / bare dates are not a run on either side
+  assert.equal(lastRunMs([[row("2026-10-23T11:59:00.123Z", "sent"), row("2026-10-22", "sent"), row("2026-10-23T11:59:00+00:00", "sent")]]), undefined, "lenient timestamps are not runs");
+  assert.equal(lastRunMs([[row("2026-10-23T11:59:00.123Z", "sent"), row("2026-10-23T10:00:00Z", "sent")]]), T("2026-10-23T10:00:00Z"));
 }
 
 console.log("due: <=5m is always due; slower tabs are due from last + interval - GRACE");
@@ -288,6 +291,12 @@ try {
     rs.cli("RPUSH", "zcrank:log:green-in-between", row("2026-10-20T11:00:00Z", "done", "new-1"));
     rs.cli("SET", "zcrank:pane:GreenInBetween:terminal_3", "1");
     rs.cli("SET", "zcrank:pane:GreenInBetween:terminal_4", "0");
+    rs.cli("SET", "zcrank:pane:GreenInBetween:terminal_5", "1");
+    rs.cli("SET", "zcrank:pane:green-in-between:terminal_5", "0"); // both spellings: any OFF wins
+    rs.cli("SET", "zcrank:pane:GreenInBetween:terminal_6", "0");
+    rs.cli("SET", "zcrank:pane:green-in-between:terminal_6", "1");
+    rs.cli("SET", "zcrank:pane:GreenInBetween:terminal_7", "1");
+    rs.cli("SET", "zcrank:pane:green-in-between:terminal_7", "1");
     // siblings that must survive: colon head, prefix, and a pane key of a colon-named other tab
     rs.cli("HSET", "zcrank:tab:IPM", "enabled", "1", "interval", "1d");
     rs.cli("SET", "zcrank:pane:IPM:terminal_1", "1");
@@ -306,7 +315,13 @@ try {
     assert.equal(rs.cli("HGET", "zcrank:tab:green-in-between", "interval"), "6h", "interval carried over");
     assert.equal(rs.cli("EXISTS", "zcrank:tab:GreenInBetween"), "0", "old tab key removed");
     assert.equal(rs.cli("EXISTS", "zcrank:log:GreenInBetween"), "0", "old log removed");
-    assert.equal(rs.cli("EXISTS", "zcrank:pane:GreenInBetween:terminal_3", "zcrank:pane:GreenInBetween:terminal_4"), "0", "old pane overrides removed");
+    assert.equal(rs.cli("KEYS", "zcrank:pane:GreenInBetween:terminal_*"), "", "old pane keys removed");
+    // pane overrides MOVE with the tab: an OFF pane stays OFF (it must not silently turn back ON), ON stays ON
+    assert.equal(rs.cli("GET", "zcrank:pane:green-in-between:terminal_3"), "1", "ON pane moved");
+    assert.equal(rs.cli("GET", "zcrank:pane:green-in-between:terminal_4"), "0", "OFF pane moved, still OFF");
+    assert.equal(rs.cli("GET", "zcrank:pane:green-in-between:terminal_5"), "0", "old ON + target OFF -> OFF");
+    assert.equal(rs.cli("GET", "zcrank:pane:green-in-between:terminal_6"), "0", "old OFF + target ON -> OFF (fails closed like the engine)");
+    assert.equal(rs.cli("GET", "zcrank:pane:green-in-between:terminal_7"), "1", "both ON -> ON");
     const log = rs.cli("LRANGE", "zcrank:log:green-in-between", "0", "-1").split("\n").map((l) => JSON.parse(l));
     assert.deepEqual(log.map((r) => r.action), ["old-1", "new-1", "old-2", "pj crank enable", "pj crank enable: GreenInBetween -> green-in-between"], "merged by ts, then the enable rows");
     assert.deepEqual(log.slice(-2).map((r) => r.state), ["enabled", "renamed"]);
@@ -357,6 +372,69 @@ try {
     assert.deepEqual(res.renamed, []);
     assert.equal(rs.cli("EXISTS", "zcrank:tab:holocene"), "1");
     assert.equal(rs.cli("HGET", `zcrank:tab:${ctx.resolution.tab}`, "enabled"), "1");
+  }
+
+  console.log("enable with nothing live: every spelling that names the tab goes ON, and the chosen interval is not overridden");
+  {
+    flush();
+    rs.cli("HSET", "zcrank:tab:alpha", "enabled", "0", "interval", "1d");
+    rs.cli("HSET", "zcrank:tab:A-lpha", "enabled", "0");
+    const ctx = buildCrankContext({ name: "Alpha", agents: [] }, [], storedTabKeys(store));
+    const res = enableCrank(store, ctx, { interval: "5m", now: new Date("2026-10-20T13:00:00Z") });
+    assert.deepEqual(res.renamed, []);
+    for (const key of ["alpha", "A-lpha"]) assert.equal(rs.cli("HGET", `zcrank:tab:${key}`, "enabled"), "1", `${key} is ON`);
+    const snap = snapshotCrank(store, res.tab, storedTabKeys(store), T("2026-10-20T13:00:00Z"));
+    assert.deepEqual([snap.enabled, snap.interval, snap.inherited], [true, "5m", false], "no stale 1d left to win");
+    // an unchosen interval keeps whatever the siblings carry (longest wins, as the snapshot says)
+    flush();
+    rs.cli("HSET", "zcrank:tab:alpha", "enabled", "0", "interval", "1d");
+    rs.cli("HSET", "zcrank:tab:A-lpha", "enabled", "0");
+    const ctx2 = buildCrankContext({ name: "Alpha", agents: [] }, [], storedTabKeys(store));
+    const res2 = enableCrank(store, ctx2, { now: new Date("2026-10-20T13:00:00Z") });
+    assert.equal(snapshotCrank(store, res2.tab, storedTabKeys(store), T("2026-10-20T13:00:00Z")).interval, "1d");
+  }
+
+  console.log("engine parity: zcrank.py schedule()/crank_enabled() agree with snapshotCrank on the same redis (exact key + drift included)");
+  const engine = join(process.env.HOME ?? "", ".agents", "tools", "jev-clairic", "bin", "zcrank.py");
+  if (!existsSync(engine)) {
+    console.log("  (engine not on this machine, skipped)");
+  } else {
+    const home = mkdtempSync(join(tmpdir(), "pjan-182-engine-home-"));
+    const probe = `
+import importlib.machinery, importlib.util, json, sys
+from datetime import datetime, timezone
+l = importlib.machinery.SourceFileLoader("zc", sys.argv[1]); sp = importlib.util.spec_from_loader("zc", l)
+zc = importlib.util.module_from_spec(sp); l.exec_module(zc)
+now = datetime.fromtimestamp(int(sys.argv[3]) / 1000, timezone.utc)
+s = zc.schedule(sys.argv[2], now)
+print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due": s["due"], "enabled": zc.crank_enabled(sys.argv[2])}))
+`;
+    const cases = [
+      { name: "exact key + lowercase drift with an interval", tab: "Gruvato 🟢", keys: { Gruvato: { enabled: "1" }, gruvato: { enabled: "1", interval: "1d" } }, logs: { gruvato: [row("2026-10-23T11:50:00Z", "sent")] } },
+      { name: "exact ON + stale OFF spelling", tab: "Alpha", keys: { Alpha: { enabled: "1" }, alpha: { enabled: "0" } }, logs: {} },
+      { name: "drift only, longest wins, newest log", tab: "ALPHA 🟢", keys: { Alpha: { enabled: "1", interval: "1h" }, "a-lpha": { enabled: "1", interval: "6h" } }, logs: { Alpha: [row("2026-10-23T09:00:00Z", "done")], "a-lpha": [row("2026-10-23T11:00:00Z", "sent"), row("2026-10-23T11:30:00Z", "enabled")] } },
+      { name: "lenient timestamp only", tab: "Slow", keys: { Slow: { enabled: "1", interval: "1h" } }, logs: { Slow: [row("2026-10-23T11:59:00.123Z", "sent")] } },
+      { name: "garbage interval, global 1h", tab: "Plain", keys: { Plain: { enabled: "1", interval: "soon" } }, logs: { Plain: [row("2026-10-23T11:30:00Z", "sent")] }, global: "1h" },
+    ];
+    const nowMs = T("2026-10-23T12:00:00Z");
+    try {
+      for (const c of cases) {
+        flush();
+        for (const [key, fields] of Object.entries(c.keys)) rs.cli("HSET", `zcrank:tab:${key}`, ...Object.entries(fields).flat());
+        for (const [key, rows] of Object.entries(c.logs)) rs.cli("RPUSH", `zcrank:log:${key}`, ...rows);
+        if (c.global) rs.cli("HSET", "zcrank:config", "interval", c.global);
+        const py = spawnSync("python3", ["-I", "-c", probe, engine, c.tab, String(nowMs)], {
+          encoding: "utf8",
+          env: { PATH: process.env.PATH, HOME: home, ZCRANK_REDIS_HOST: "127.0.0.1", ZCRANK_REDIS_PORT: String(rs.port) },
+        });
+        assert.equal(py.status, 0, `${c.name}: engine probe failed: ${py.stderr}`);
+        const eng = JSON.parse(py.stdout);
+        const snap = snapshotCrank(store, c.tab.replace(/\s*[🟢🟡🔴🔔]+$/u, ""), storedTabKeys(store), nowMs);
+        assert.deepEqual({ interval: snap.interval, inherited: snap.inherited, due: snap.due, enabled: snap.enabled }, eng, c.name);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   }
 
   console.log("set / reset interval: written under the key, cleared from other spellings, logged as 'interval'");
@@ -554,7 +632,7 @@ try {
     stdin.press("t");
     await waitFor(() => stdout.frame().includes("● ON"), "toggle ON");
     assert.equal(rs.cli("HGET", "zcrank:tab:Pile of Dumb Things", "enabled"), "1");
-    assert.match(stdout.frame(), /Next run\s+in \d+m \d\ds/, "a countdown when ON");
+    assert.match(stdout.frame(), /Next run\s+in (\d+m \d\ds|\d+s) \(/, "a countdown when ON");
     assert.match(stdout.frame(), /pj crank enable/);
 
     // the countdown really ticks
@@ -639,6 +717,39 @@ try {
     const stdout = new FakeStdout();
     const finished = runCrankDashboard(flaky, { ...ink(stdin, stdout), alternateScreen: false, refreshMs: 100 });
     await waitFor(() => stdout.frame().includes("Redis is not answering"), "error line");
+    stdin.press("q");
+    await finished;
+  }
+
+  console.log("dead Redis: every accessor throws instead of posing as success or as an empty registry");
+  {
+    const gone = redis({ port: 1 });
+    assert.equal(gone.ping(), false);
+    assert.throws(() => gone.setTabEnabled("x", true), /Redis is not answering at 127\.0\.0\.1:1/);
+    assert.throws(() => gone.setTabInterval("x", "1h"), /not answering/);
+    assert.throws(() => gone.pushLog("x", "enabled", "a", "2026-10-20T12:00:00Z"), /not answering/);
+    assert.throws(() => gone.tabKeys(), /not answering/);
+    assert.throws(() => gone.globalInterval(), /not answering/);
+    const dead = createCrankController({ slug: "x", project: { name: "x", agents: [] }, store: gone, live: () => [] });
+    for (const [what, fn] of [["read", () => dead.read()], ["enable", () => dead.enable()], ["disable", () => dead.disable()], ["setInterval", () => dead.setInterval("1h")]]) {
+      assert.throws(fn, /not answering/, `controller.${what} must surface the dead Redis`);
+    }
+    // and the dashboard says so on a toggle instead of flashing "crank ON"
+    const live = createCrankController({ slug: "x", project: { name: "Solo", agents: [] }, store, live: () => [] });
+    let alive = true;
+    const dropping = {
+      ...live,
+      read: () => (alive ? live.read() : dead.read()),
+      enable: () => { if (!alive) return dead.enable(); return live.enable(); },
+    };
+    const stdin = new FakeStdin();
+    const stdout = new FakeStdout();
+    const finished = runCrankDashboard(dropping, { ...ink(stdin, stdout), alternateScreen: false, refreshMs: 60_000 });
+    await waitFor(() => stdout.frame().includes("OFF") || stdout.frame().includes("Solo"), "first frame");
+    alive = false;
+    stdin.press("t");
+    await waitFor(() => stdout.frame().includes("Redis is not answering"), "error banner on a failed write");
+    assert.ok(!stdout.frame().includes("crank ON"), "no success flash for a write that did not land");
     stdin.press("q");
     await finished;
   }

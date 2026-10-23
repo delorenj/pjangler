@@ -206,7 +206,7 @@ async function runEnable(options: { interval?: string }): Promise<void> {
     for (const { from, to } of result.renamed) {
       console.log(`  ${yellow(glyph.warn)} tab renamed ${dim(glyph.dot)} ${from} ${dim(glyph.pointer)} ${bold(to)} ${dim("(old key merged into the new one and removed)")}`);
     }
-    const live = snapshotCrank(store, result.tab, [result.tab], Date.now());
+    const live = snapshotCrank(store, result.tab, storedTabKeys(store), Date.now());
     console.log(`  ${dim("interval")} ${live.interval}${live.inherited ? dim(` (inherits global ${live.global})`) : ""}`);
     if (ctx.resolution.storedAsIs) {
       console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);

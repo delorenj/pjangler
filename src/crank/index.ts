@@ -128,12 +128,16 @@ export interface LogRow {
   action: string;
 }
 
+const STRICT_LOG_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
 /** A zcrank:log row, or undefined when it is not JSON / has no usable ts. Bad ts sorts as 0. */
 export function parseLogRow(raw: string): LogRow | undefined {
   try {
     const parsed = JSON.parse(raw) as { ts?: unknown; state?: unknown; action?: unknown };
     const ts = typeof parsed.ts === "string" ? parsed.ts : "";
-    const ms = Date.parse(ts);
+    // Strict, like zcrank.py: only YYYY-MM-DDTHH:MM:SSZ is a timestamp. Date.parse would also take
+    // "…:00.123Z" or a bare date, which the engine reads as "no run" (PJAN-182 review).
+    const ms = STRICT_LOG_TS.test(ts) ? Date.parse(ts) : Number.NaN;
     return {
       ts,
       tsMs: Number.isFinite(ms) ? ms : 0,
@@ -215,14 +219,32 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
   const endpoint = redisEndpoint();
   const host = deps.host ?? endpoint.host;
   const port = deps.port ?? endpoint.port;
-  const run = (...args: string[]): string =>
-    shell("redis-cli", ["--raw", "-h", host, "-p", String(port), ...args]).stdout.replace(/\r?\n$/, "");
+  const call = (args: string[]) => shell("redis-cli", ["--raw", "-h", host, "-p", String(port), ...args]);
+  // A failed redis-cli (Redis gone, error reply) throws: a write that did not land must never read
+  // as success, and a dead read must not pose as "no keys / absent" (PJAN-182 review).
+  const run = (...args: string[]): string => {
+    const result = call(args);
+    if (result.status !== 0) throw new Error(`Redis is not answering at ${host}:${port} (${args[0]} failed)`);
+    return result.stdout.replace(/\r?\n$/, "");
+  };
   const lines = (out: string): string[] => out.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
   return {
     /** "host:port" this store talks to, for error messages. */
     endpoint: `${host}:${port}`,
     /** PING -> true only when Redis answers PONG. */
-    ping: (): boolean => run("PING") === "PONG",
+    ping: (): boolean => {
+      const result = call(["PING"]);
+      return result.status === 0 && result.stdout.replace(/\r?\n$/, "") === "PONG";
+    },
+    /** GET a plain string key; undefined when absent. */
+    getKey: (key: string): string | undefined => {
+      const v = run("GET", key);
+      return v === "" ? undefined : v;
+    },
+    /** SET a plain string key (pane overrides). */
+    setKey: (key: string, value: string): void => {
+      run("SET", key, value);
+    },
     /** HGET zcrank:tab:<tab> enabled -> "0"|"1"|undefined (absent). */
     tabEnabled: (tab: string): string | undefined => {
       const v = run("HGET", `zcrank:tab:${tab}`, "enabled");
@@ -580,13 +602,27 @@ export function mergeLogRows(others: string[][], base: string[], cap: number = Z
   return rows.length > cap ? rows.slice(rows.length - cap) : rows;
 }
 
-/** Apply a RenamePlan to Redis: carry interval, merge logs, drop old tab/pane/log keys. */
+/**
+ * Apply a RenamePlan to Redis: carry interval, merge logs, move pane overrides, drop old tab/log keys.
+ * A pane override under an old spelling is MOVED onto the target (a pane turned OFF stays OFF); when
+ * both spellings carry one, any OFF wins, which is what the engine does across spellings.
+ */
 export function applyRenameMigration(store: CrankStore, plan: RenamePlan): void {
   if (plan.carryInterval) store.setTabInterval(plan.target, plan.carryInterval);
   for (const old of plan.oldKeys) {
     const merged = mergeLogRows([store.logRows(old)], store.logRows(plan.target));
     store.replaceLog(plan.target, merged);
-    store.deleteKeys(`zcrank:tab:${old}`, ...store.paneKeys(old), `zcrank:log:${old}`);
+    const oldPanes = store.paneKeys(old);
+    const prefix = `zcrank:pane:${old}:`;
+    for (const paneKey of oldPanes) {
+      const targetKey = `zcrank:pane:${plan.target}:${paneKey.slice(prefix.length)}`;
+      const oldValue = store.getKey(paneKey);
+      const existing = store.getKey(targetKey);
+      if (oldValue === undefined) continue;
+      const value = existing === undefined ? oldValue : existing === "1" && oldValue === "1" ? "1" : "0";
+      if (value !== existing) store.setKey(targetKey, value);
+    }
+    store.deleteKeys(`zcrank:tab:${old}`, ...oldPanes, `zcrank:log:${old}`);
   }
 }
 
@@ -618,7 +654,8 @@ export interface EnableResult {
 /**
  * `pj crank enable`, shared by the CLI and the TUI: set enabled=1 under the target key,
  * write the chosen interval, run the rename migration, then log (enabled / interval / renamed).
- * With no live tab nothing migrates and the key is the resolution's, as before PJAN-182.
+ * With no live tab nothing migrates and the key is the resolution's, but other spellings that
+ * still name the tab are switched ON too (and lose any interval the chosen one must beat).
  */
 export function enableCrank(store: CrankStore, ctx: CrankContext, options: { interval?: CrankInterval; now?: Date } = {}): EnableResult {
   const now = options.now ?? new Date();
@@ -635,6 +672,16 @@ export function enableCrank(store: CrankStore, ctx: CrankContext, options: { int
   store.setTabEnabled(tab, true);
   if (options.interval) store.setTabInterval(tab, options.interval);
   if (plan) applyRenameMigration(store, plan);
+  else {
+    // No live tab, so nothing migrates. Other spellings of the key still name this tab to the engine
+    // (any OFF wins, the longest interval wins), so bring them along: ON, and the chosen interval
+    // not overridden by a stale longer one.
+    for (const sibling of keysNamingTab(tab, ctx.storedKeys)) {
+      if (sibling === tab) continue;
+      store.setTabEnabled(sibling, true);
+      if (options.interval) store.clearTabInterval(sibling);
+    }
+  }
   if (options.interval) store.pushLog(tab, "interval", `pj crank enable: interval ${options.interval}`, ts);
   store.pushLog(tab, "enabled", "pj crank enable", ts);
   const renamed = (plan?.oldKeys ?? []).map((from) => ({ from, to: tab }));
