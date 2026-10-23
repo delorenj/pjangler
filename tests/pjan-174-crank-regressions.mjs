@@ -67,6 +67,19 @@ console.log("canon: status suffixes are stripped the way zcrankctl strips them")
   assert.equal(canon("PILE OF DUMB THINGS 🟡"), "pileofdumbthings");
 }
 
+console.log("resolve: a drifted live tab keeps the key it already has (WING-7)");
+{
+  const green = resolveTabForProject({ name: "green-in-between", agents: [] },
+    [{ name: "green-in-between", position: 0 }], ["GreenInBetween"]);
+  assert.equal(green.tab, "GreenInBetween");
+  assert.equal(green.source, "live-exact");
+  const navi = resolveTabForProject({ name: "Navi", agents: [] },
+    [{ name: "IPM: Navi 🔔", position: 3 }], ["IPM", "Holocene"]);
+  assert.equal(navi.tab, "IPM");
+  const fresh = resolveTabForProject({ name: "Flume", agents: [] }, [{ name: "Flume ⚫", position: 1 }], []);
+  assert.equal(fresh.tab, "Flume");
+}
+
 // ---------------------------------------------------------------------------
 // Candidate names: project name + agent handles
 // ---------------------------------------------------------------------------
@@ -152,13 +165,16 @@ console.log("resolution: no match stores the project name as-is and says so");
   assert.deepEqual(r, { tab: "Brand New Project", source: "project-name", matched: "Brand New Project", storedAsIs: true });
 }
 
-console.log("resolution: live-exact outranks a stored key with the same name elsewhere");
+console.log("resolution: live-exact finds the tab, and the tab keeps the key it already has");
 {
-  // One live tab, two candidate names — the live tab is the authority.
+  // The live tab is the authority on WHICH tab; its existing key is the authority on the
+  // spelling, so an enable doesn't mint zcrank:tab:Flume next to zcrank:tab:flume (WING-7).
   const live = [{ name: "Flume", position: 0 }];
   const r = resolveTabForProject({ name: "Flume", agents: [] }, live, ["flume"]);
   assert.equal(r.source, "live-exact");
-  assert.equal(r.tab, "Flume");
+  assert.equal(r.tab, "flume");
+  const both = resolveTabForProject({ name: "Flume", agents: [] }, live, ["flume", "Flume"]);
+  assert.equal(both.tab, "Flume");
 }
 
 console.log("resolution: agent candidates also reach redis-exact and live-prefix");

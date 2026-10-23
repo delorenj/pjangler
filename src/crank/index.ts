@@ -187,11 +187,25 @@ export function resolveTabForProject(
   storedTabs: string[],
 ): TabResolution {
   const candidates = candidateNames(project);
-  // 1. Exact match on a live tab (live is the authority).
+  // A live tab that already has a key keeps it, even when the name drifted from it
+  // ("green-in-between" vs GreenInBetween, "IPM: Navi" vs IPM). Writing the live spelling
+  // instead minted a second key the engine never read (WING-7).
+  const keyFor = (tab: LiveTab): string => {
+    const display = tabDisplay(tab.name);
+    if (storedTabs.includes(display)) return display;
+    for (const form of [display, display.split(":")[0]]) {
+      const stored = storedTabs.find((s) => canon(s) === canon(form));
+      if (stored) return stored;
+    }
+    return display;
+  };
+  // 1. Exact match on a live tab (live is the authority), whole name or either side of
+  //    a colon: project navi owns the tab "IPM: Navi".
   for (const candidate of candidates) {
     for (const tab of live) {
-      if (canon(tab.name) === canon(candidate)) {
-        return { tab: tabDisplay(tab.name), source: "live-exact", matched: candidate, storedAsIs: false };
+      const sides = [tab.name, ...tabDisplay(tab.name).split(":")];
+      if (sides.some((side) => canon(side) && canon(side) === canon(candidate))) {
+        return { tab: keyFor(tab), source: "live-exact", matched: candidate, storedAsIs: false };
       }
     }
   }
@@ -210,7 +224,7 @@ export function resolveTabForProject(
     for (const tab of live) {
       const tabCanonical = canon(tab.name);
       if (tabCanonical.startsWith(canonical) || canonical.startsWith(tabCanonical)) {
-        return { tab: tabDisplay(tab.name), source: "live-prefix", matched: candidate, storedAsIs: false };
+        return { tab: keyFor(tab), source: "live-prefix", matched: candidate, storedAsIs: false };
       }
     }
   }
