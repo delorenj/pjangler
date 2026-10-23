@@ -2,8 +2,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../utils/tree-diff";
-import { enableSelection, readSelectionManifest, showSkill } from "@delorenj/skillex";
+import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree, type TreeSnapshot } from "../utils/tree-diff";
+import { enableSelection, PROJECT_CLI_ALIASES, readSelectionManifest, showSkill } from "@delorenj/skillex";
 import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
 import type { Context, MigrationRuleResult, RecipeOwnedCheck } from "../parity/rules";
 
@@ -130,6 +130,36 @@ function reply(value: unknown, operation: CompanionRequest["operation"]): Compan
   };
 }
 
+/**
+ * PJAN-178: the ONE scope of the g33 no-write contract and of every g33 write
+ * inventory. These are the only surfaces the owner adapter (import, observe,
+ * plan, apply) and enrollment (skill activation link, skills.json, the CLI
+ * aliases skillex reconciles, the adapter block in .project.json) can
+ * legitimately touch: _bmad/** (the installer's targets, including the bridge's
+ * `_bmad/skills` surface), .agents/** (skills.json and activation links), the
+ * bridge's top-level `skills` surface, .project.json and skillex's project CLI
+ * aliases. A write anywhere else during the window is a concurrent agent's, not
+ * the adapter's, and is neither a contract violation nor g33's change.
+ */
+export const G33_OWNED_SURFACES: readonly string[] = Object.freeze(["_bmad", ".agents", "skills", ".project.json", ...PROJECT_CLI_ALIASES]);
+
+/**
+ * Scoped to the owned surfaces, and an unreadable entry (a root-owned container
+ * data dir) is fingerprinted rather than thrown: neither can fail the contract
+ * on a busy repo, while a write inside the surfaces is still seen.
+ */
+export function snapshotG33Surfaces(projectRoot: string): TreeSnapshot {
+  return snapshotTree(projectRoot, { roots: G33_OWNED_SURFACES, tolerateUnreadable: true });
+}
+
+const changedG33Surfaces = (projectRoot: string, before: TreeSnapshot): string[] =>
+  changedTreePaths(projectRoot, before, snapshotG33Surfaces(projectRoot));
+
+function assertNoWrite(operation: "import" | CompanionRequest["operation"], written: string[]): void {
+  if (!written.length) return;
+  throw new Error(`g33 adapter violated the no-write ${operation} contract: ${written.slice(0, 10).join(", ")}${written.length > 10 ? ` (+${written.length - 10} more)` : ""}`);
+}
+
 /** Optional outcomes never throw into required BMAD initialization/rollback. */
 export async function runG33Companion(
   projectRoot: string,
@@ -139,7 +169,7 @@ export async function runG33Companion(
 ): Promise<CompanionResult> {
   projectRoot = resolve(projectRoot);
   const result: CompanionResult = { schemaVersion: 1, moduleId: "g33", optional: true, status: "unavailable", summary: "g33 companion unavailable", details: [], evidence: [], changedFiles: [] };
-  let before: ReturnType<typeof snapshotTree> | undefined;
+  let before: TreeSnapshot | undefined;
   try {
     const selection = select(projectRoot);
     if (!selection.enabled) return { ...result, status: "disabled", summary: selection.reason };
@@ -154,19 +184,14 @@ export async function runG33Companion(
     catch (error) {
       return { ...result, status: "unavailable", summary: "Configured g33 adapter is unavailable", details: [...result.details, error instanceof Error ? error.message : String(error)] };
     }
-    before = snapshotTree(projectRoot);
+    before = snapshotG33Surfaces(projectRoot);
     const exported = await import(specifier) as Record<string, unknown>;
-    if (changedTreePaths(projectRoot, before, snapshotTree(projectRoot)).length) {
-      throw new Error("g33 adapter violated the no-write import contract");
-    }
+    assertNoWrite("import", changedG33Surfaces(projectRoot, before));
     const callable = exported[selection.exportName];
     if (typeof callable !== "function") throw new Error(`Configured g33 export ${selection.exportName} is not callable`);
     const invoke = async (operation: CompanionRequest["operation"]): Promise<CompanionReply> => {
       const value = reply(await (callable as Callable)({ schemaVersion: 1, moduleId: "g33", operation, projectRoot, reason, options: selection.options }), operation);
-      const written = operation === "apply" ? [] : changedTreePaths(projectRoot, before!, snapshotTree(projectRoot));
-      if (written.length) {
-        throw new Error(`g33 adapter violated the no-write ${operation} contract: ${written.slice(0, 10).join(", ")}${written.length > 10 ? ` (+${written.length - 10} more)` : ""}`);
-      }
+      if (operation !== "apply") assertNoWrite(operation, changedG33Surfaces(projectRoot, before!));
       return value;
     };
     const observed = await invoke("observe");
@@ -178,10 +203,10 @@ export async function runG33Companion(
     if (dryRun) return { ...result, ...plan, evidence: observed.evidence };
     if (plan.status === "unchanged" && observed.status === "installed") return { ...result, ...observed, status: "unchanged" };
     const applied = await invoke("apply");
-    result.changedFiles = changedTreePaths(projectRoot, before, snapshotTree(projectRoot));
+    result.changedFiles = changedG33Surfaces(projectRoot, before);
     if (["unavailable", "conflict", "error"].includes(applied.status)) return { ...result, ...applied };
     // Mutation results are never installation proof. Re-observe owner content.
-    before = snapshotTree(projectRoot);
+    before = snapshotG33Surfaces(projectRoot);
     const verified = await invoke("observe");
     if (verified.status !== "installed") return {
       ...result, status: "error", summary: "g33 apply did not establish an installed owner observation",
@@ -190,7 +215,7 @@ export async function runG33Companion(
     return { ...result, ...verified, status: result.changedFiles.length ? "changed" : "unchanged" };
   } catch (error) {
     if (before) {
-      try { result.changedFiles = [...new Set([...result.changedFiles, ...changedTreePaths(projectRoot, before, snapshotTree(projectRoot))])].sort(); }
+      try { result.changedFiles = [...new Set([...result.changedFiles, ...changedG33Surfaces(projectRoot, before)])].sort(); }
       catch (snapshotError) { result.details.push(`Could not inventory partial g33 writes: ${String(snapshotError)}`); }
     }
     return { ...result, status: "error", summary: "Optional g33 companion could not be reconciled", details: [...result.details, error instanceof Error ? error.message : String(error)] };
@@ -278,7 +303,7 @@ export async function enrollG33Companion(ctx: Context): Promise<G33EnrollmentRes
   const projectRoot = resolve(ctx.repoRoot);
   const result: G33EnrollmentResult = { status: "skipped", summary: "skipped", details: [], changedFiles: [] };
   const retry = enrollRetry();
-  let before: ReturnType<typeof snapshotTree> | undefined;
+  let before: TreeSnapshot | undefined;
   try {
     const path = join(projectRoot, ".project.json");
     const verdict = await g33Enrollability(ctx);
@@ -287,18 +312,18 @@ export async function enrollG33Companion(ctx: Context): Promise<G33EnrollmentRes
       ...result, status: "planned", summary: `would activate ${G33_SKILL} and write bmad.companion.adapter`,
       details: [`Would run ${PJ_SKILLS} enable skill ${G33_SKILL} and set bmad.companion.adapter to ${JSON.stringify(G33_BRIDGE_ADAPTER)}; nothing written.`],
     };
-    before = snapshotTree(projectRoot);
+    before = snapshotG33Surfaces(projectRoot);
     // enableSelection reconciles the whole scope; a refusal is an envelope, not a throw.
     const enabled = await enableSelection("skill", G33_SKILL, { ...skillCoreOptions(ctx), dryRun: false });
     if (!enabled.ok) {
       const found = skillDiagnostics(enabled.findings);
       return { ...result, status: "error", summary: `could not activate ${G33_SKILL}`, details: [...found, retry],
-        changedFiles: changedTreePaths(projectRoot, before, snapshotTree(projectRoot)) };
+        changedFiles: changedG33Surfaces(projectRoot, before) };
     }
     if (!existsSync(resolve(projectRoot, G33_BRIDGE_ADAPTER.module))) {
       return { ...result, status: "error", summary: `activated ${G33_SKILL} but its bridge is not in the project`,
         details: [`Missing ${G33_BRIDGE_ADAPTER.module}; the adapter was not written.`, retry],
-        changedFiles: changedTreePaths(projectRoot, before, snapshotTree(projectRoot)) };
+        changedFiles: changedG33Surfaces(projectRoot, before) };
     }
     // Re-read: activation reconciles under a lock and the manifest may have moved.
     const current = record(JSON.parse(readFileSync(path, "utf8")));
@@ -309,10 +334,10 @@ export async function enrollG33Companion(ctx: Context): Promise<G33EnrollmentRes
     currentConfig.adapter = { ...optionalObject(currentConfig, "adapter", "bmad.companion.adapter"), ...G33_BRIDGE_ADAPTER };
     writeFileSync(path, `${JSON.stringify(current, null, 2)}\n`, "utf8");
     return { ...result, status: "enrolled", summary: `activated ${G33_SKILL} and wrote bmad.companion.adapter`,
-      changedFiles: changedTreePaths(projectRoot, before, snapshotTree(projectRoot)) };
+      changedFiles: changedG33Surfaces(projectRoot, before) };
   } catch (error) {
     let changedFiles: string[] = [];
-    try { if (before) changedFiles = changedTreePaths(projectRoot, before, snapshotTree(projectRoot)); } catch { /* the inventory is best effort */ }
+    try { if (before) changedFiles = changedG33Surfaces(projectRoot, before); } catch { /* the inventory is best effort */ }
     return { ...result, status: "error", summary: "could not be completed", details: [error instanceof Error ? error.message : String(error), retry], changedFiles };
   }
 }
@@ -750,6 +775,20 @@ export interface BmadUpdateWithPreservationResult {
   companion: CompanionResult;
 }
 
+/**
+ * KNOWN RISK (PJAN-178, deliberately left whole-tree): the backup and every
+ * failure-path rollback cover the WHOLE repo (minus .git, worktrees and
+ * runtime state), so a failed update also reverts — and for files created in
+ * the window, deletes — a concurrent agent's writes anywhere in the repo. It is
+ * not narrowed to G33_OWNED_SURFACES because the real bmad-method installer's
+ * write surface is open-ended: besides _bmad/** and .agents/** it writes every
+ * --tools root (and copilot's .github/agents), sibling `_bmad-*-backup-temp`
+ * dirs, and creates or MOVES the directories modules declare in module.yaml
+ * (`{output_folder}`, planning/implementation artifacts, project knowledge),
+ * which are operator-configured paths anywhere in the repo. A fixed scope would
+ * leave a failed update's writes there un-rolled-back. Unreadable entries
+ * still throw from the capture, before the installer runs (fail closed).
+ */
 export async function runBmadUpdateWithCompanionPreservation(
   projectRoot: string,
   options: {

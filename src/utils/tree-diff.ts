@@ -26,26 +26,76 @@ export function excludedFromTreeSnapshot(rel: string, full?: string): boolean {
   return Boolean(full && name.endsWith(".db") && (existsSync(`${full}-wal`) || existsSync(`${full}-journal`)));
 }
 
-/** Snapshot operator-visible project files while excluding Git internals and runtime state. */
-export function snapshotTree(root: string, current = root, snapshot: TreeSnapshot = new Map()): TreeSnapshot {
-  let stat;
-  try { stat = lstatSync(current); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return snapshot;
-    throw error;
-  }
-  const rel = relative(root, current) || ".";
-  if (excludedFromTreeSnapshot(rel, current)) return snapshot;
-  if (stat.isSymbolicLink()) {
-    snapshot.set(rel, `link:${readlinkSync(current)}`);
-  } else if (stat.isFile()) {
-    snapshot.set(rel, `file:${createHash("sha256").update(readFileSync(current)).digest("hex")}:${stat.mode & 0o7777}`);
-  } else if (stat.isDirectory()) {
-    snapshot.set(rel, `dir:${stat.mode & 0o7777}`);
-    for (const name of readdirSync(current)) snapshotTree(root, join(current, name), snapshot);
-  } else {
-    snapshot.set(rel, `other:${stat.mode}`);
-  }
+export interface TreeSnapshotOptions {
+  /**
+   * Repo-relative roots to walk instead of the whole tree. Keys stay relative to
+   * `root`, so scoped and whole-tree snapshots diff the same way; an absent root
+   * is simply absent (its later creation is a change).
+   */
+  roots?: readonly string[];
+  /**
+   * Record an entry the walk may not read (EACCES/EPERM) as a metadata
+   * fingerprint instead of throwing. mtime/ctime still move on any write or
+   * chmod, so a change to the unreadable entry is still a change.
+   */
+  tolerateUnreadable?: boolean;
+}
+
+const unreadable = (error: unknown): string | undefined => {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EACCES" || code === "EPERM" ? code : undefined;
+};
+
+/**
+ * Snapshot operator-visible project files while excluding Git internals and
+ * runtime state. With no options this is the whole tree and any read failure
+ * throws, exactly as before PJAN-178.
+ */
+export function snapshotTree(root: string, options: TreeSnapshotOptions = {}): TreeSnapshot {
+  const snapshot: TreeSnapshot = new Map();
+  const tolerate = Boolean(options.tolerateUnreadable);
+  const walk = (current: string): void => {
+    let lstat;
+    try { lstat = lstatSync(current); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      const code = tolerate ? unreadable(error) : undefined;
+      if (!code) throw error;
+      snapshot.set(relative(root, current) || ".", `unreadable:${code}`);
+      return;
+    }
+    const stat = lstat;
+    const rel = relative(root, current) || ".";
+    if (excludedFromTreeSnapshot(rel, current)) return;
+    const fingerprint = (code: string) => `unreadable:${code}:${stat.mode & 0o7777}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    if (stat.isSymbolicLink()) {
+      snapshot.set(rel, `link:${readlinkSync(current)}`);
+    } else if (stat.isFile()) {
+      let bytes: Buffer;
+      try { bytes = readFileSync(current); }
+      catch (error) {
+        const code = tolerate ? unreadable(error) : undefined;
+        if (!code) throw error;
+        snapshot.set(rel, `file:${fingerprint(code)}`);
+        return;
+      }
+      snapshot.set(rel, `file:${createHash("sha256").update(bytes).digest("hex")}:${stat.mode & 0o7777}`);
+    } else if (stat.isDirectory()) {
+      let names: string[];
+      try { names = readdirSync(current); }
+      catch (error) {
+        const code = tolerate ? unreadable(error) : undefined;
+        if (!code) throw error;
+        snapshot.set(rel, `dir:${fingerprint(code)}`);
+        return;
+      }
+      snapshot.set(rel, `dir:${stat.mode & 0o7777}`);
+      for (const name of names) walk(join(current, name));
+    } else {
+      snapshot.set(rel, `other:${stat.mode}`);
+    }
+  };
+  for (const scoped of options.roots ?? ["."]) walk(join(root, scoped));
   return snapshot;
 }
 

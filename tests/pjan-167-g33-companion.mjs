@@ -421,9 +421,11 @@ try {
   for (const [operation, mutation] of [["import","link"],["import","mode"],["plan","link"],["plan","mode"],["apply","link"]]) {
     const subject=project(`snapshot-${operation}-${mutation}`, {});
     const module=join(scratch,`snapshot-${operation}-${mutation}.mjs`);
-    const dangling=join(subject,"dangling-link");
-    const mutate=mutation==='link' ? `symlinkSync('nonexistent-target',${JSON.stringify(dangling)});` : `chmodSync(${JSON.stringify(subject)},0o700);`;
-    chmodSync(subject,0o755);
+    // PJAN-178: the contract covers the owned g33 surfaces, so the write lands in .agents.
+    const surface=join(subject,".agents");
+    const dangling=join(surface,"dangling-link");
+    const mutate=mutation==='link' ? `symlinkSync('nonexistent-target',${JSON.stringify(dangling)});` : `chmodSync(${JSON.stringify(surface)},0o700);`;
+    chmodSync(surface,0o755);
     put(module,`import {symlinkSync,chmodSync} from 'node:fs';
       ${operation==='import'?mutate:''}
       export function companion(req){
@@ -436,12 +438,12 @@ try {
     const before=snapshot(subject);
     const payload=run(subject,operation==='apply'?recipe:[...recipe,"--dry-run"]);
     assert.equal(payload.bmadCompanion.status,"error");
-    const changed=mutation==='link'?dangling:subject;
+    const changed=mutation==='link'?dangling:surface;
     assert.ok(payload.bmadCompanion.changedFiles.includes(changed),JSON.stringify(payload.bmadCompanion));
     assert.notDeepEqual(snapshot(subject),before,"independent fixture snapshot detects the violation");
     if(operation!=='apply')assert.match(payload.bmadCompanion.details.join("\n"),/no-write/);
   }
-  checkpoint("import/plan dangling links and root chmod rejected; failed apply retains dangling-link write inventory");
+  checkpoint("import/plan dangling links and surface chmod rejected; failed apply retains dangling-link write inventory");
   console.log(`PJAN-167 callable CLI fixture: ${checks} groups passed; actual owner installer integration BLOCKED (owner API/artifact unavailable).`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
