@@ -90,6 +90,14 @@ run = "npm run build"
 description = "Type-check the source with tsc --noEmit"
 run = "npm run typecheck"
 
+# PJAN-180: run the real-installer surface oracle for ONE bmad-method version and
+# print its VERIFIED_BMAD_INSTALLERS line. Add that line to
+# src/bmad/verified-installers.ts only when the oracle passed. Needs network.
+#   mise run bmad:verify-surface 6.12.4
+[tasks."bmad:verify-surface"]
+description = "Verify a bmad-method installer's write surface (PJAN-180) and print its fingerprint"
+run = 'node tests/pjan-180-surface-oracle.mjs --version {{arg(name="version")}} --print-fingerprint'
+
 # Cut a release in ONE commit: clean/remote/auth gates -> build+test -> bump ->
 # commit + annotated tag -> inspect the exact tarball -> atomically push the
 # configured main branch + tag -> publish that tarball. Level defaults to patch.

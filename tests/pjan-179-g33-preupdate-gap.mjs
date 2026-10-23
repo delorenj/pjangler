@@ -163,6 +163,8 @@ try {
     assert.match(readFileSync(manifestPath, "utf8"), /version:\s*6\.12\.1/);
     assert.match(upgraded.results[0].details.join("\n"), /g33 pre-update observation gap \(unavailable\)/, "the gap stays on the record of the applied update");
     assert.ok(upgraded.results[0].bmadCompanion.evidence.length, "post-update re-observation carries owner evidence");
+    // PJAN-180: a fake installer is not a bmad-method package, so the rollback scope stays whole-tree, and says so.
+    assert.ok(upgraded.results[0].details.includes("rollback scope: whole-tree (PJ_BMAD_INSTALLER is not a bmad-method package)"), upgraded.results[0].details.join("\n"));
     assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n', "upstream mapping rewrite was restored");
     assert.equal(readFileSync(operatorOverride(target), "utf8"), "operator_override = true\n");
     assert.equal(run(target, ["audit", "--rules", "bmad.g33-companion"]).rules[0].status, "pass");
@@ -179,6 +181,7 @@ try {
     assert.equal(existsSync(reached), true, "the installer ran before the post-update verification failed");
     rmSync(reached);
     assert.deepEqual(failed.changedFiles, []);
+    assert.ok(failed.results[0].details.includes("rollback scope: whole-tree (PJ_BMAD_INSTALLER is not a bmad-method package)"), failed.results[0].details.join("\n"));
     assertUntouched(target, before, "failed post-update observation rolls back the whole tree");
     assert.match(readFileSync(manifestPath, "utf8"), /version:\s*6\.11\.0/);
     checkpoint("post-update observe still failing rolls back, blocked, tree restored");

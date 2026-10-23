@@ -1,8 +1,13 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree, type TreeSnapshot } from "../utils/tree-diff";
+import { changedTreePaths, snapshotTree, type TreeSnapshot } from "../utils/tree-diff";
+import { captureTreeBackup, restoreSingleEntry, restoreTreeBackup, type TreeBackup, type TreeBackupEntry } from "../utils/tree-restore";
+import {
+  acquireBmadUpdateLock, captureScopedBackup, restoreScopedBackup, scopedChangedFiles, UnreadableSurfaceError,
+  type BmadUpdateScope, type ScopedBackup,
+} from "./update-scope";
 import { enableSelection, PROJECT_CLI_ALIASES, readSelectionManifest, showSkill } from "@delorenj/skillex";
 import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
 import type { Context, MigrationRuleResult, RecipeOwnedCheck } from "../parity/rules";
@@ -177,6 +182,13 @@ export type G33ObserveGap = "missing" | "unavailable" | "conflict";
  */
 export const BMAD_UPDATE_OBSERVE_GAPS: readonly G33ObserveGap[] = Object.freeze(["missing", "unavailable", "conflict"]);
 
+/**
+ * PJAN-180: the detail runG33Companion records when it could not inventory its
+ * own partial writes. A rollback that sees it restores ALL of the companion
+ * surface, since the window's writes are unknown.
+ */
+export const G33_INVENTORY_FAILED = "Could not inventory partial g33 writes";
+
 /** Marks the dry-run detail line that records a tolerated pre-update observation gap. */
 export const OBSERVATION_GAP_NOTE = "g33 pre-update observation gap";
 
@@ -253,7 +265,7 @@ export async function runG33Companion(
   } catch (error) {
     if (before) {
       try { result.changedFiles = [...new Set([...result.changedFiles, ...changedG33Surfaces(projectRoot, before)])].sort(); }
-      catch (snapshotError) { result.details.push(`Could not inventory partial g33 writes: ${String(snapshotError)}`); }
+      catch (snapshotError) { result.details.push(`${G33_INVENTORY_FAILED}: ${String(snapshotError)}`); }
     }
     return { ...result, status: "error", summary: "Optional g33 companion could not be reconciled", details: [...result.details, error instanceof Error ? error.message : String(error)] };
   }
@@ -468,103 +480,8 @@ export function g33BmadUpdateBoundary(projectRoot: string, retainedG33Declaratio
   }
 }
 
-type TreeBackupEntry =
-  | { kind: "dir"; mode: number }
-  | { kind: "link"; target: string }
-  | { kind: "file"; mode: number; bytes: Buffer };
-
-export type TreeBackup = Map<string, TreeBackupEntry>;
-
-export function captureTreeBackup(root: string, current = root, backup: TreeBackup = new Map()): TreeBackup {
-  let stat;
-  try { stat = lstatSync(current); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return backup;
-    throw error;
-  }
-  const rel = relative(root, current) || ".";
-  if (excludedFromTreeSnapshot(rel, current)) return backup;
-  if (stat.isSymbolicLink()) {
-    backup.set(rel, { kind: "link", target: readlinkSync(current) });
-  } else if (stat.isFile()) {
-    backup.set(rel, { kind: "file", mode: stat.mode & 0o7777, bytes: Buffer.from(readFileSync(current)) });
-  } else if (stat.isDirectory()) {
-    backup.set(rel, { kind: "dir", mode: stat.mode & 0o7777 });
-    for (const name of readdirSync(current).sort()) captureTreeBackup(root, join(current, name), backup);
-  }
-  return backup;
-}
-
-function restoreSingleEntry(root: string, rel: string, entry: TreeBackupEntry): void {
-  const full = rel === "." ? root : join(root, rel);
-  let currentStat;
-  try { currentStat = lstatSync(full); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  if (entry.kind === "dir") {
-    if (currentStat && (!currentStat.isDirectory() || currentStat.isSymbolicLink())) {
-      rmSync(full, { recursive: true, force: true });
-      currentStat = undefined;
-    }
-    if (!currentStat) mkdirSync(full, { recursive: true });
-    chmodSync(full, entry.mode);
-    return;
-  }
-  if (rel !== ".") mkdirSync(dirname(full), { recursive: true });
-  if (entry.kind === "link") {
-    if (currentStat) {
-      if (currentStat.isSymbolicLink() && readlinkSync(full) === entry.target) return;
-      rmSync(full, { recursive: true, force: true });
-    }
-    symlinkSync(entry.target, full);
-    return;
-  }
-  if (currentStat?.isFile() && !currentStat.isSymbolicLink()) {
-    // Untouched entries (the bulk of a whole-tree backup) are left alone; a
-    // read-only file (git pack objects are 0444) is replaced via unlink, which
-    // needs write permission on the directory, not the file.
-    if ((currentStat.mode & 0o7777) === entry.mode && readFileSync(full).equals(entry.bytes)) return;
-    unlinkSync(full);
-  } else if (currentStat) {
-    rmSync(full, { recursive: true, force: true });
-  }
-  writeFileSync(full, entry.bytes);
-  chmodSync(full, entry.mode);
-}
-
-export function restoreTreeBackup(root: string, backup: TreeBackup): void {
-  const current = captureTreeBackup(root);
-  // Removing an entry needs write permission on its parent, so every present
-  // directory is owner-writable before anything is unlinked.
-  for (const [rel, entry] of current.entries()) {
-    if (entry.kind === "dir" && (entry.mode & 0o700) !== 0o700) chmodSync(rel === "." ? root : join(root, rel), entry.mode | 0o700);
-  }
-  const removed = [...current.keys()]
-    .filter((rel) => rel !== "." && !backup.has(rel))
-    .sort((a, b) => b.split(/[\\/]/).length - a.split(/[\\/]/).length || b.localeCompare(a));
-  for (const rel of removed) {
-    const full = join(root, rel);
-    try {
-      const stat = lstatSync(full);
-      if (stat.isDirectory() && !stat.isSymbolicLink()) rmSync(full, { recursive: true, force: true });
-      else unlinkSync(full);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  const dirs = [...backup.entries()]
-    .filter((pair): pair is [string, Extract<TreeBackupEntry, { kind: "dir" }>] => pair[1].kind === "dir")
-    .sort(([a], [b]) => (a === "." ? -1 : b === "." ? 1 : a.split(/[\\/]/).length - b.split(/[\\/]/).length || a.localeCompare(b)));
-  // Owner-writable while children are restored; exact modes are re-applied last.
-  for (const [rel, entry] of dirs) restoreSingleEntry(root, rel, { ...entry, mode: entry.mode | 0o700 });
-  for (const [rel, entry] of backup.entries()) {
-    if (entry.kind !== "dir") restoreSingleEntry(root, rel, entry);
-  }
-  for (const [rel, entry] of [...dirs].reverse()) {
-    chmodSync(rel === "." ? root : join(root, rel), entry.mode);
-  }
-}
+// PJAN-180: the byte-exact backup primitives live in src/utils/tree-restore.ts; re-exported for existing importers.
+export { captureTreeBackup, restoreSingleEntry, restoreTreeBackup, type TreeBackup, type TreeBackupEntry } from "../utils/tree-restore";
 
 const G33_MANAGED_CUSTOM_REL = new Set([
   "_bmad/custom/config.toml",
@@ -629,10 +546,12 @@ export interface ProtectedBmadState {
 
 export function captureProtectedBmadState(
   projectRoot: string,
-  options: { hadManifestG33: boolean; hadTomlG33: boolean },
+  options: { hadManifestG33: boolean; hadTomlG33: boolean; backup?: TreeBackup },
 ): ProtectedBmadState {
   const root = resolve(projectRoot);
-  const backup = captureTreeBackup(root);
+  // PJAN-180: a declared-scope update hands in its A+B capture (everything read
+  // below is _bmad/**, .agents/skills/bmad-* and .claude/skills/*, all in it).
+  const backup = options.backup ?? captureTreeBackup(root);
   const customEntries = new Map<string, TreeBackupEntry>();
   const operatorCustomEntries = new Map<string, TreeBackupEntry>();
   const scriptEntries = new Map<string, TreeBackupEntry>();
@@ -813,33 +732,53 @@ export interface BmadUpdateWithPreservationResult {
 }
 
 /**
- * KNOWN RISK (PJAN-178, deliberately left whole-tree): the backup and every
- * failure-path rollback cover the WHOLE repo (minus .git, worktrees and
- * runtime state), so a failed update also reverts — and for files created in
- * the window, deletes — a concurrent agent's writes anywhere in the repo. It is
- * not narrowed to G33_OWNED_SURFACES because the real bmad-method installer's
- * write surface is open-ended: besides _bmad/** and .agents/** it writes every
- * --tools root (and copilot's .github/agents), sibling `_bmad-*-backup-temp`
- * dirs, and creates or MOVES the directories modules declare in module.yaml
- * (`{output_folder}`, planning/implementation artifacts, project knowledge),
- * which are operator-configured paths anywhere in the repo. A fixed scope would
- * leave a failed update's writes there un-rolled-back. Unreadable entries
- * still throw from the capture, before the installer runs (fail closed).
+ * PJAN-180: what a failed BMAD update rolls back.
+ *
+ * With a `declared` scope (deriveBmadUpdateScope: a fingerprint-verified
+ * installer, every input parsed), the rollback covers exactly three classes:
+ *
+ * A. installer content roots (`_bmad` minus per-user memory, the backup-temp
+ *    siblings, every selected IDE's target/commands dirs and handler files, the
+ *    CLI aliases, `.agents/skills`): byte-exact, ALWAYS restored;
+ * B. companion-window roots (`.project.json`, the rest of `.agents`, `_bmad`'s
+ *    memory dirs): only the paths the g33 companion's own window inventory lists
+ *    (all of B when that inventory failed);
+ * C. structural paths (module.yaml `directories`, `{project-root}` config
+ *    values): a move is renamed back on a dev+ino match, created dirs go only
+ *    while empty, and no file is ever unlinked.
+ *
+ * Everything else (a concurrent agent's src/, docs/, artifacts, an unreadable
+ * container dir) is never read, written or deleted. Bytes a rollback displaces
+ * inside A/B go to a content-addressed stash first. Without a declared scope
+ * (an unverified installer, a fake test installer, a link leaving the repo)
+ * this is the pre-PJAN-180 WHOLE-TREE rollback, never anything narrower, and
+ * the details say why.
  */
 /** The read-only preflight an installed project's BMAD update (or its preview) runs before the installer. */
 export const runG33PreUpdateCompanion = (projectRoot: string): Promise<CompanionResult> =>
   runG33Companion(projectRoot, true, "bmad-install", { tolerateObserve: BMAD_UPDATE_OBSERVE_GAPS });
 
+export interface BmadUpdateOptions {
+  hadManifestG33: boolean;
+  hadTomlG33: boolean;
+  beforeInstall?: () => Promise<{ changedFiles?: string[]; details?: string[] }> | { changedFiles?: string[]; details?: string[] };
+  runInstaller: () => { ok: boolean; error?: string; stdout?: string };
+  /** PJAN-180: the derived rollback scope. Absent or `whole-tree` keeps the whole-tree rollback. */
+  scope?: BmadUpdateScope;
+}
+
 export async function runBmadUpdateWithCompanionPreservation(
   projectRoot: string,
-  options: {
-    hadManifestG33: boolean;
-    hadTomlG33: boolean;
-    beforeInstall?: () => Promise<{ changedFiles?: string[]; details?: string[] }> | { changedFiles?: string[]; details?: string[] };
-    runInstaller: () => { ok: boolean; error?: string };
-  },
+  options: BmadUpdateOptions,
 ): Promise<BmadUpdateWithPreservationResult> {
   const root = resolve(projectRoot);
+  if (options.scope?.mode === "declared") return runDeclaredBmadUpdate(root, options, options.scope);
+  return runWholeTreeBmadUpdate(root, options, options.scope?.reason ?? "no declared installer scope was derived");
+}
+
+/** The pre-PJAN-180 path, unchanged except for the scope detail. */
+async function runWholeTreeBmadUpdate(root: string, options: BmadUpdateOptions, reason: string): Promise<BmadUpdateWithPreservationResult> {
+  const scopeNote = `rollback scope: whole-tree (${reason})`;
   const preflight = await runG33PreUpdateCompanion(root);
   if (!["planned", "unchanged"].includes(preflight.status)) {
     return {
@@ -867,7 +806,7 @@ export async function runBmadUpdateWithCompanionPreservation(
       return {
         ok: false,
         error: install.error ?? "Failed to run bmad-method install",
-        details: [install.error ?? "Unknown error", ...rollback.details],
+        details: [install.error ?? "Unknown error", ...rollback.details, scopeNote],
         changedFiles: rollback.changedFiles,
         companion: preflight,
       };
@@ -877,19 +816,11 @@ export async function runBmadUpdateWithCompanionPreservation(
     const violations = verifyProtectedBmadStateAfterCompanion(root, state);
     if (!["changed", "unchanged"].includes(companion.status) || !companion.evidence.length || violations.length) {
       const rollback = rollbackTree(root, state.backup, beforeSnapshot);
-      const failedCompanion: CompanionResult = violations.length && ["changed", "unchanged"].includes(companion.status)
-        ? {
-            ...companion,
-            status: "error",
-            summary: "Post-update preservation verification failed",
-            details: [...companion.details, ...violations],
-            changedFiles: [],
-          }
-        : { ...companion, changedFiles: [] };
+      const failedCompanion = failedCompanionResult(companion, violations);
       return {
         ok: false,
         error: failedCompanion.summary,
-        details: [...companionDetails(failedCompanion), ...rollback.details],
+        details: [...companionDetails(failedCompanion), ...rollback.details, scopeNote],
         changedFiles: rollback.changedFiles,
         companion: failedCompanion,
       };
@@ -897,30 +828,147 @@ export async function runBmadUpdateWithCompanionPreservation(
     const totalChanged = changedTreePaths(root, beforeSnapshot, snapshotTree(root));
     return {
       ok: true,
-      details: [...preDetails, ...preflight.details.filter(isObservationGapNote), ...companionDetails(companion)],
+      details: [...preDetails, ...preflight.details.filter(isObservationGapNote), ...companionDetails(companion), scopeNote],
       changedFiles: totalChanged,
       companion,
     };
   } catch (error) {
     const rollback = rollbackTree(root, state.backup, beforeSnapshot);
-    const failedCompanion: CompanionResult = {
-      schemaVersion: 1,
-      moduleId: "g33",
-      optional: true,
-      status: "error",
-      summary: "BMAD update with g33 preservation failed",
-      details: [error instanceof Error ? error.message : String(error), ...rollback.details],
-      evidence: [],
-      changedFiles: [],
-      ...(preflight.adapter ? { adapter: preflight.adapter } : {}),
-    };
+    const failedCompanion = thrownCompanionResult(preflight, error, rollback.details);
     return {
       ok: false,
       error: failedCompanion.summary,
-      details: companionDetails(failedCompanion),
+      details: [...companionDetails(failedCompanion), scopeNote],
       changedFiles: rollback.changedFiles,
       companion: failedCompanion,
     };
+  }
+}
+
+function failedCompanionResult(companion: CompanionResult, violations: string[]): CompanionResult {
+  return violations.length && ["changed", "unchanged"].includes(companion.status)
+    ? {
+        ...companion,
+        status: "error",
+        summary: "Post-update preservation verification failed",
+        details: [...companion.details, ...violations],
+        changedFiles: [],
+      }
+    : { ...companion, changedFiles: [] };
+}
+
+function thrownCompanionResult(preflight: CompanionResult, error: unknown, rollbackDetails: string[]): CompanionResult {
+  return {
+    schemaVersion: 1,
+    moduleId: "g33",
+    optional: true,
+    status: "error",
+    summary: "BMAD update with g33 preservation failed",
+    details: [error instanceof Error ? error.message : String(error), ...rollbackDetails],
+    evidence: [],
+    changedFiles: [],
+    ...(preflight.adapter ? { adapter: preflight.adapter } : {}),
+  };
+}
+
+/** The companion's own window inventory, or all of B when that inventory failed. */
+const companionWindow = (companion: CompanionResult): string[] | "all" =>
+  companion.details.some((line) => line.startsWith(G33_INVENTORY_FAILED)) ? "all" : [...companion.changedFiles];
+
+/** PJAN-180: the declared-scope run. Nothing outside the installer/companion/structural surface is captured or restored. */
+async function runDeclaredBmadUpdate(root: string, options: BmadUpdateOptions, scope: BmadUpdateScope): Promise<BmadUpdateWithPreservationResult> {
+  const scopeNote = `rollback scope: declared (${scope.reason})`;
+  let lock: ReturnType<typeof acquireBmadUpdateLock>;
+  try { lock = acquireBmadUpdateLock(root); }
+  catch (error) { lock = { ok: false, error: `could not take the pj BMAD update lock: ${error instanceof Error ? error.message : String(error)}` }; }
+  if (!lock.ok) {
+    const held: CompanionResult = {
+      schemaVersion: 1, moduleId: "g33", optional: true, status: "conflict", summary: lock.error,
+      details: ["No preflight, eviction or installer ran; nothing was written."], evidence: [], changedFiles: [],
+    };
+    return { ok: false, error: lock.error, details: [lock.error, ...held.details], changedFiles: [], companion: held };
+  }
+  try {
+    const preflight = await runG33PreUpdateCompanion(root);
+    if (!["planned", "unchanged"].includes(preflight.status)) {
+      return { ok: false, error: preflight.summary, details: companionDetails(preflight), changedFiles: [], companion: preflight };
+    }
+    let sb: ScopedBackup;
+    try { sb = captureScopedBackup(root, scope); }
+    catch (error) {
+      // Fail closed before anything is written: no eviction, no installer.
+      const message = error instanceof UnreadableSurfaceError ? error.message
+        : `could not capture the BMAD update surface: ${error instanceof Error ? error.message : String(error)}`;
+      return {
+        ok: false, error: message,
+        details: [message, "No eviction or installer ran; nothing was written.", scopeNote],
+        changedFiles: [], companion: preflight,
+      };
+    }
+    const state = captureProtectedBmadState(root, {
+      hadManifestG33: options.hadManifestG33,
+      hadTomlG33: options.hadTomlG33,
+      backup: new Map([...sb.a, ...sb.b]),
+    });
+    let preDetails: string[] = [];
+    let preChanged: string[] = [];
+    let installerStdout: string | undefined;
+    let companion: CompanionResult | undefined;
+    let companionStarted = false;
+    const rollback = (companionChanged: string[] | "all" | "none") => restoreScopedBackup(root, sb, { companionChanged, installerStdout });
+    try {
+      if (options.beforeInstall) {
+        const pre = await options.beforeInstall();
+        preDetails = pre.details ?? [];
+        preChanged = pre.changedFiles ?? [];
+      }
+      const install = options.runInstaller();
+      installerStdout = install.stdout;
+      if (!install.ok) {
+        const undone = rollback("none");
+        return {
+          ok: false,
+          error: install.error ?? "Failed to run bmad-method install",
+          details: [install.error ?? "Unknown error", ...undone.details, scopeNote],
+          changedFiles: undone.changedFiles,
+          companion: preflight,
+        };
+      }
+      restoreProtectedBmadStateBeforeCompanion(root, state);
+      companionStarted = true;
+      companion = await runG33Companion(root, false, "bmad-install", { tolerateObserve: BMAD_UPDATE_OBSERVE_GAPS });
+      const violations = verifyProtectedBmadStateAfterCompanion(root, state);
+      if (!["changed", "unchanged"].includes(companion.status) || !companion.evidence.length || violations.length) {
+        // Taken BEFORE failedCompanionResult blanks changedFiles.
+        const undone = rollback(companionWindow(companion));
+        const failedCompanion = failedCompanionResult(companion, violations);
+        return {
+          ok: false,
+          error: failedCompanion.summary,
+          details: [...companionDetails(failedCompanion), ...undone.details, scopeNote],
+          changedFiles: undone.changedFiles,
+          companion: failedCompanion,
+        };
+      }
+      return {
+        ok: true,
+        details: [...preDetails, ...preflight.details.filter(isObservationGapNote), ...companionDetails(companion), scopeNote],
+        changedFiles: scopedChangedFiles(root, sb, [...companion.changedFiles, ...preChanged], installerStdout),
+        companion,
+      };
+    } catch (error) {
+      const undone = rollback(companion ? companionWindow(companion) : companionStarted ? "all" : "none");
+      const failedCompanion = thrownCompanionResult(preflight, error, undone.details);
+      return {
+        ok: false,
+        error: failedCompanion.summary,
+        details: [...companionDetails(failedCompanion), scopeNote],
+        changedFiles: undone.changedFiles,
+        companion: failedCompanion,
+      };
+    }
+  } finally {
+    lock.release();
   }
 }
 

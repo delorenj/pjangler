@@ -171,6 +171,8 @@ try {
     assert.equal(existsSync(join(scratch, "updater-reached")), true, "updater ran and then failed post-update companion verification");
     rmSync(join(scratch, "updater-reached"), { force: true });
     assert.deepEqual(snapshot(target), before, "failed post-update companion reconciliation must roll back the entire target");
+    // PJAN-180: the fixture installer is not a bmad-method package, so this is the whole-tree rollback, by name.
+    assert.ok(failedUpgrade.results[0].details.includes("rollback scope: whole-tree (PJ_BMAD_INSTALLER is not a bmad-method package)"), failedUpgrade.results[0].details.join("\n"));
     assert.match(readFileSync(manifestPath, "utf8"), /version:\s*6\.11\.0/);
     assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
     assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");

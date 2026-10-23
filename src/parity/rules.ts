@@ -1,6 +1,7 @@
 import { normalizeProjectId } from "../project/registryClient";
 import {
   companionDetails,
+  G33_OWNED_SURFACES,
   g33BmadUpdateBoundary,
   g33CompanionEnabled,
   isInstalledBmadProject,
@@ -9,6 +10,7 @@ import {
   runG33PreUpdateCompanion,
   type CompanionResult,
 } from "../bmad/companion";
+import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -1842,7 +1844,56 @@ function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION): BmadInstalle
 }
 
 
-function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoRoot), extraArgs: string[] = []): string[] {
+/**
+ * PJAN-180: the bmad-method package that will actually run, so its installer
+ * code can be fingerprinted (deriveBmadUpdateScope) and then executed directly:
+ * a dist-tag cannot move between the fingerprint and the run. Anything that is
+ * not a real bmad-method package (a fake test installer) resolves no root, and
+ * the update keeps the whole-tree rollback with the reason.
+ */
+export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION): BmadInstallerPackage {
+  const packageAt = (dir: string): string | undefined => {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+      return parsed.name === BMAD_NPM_PACKAGE ? (typeof parsed.version === "string" ? parsed.version : "unknown") : undefined;
+    } catch { return undefined; }
+  };
+  const explicit = process.env.PJ_BMAD_INSTALLER?.trim();
+  if (explicit) {
+    let entry: string;
+    try { entry = realpathSync(resolve(explicit)); }
+    catch (error) { return { reason: `PJ_BMAD_INSTALLER is not resolvable: ${error instanceof Error ? error.message : String(error)}` }; }
+    let dir = dirname(entry);
+    for (let up = 0; up <= 4; up++) {
+      const found = packageAt(dir);
+      if (found) return { root: dir, entry, version: found };
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return { reason: "PJ_BMAD_INSTALLER is not a bmad-method package" };
+  }
+  // Portable (no readlink -f on macOS): resolve the bin inside the npx environment.
+  const probe = spawnSync("npx", [
+    "-y", "-p", `${BMAD_NPM_PACKAGE}@${version}`, "-c",
+    `node -e "process.stdout.write(require('fs').realpathSync(process.argv[1]))" "$(command -v ${BMAD_NPM_PACKAGE})"`,
+  ], {
+    encoding: "utf8", timeout: 180_000,
+    env: { ...process.env, npm_config_update_notifier: "false", npm_config_fund: "false" },
+  });
+  const entry = probe.stdout?.trim().split("\n").pop()?.trim();
+  if (probe.status !== 0 || !entry) {
+    const detail = String(probe.stderr || probe.error?.message || `exit ${probe.status}`).split("\n").filter((line) => line.trim() && !line.startsWith("npm notice")).slice(-3).join(" ");
+    return { reason: `could not resolve ${BMAD_NPM_PACKAGE}@${version}: ${detail || "no installer path reported"}` };
+  }
+  const root = dirname(dirname(dirname(entry)));
+  const found = packageAt(root);
+  if (!found) return { reason: `${entry} is not inside a ${BMAD_NPM_PACKAGE} package` };
+  return { root, entry, version: found };
+}
+
+
+export function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoRoot), extraArgs: string[] = []): string[] {
   // bmad-method treats a missing/falsy --modules under --yes as "installed +
   // defaults", which can silently add bmm. The installer-supported explicit
   // no-optional-modules representation is `--modules core`; core is mandatory
@@ -1873,7 +1924,7 @@ function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoR
  * re-asserting the operator's explicit pins (`--pin` outranks `--all-stable`).
  * Fresh installs have no channel history and take the installer's defaults.
  */
-function bmadUpgradeChannelArgs(repoRoot: string, version: string): string[] {
+export function bmadUpgradeChannelArgs(repoRoot: string, version: string): string[] {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return [];
   const raw = safeReadText(join(repoRoot, "_bmad", "_config", "manifest.yaml"));
   if (!raw) return [];
@@ -1942,14 +1993,21 @@ export function preflightBmadLifecycle(_ctx: Context): BmadLifecyclePreflightRes
 }
 
 
-function invokeBmadInstallerProcess(
+/** Exported for the PJAN-180 real-installer oracle, which must run pjangler's exact invocation. */
+export function invokeBmadInstallerProcess(
   repoRoot: string,
   modules = selectedBmadModules(repoRoot),
   version = BMAD_INSTALLER_VERSION,
   extraArgs: string[] = [],
-): { ok: boolean; error?: string } {
-  const invocation = bmadInstallerInvocation(version);
-  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules, extraArgs)], { encoding: "utf8" });
+  pkg?: BmadInstallerPackage,
+): { ok: boolean; error?: string; stdout: string } {
+  // PJAN-180: a resolved package runs its fingerprinted entry directly.
+  const invocation = pkg?.entry ? { command: process.execPath, prefixArgs: [pkg.entry] } : bmadInstallerInvocation(version);
+  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules, extraArgs)], {
+    encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+  });
+  const stdout = result.stdout ?? "";
   if (result.status !== 0) {
     // bmad-method reports its own failures on stdout ("Installation failed:
     // ..."), leaving stderr empty, so stderr alone surfaced as "Unknown error".
@@ -1957,9 +2015,9 @@ function invokeBmadInstallerProcess(
     const stderr = result.stderr?.split("\n").filter((line) => !line.startsWith("npm notice")).join("\n").trim();
     const stdoutTail = result.stdout?.trim().split("\n").slice(-12).join("\n");
     const error = stderr || stdoutTail;
-    return { ok: false, error: error || result.error?.message || `installer exited ${result.status}` };
+    return { ok: false, error: error || result.error?.message || `installer exited ${result.status}`, stdout };
   }
-  return { ok: true };
+  return { ok: true, stdout };
 }
 
 /** Run the non-interactive BMAD installer/upgrader against `repoRoot`. */
@@ -3936,9 +3994,13 @@ return ([
             .filter((path) => !existsSync(path)),
           ...bmadProjectNameIssues(ctx.repoRoot).paths,
         ];
+        // PJAN-180: the rollback covers only the verified installer surface, or the whole tree with the reason.
+        const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+        const scope = deriveBmadUpdateScope(ctx.repoRoot, { tools: BMAD_INSTALL_TOOLS, installer: pkg, companionSurfaces: G33_OWNED_SURFACES });
         const update = await runBmadUpdateWithCompanionPreservation(ctx.repoRoot, {
           hadManifestG33,
           hadTomlG33,
+          scope,
           beforeInstall: async () => {
             const evictedChanges: string[] = [];
             const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
@@ -3946,7 +4008,7 @@ return ([
             const reserved = evictReservedModuleEntries(ctx.repoRoot, ctx.dryRun);
             return { changedFiles: [...evictedChanges, ...reserved.changedFiles], details: [...reserved.details, ...details] };
           },
-          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs),
+          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs, pkg),
         });
         if (!update.ok) {
           return {
@@ -4197,9 +4259,13 @@ return ([
       }
 
       if (g33CompanionEnabled(ctx.repoRoot)) {
+        // PJAN-180: the rollback covers only the verified installer surface, or the whole tree with the reason.
+        const pkg = resolveBmadInstallerPackage(available ?? BMAD_TARGET_CHANNEL);
+        const scope = deriveBmadUpdateScope(ctx.repoRoot, { tools: BMAD_INSTALL_TOOLS, installer: pkg, companionSurfaces: G33_OWNED_SURFACES });
         const update = await runBmadUpdateWithCompanionPreservation(ctx.repoRoot, {
           hadManifestG33,
           hadTomlG33,
+          scope,
           beforeInstall: async () => {
             const evictedChanges: string[] = [];
             const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
@@ -4207,7 +4273,7 @@ return ([
             const reserved = evictReservedModuleEntries(ctx.repoRoot, ctx.dryRun);
             return { changedFiles: [...evictedChanges, ...reserved.changedFiles], details: [...reserved.details, ...details] };
           },
-          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs),
+          runInstaller: () => invokeBmadInstallerProcess(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs, pkg),
         });
         if (!update.ok) {
           return {
