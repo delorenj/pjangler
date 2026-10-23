@@ -3,6 +3,7 @@ import {
   chmodSync, closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
   realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import YAML from "yaml";
@@ -190,8 +191,9 @@ function moduleYamlFiles(pkgRoot: string): string[] {
 
 interface ModuleDefinition { default?: unknown; result?: unknown }
 
-function moduleDefinitions(files: string[]): { directoryKeys: Set<string>; definitions: Map<string, ModuleDefinition> } {
+function moduleDefinitions(files: string[]): { directoryKeys: Set<string>; definitions: Map<string, ModuleDefinition>; wdsFolders: string[] } {
   const directoryKeys = new Set<string>(["output_folder"]);
+  const wdsFolders = new Set<string>();
   const definitions = new Map<string, ModuleDefinition>();
   for (const file of files) {
     let parsed: unknown;
@@ -204,6 +206,10 @@ function moduleDefinitions(files: string[]): { directoryKeys: Set<string>; defin
         if (match) directoryKeys.add(match[1]!);
       }
     }
+    // official-modules.js creates these under the design_artifacts dir even when that dir already exists.
+    if (Array.isArray(record.wds_folders)) {
+      for (const name of record.wds_folders) if (typeof name === "string" && repoRelative(name)) wdsFolders.add(posix(normalize(name)));
+    }
     for (const [key, value] of Object.entries(record)) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const definition = value as ModuleDefinition;
@@ -213,7 +219,7 @@ function moduleDefinitions(files: string[]): { directoryKeys: Set<string>; defin
       if (texts.some((text) => text.includes("{project-root}"))) directoryKeys.add(key);
     }
   }
-  return { directoryKeys, definitions };
+  return { directoryKeys, definitions, wdsFolders: [...wdsFolders].sort() };
 }
 
 /** The BMAD dirs the installer may read config from: `_bmad` plus every top-level dir holding `_config/manifest.yaml`. */
@@ -357,8 +363,12 @@ export function deriveBmadUpdateScope(
       return wholeTree(`_bmad/_config/manifest.yaml is unparseable: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`, base);
     }
   }
+  // The installer resolves a handler by `ideName.toLowerCase()`, so `Junie` is the `junie` platform.
   // Unknown ids are skipped, exactly as the installer skips them.
-  const ides = [...new Set([...manifestIdes, ...options.tools])].filter((id) => Object.hasOwn(platforms, id)).sort();
+  const platformKeys = new Map(Object.keys(platforms).map((key) => [key.toLowerCase(), key]));
+  const ides = [...new Set([...manifestIdes, ...options.tools]
+    .map((id) => platformKeys.get(id.toLowerCase()))
+    .filter((key): key is string => key !== undefined))].sort();
 
   const installer = new Set<string>(["_bmad", ...BMAD_BACKUP_TEMP_ROOTS, ".agents/skills", ...PROJECT_CLI_ALIASES]);
   for (const id of ides) {
@@ -399,14 +409,18 @@ export function deriveBmadUpdateScope(
   const companionRoots = foldRoots(bRoots);
 
   // C: module.yaml directory keys, their existing values (old values of a move) and predicted defaults.
-  const { directoryKeys, definitions } = moduleDefinitions(moduleYamlFiles(pkg.root));
+  const { directoryKeys, definitions, wdsFolders } = moduleDefinitions(moduleYamlFiles(pkg.root));
   let existing: Map<string, string[]>;
   try { existing = collectConfigValues(root); }
   catch (error) { return wholeTree(error instanceof Error ? error.message : String(error), base); }
   for (const [key, list] of existing) if (list.some((value) => value.includes("{project-root}"))) directoryKeys.add(key);
   const candidates: string[] = [];
+  const predicted = predictDefaults(root, directoryKeys, existing, definitions);
   for (const key of directoryKeys) candidates.push(...(existing.get(key) ?? []));
-  for (const value of predictDefaults(root, directoryKeys, existing, definitions).values()) candidates.push(value);
+  for (const value of predicted.values()) candidates.push(value);
+  // The WDS subfolders of design_artifacts: created inside the dir even when it already exists, so each is its own structural path.
+  const designValues = [...(existing.get("design_artifacts") ?? []), ...(predicted.has("design_artifacts") ? [predicted.get("design_artifacts")!] : [])];
+  for (const value of designValues) for (const name of wdsFolders) candidates.push(`${value.replace(/\/+$/, "")}/${name}`);
   const covered = (rel: string) => installerRoots.some((a) => within(rel, a)) || companionRoots.some((b) => within(rel, b));
   const structuralPaths = [...new Set(candidates
     .map((value) => normalizeDirectoryValue(root, value))
@@ -487,7 +501,7 @@ export function captureScopedBackup(projectRoot: string, scope: BmadUpdateScope)
 
 /** The live snapshot of one class, shaped exactly like backupToSnapshot of its capture. */
 function liveClassSnapshot(root: string, roots: string[], exclude: (rel: string) => boolean): TreeSnapshot {
-  const live = snapshotTree(root, { roots, tolerateUnreadable: true });
+  const live = snapshotTree(root, { roots, tolerateUnreadable: true, tolerateVanished: true });
   for (const [rel, value] of [...live]) {
     if (exclude(rel) || value.startsWith("other:")) live.delete(rel);
   }
@@ -541,6 +555,10 @@ export interface DisplacedStash {
   /** The run dir once anything was stashed. */
   readonly dir: string | undefined;
   readonly count: number;
+  /** Paths whose bytes could NOT be stashed (state dir unusable, entry unreadable): the rollback proceeds without a copy. */
+  readonly failed: number;
+  /** The first reason a stash write failed. */
+  readonly failure: string | undefined;
   /** Record the CURRENT bytes at `rel` before the rollback overwrites or removes them. */
   put(rel: string): void;
   /** Write the index and prune old runs; returns the run dir when anything was stashed. */
@@ -561,6 +579,8 @@ export function openDisplacedStash(projectRoot: string): DisplacedStash {
   const repoDir = join(stateBase(root), "pjangler", "bmad-rollback", repoKey(root));
   let dir: string | undefined;
   let count = 0;
+  let failed = 0;
+  let failure: string | undefined;
   const index: { rel: string; kind: "file" | "link" | "dir"; mode?: number; target?: string; object?: string }[] = [];
   const open = (): string => {
     if (dir) return dir;
@@ -572,29 +592,49 @@ export function openDisplacedStash(projectRoot: string): DisplacedStash {
   return {
     get dir() { return dir; },
     get count() { return count; },
+    get failed() { return failed; },
+    get failure() { return failure; },
+    // The stash is a safety net for concurrent writes, never a precondition of the rollback: host state
+    // (an unwritable state dir, a read-only HOME) must not stop the surface being restored.
     put(rel: string) {
       const full = join(root, rel);
       let stat;
-      try { stat = lstatSync(full); } catch { return; }
-      if (stat.isSymbolicLink()) {
-        open();
-        index.push({ rel, kind: "link", target: readlinkSync(full) });
-        count++;
-      } else if (stat.isFile()) {
-        const bytes = readFileSync(full);
-        const object = createHash("sha256").update(bytes).digest("hex");
-        const target = join(open(), "objects", object);
-        if (!existsSync(target)) writeFileSync(target, bytes);
-        index.push({ rel, kind: "file", mode: stat.mode & 0o7777, object });
-        count++;
-      } else if (stat.isDirectory()) {
-        open();
-        index.push({ rel, kind: "dir", mode: stat.mode & 0o7777 });
+      let bytes: Buffer | undefined;
+      let target: string | undefined;
+      try {
+        stat = lstatSync(full);
+        if (stat.isSymbolicLink()) target = readlinkSync(full);
+        else if (stat.isFile()) bytes = readFileSync(full);
+      } catch (error) {
+        if (errno(error) === "ENOENT") return; // vanished before it could be read: nothing to keep
+        failed++;
+        failure ??= error instanceof Error ? error.message.split("\n")[0]! : String(error);
+        return;
+      }
+      try {
+        if (target !== undefined) {
+          open();
+          index.push({ rel, kind: "link", target });
+          count++;
+        } else if (bytes) {
+          const object = createHash("sha256").update(bytes).digest("hex");
+          const objectPath = join(open(), "objects", object);
+          if (!existsSync(objectPath)) writeFileSync(objectPath, bytes);
+          index.push({ rel, kind: "file", mode: stat.mode & 0o7777, object });
+          count++;
+        } else if (stat.isDirectory()) {
+          open();
+          index.push({ rel, kind: "dir", mode: stat.mode & 0o7777 });
+        }
+      } catch (error) {
+        failed++;
+        failure ??= error instanceof Error ? error.message.split("\n")[0]! : String(error);
       }
     },
     close() {
       if (!dir) return undefined;
-      writeFileSync(join(dir, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
+      try { writeFileSync(join(dir, "index.json"), `${JSON.stringify(index, null, 2)}\n`); }
+      catch (error) { failed++; failure ??= error instanceof Error ? error.message.split("\n")[0]! : String(error); return undefined; }
       try {
         const runs = readdirSync(repoDir).sort();
         for (const old of runs.slice(0, Math.max(0, runs.length - STASH_RUNS_KEPT))) rmSync(join(repoDir, old), { recursive: true, force: true });
@@ -604,39 +644,98 @@ export function openDisplacedStash(projectRoot: string): DisplacedStash {
   };
 }
 
-export interface BmadUpdateLock { ok: true; path: string; release: () => void }
+export interface BmadUpdateLock {
+  ok: true;
+  path: string;
+  release: () => void;
+  /** Set when the lock could not be taken for a HOST reason (unusable state dir): the update proceeds unserialized. */
+  advisory?: string;
+}
+
+/** A BMAD update never runs this long; a lock older than this is stale even when its pid answers. */
+export const BMAD_UPDATE_LOCK_MAX_AGE_MS = 6 * 3600_000;
+
+/**
+ * An opaque id for the process that is `pid` (its start time), or undefined when the host cannot say. A
+ * recycled pid has a different one, so a stale lock cannot pin a repo to an unrelated process.
+ */
+export function processStartId(pid: number): string | undefined {
+  try {
+    if (existsSync("/proc/self/stat")) {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // Field 22 (starttime), counted after the `(comm)` field that may itself contain spaces.
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] || undefined;
+    }
+  } catch { return undefined; }
+  try {
+    const run = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 });
+    const text = run.status === 0 ? run.stdout.trim().replace(/\s+/g, "_") : "";
+    return text || undefined;
+  } catch { return undefined; }
+}
 
 function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return errno(error) !== "ESRCH"; }
 }
 
+/** `pid` or `pid:startId`. */
+const lockToken = (pid: number): string => {
+  const start = processStartId(pid);
+  return start ? `${pid}:${start}` : String(pid);
+};
+
+function parseLockToken(text: string): { pid: number; start?: string } {
+  const trimmed = text.trim();
+  const split = trimmed.indexOf(":");
+  const pid = Number.parseInt(split < 0 ? trimmed : trimmed.slice(0, split), 10);
+  const start = split < 0 ? undefined : trimmed.slice(split + 1) || undefined;
+  return start ? { pid, start } : { pid };
+}
+
 /**
  * Serialize pj BMAD updates per repo:
  * `${XDG_STATE_HOME:-~/.local/state}/pjangler/bmad-update/<sha12(realpath root)>.lock`,
- * created O_EXCL with the holder's pid. A lock whose pid is dead is taken over.
+ * created O_EXCL with the holder's pid and start time. A lock whose pid is dead, whose pid now belongs to
+ * a different process, or that is older than BMAD_UPDATE_LOCK_MAX_AGE_MS is taken over. A state dir that
+ * cannot be used is host state, not a repo problem: the lock degrades to an advisory and the update runs.
  */
 export function acquireBmadUpdateLock(projectRoot: string): BmadUpdateLock | { ok: false; error: string } {
   const dir = join(stateBase(projectRoot), "pjangler", "bmad-update");
   const path = join(dir, `${repoKey(projectRoot)}.lock`);
-  mkdirSync(dir, { recursive: true });
+  const unavailable = (error: unknown): BmadUpdateLock => ({
+    ok: true, path: "", release: () => {},
+    advisory: `pj BMAD update lock unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)}); concurrent updates of this repo are not serialized`,
+  });
+  try { mkdirSync(dir, { recursive: true }); } catch (error) { return unavailable(error); }
+  const token = lockToken(process.pid);
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fd = openSync(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644);
-      try { writeSync(fd, String(process.pid)); } finally { closeSync(fd); }
+      try { writeSync(fd, token); }
+      catch (error) { try { closeSync(fd); } catch { /* closed below */ } try { unlinkSync(path); } catch { /* best effort */ } return unavailable(error); }
+      closeSync(fd);
       return {
         ok: true, path,
         release: () => {
-          try { if (readFileSync(path, "utf8").trim() === String(process.pid)) unlinkSync(path); } catch { /* already gone */ }
+          try { if (readFileSync(path, "utf8").trim() === token) unlinkSync(path); } catch { /* already gone */ }
         },
       };
     } catch (error) {
-      if (errno(error) !== "EEXIST") throw error;
+      if (errno(error) !== "EEXIST") return unavailable(error);
     }
-    let holder = NaN;
-    try { holder = Number.parseInt(readFileSync(path, "utf8").trim(), 10); } catch { continue; }
-    if (Number.isInteger(holder) && holder > 0) {
-      if (pidAlive(holder)) return { ok: false, error: `another pj BMAD update is running on this repo (pid ${holder})` };
+    let text: string;
+    try { text = readFileSync(path, "utf8"); } catch { continue; }
+    const holder = parseLockToken(text);
+    if (Number.isInteger(holder.pid) && holder.pid > 0) {
+      let age = 0;
+      try { age = Date.now() - statSync(path).mtimeMs; } catch { continue; }
+      // The pid answers; it is still the holder only when it is the same process and the lock is not over-age.
+      const current = holder.start === undefined ? undefined : processStartId(holder.pid);
+      const recycled = holder.start !== undefined && current !== undefined && current !== holder.start;
+      if (pidAlive(holder.pid) && !recycled && age < BMAD_UPDATE_LOCK_MAX_AGE_MS) {
+        return { ok: false, error: `another pj BMAD update is running on this repo (pid ${holder.pid})` };
+      }
     } else {
       // A holder that has not written its pid yet is live unless the file is stale.
       let age = 0;
@@ -672,22 +771,28 @@ function sameEntry(current: TreeBackupEntry, saved: TreeBackupEntry): boolean {
  * restoreTreeBackup's algorithm with the inventory confined to `roots`. Every
  * byte it displaces goes to the stash first.
  */
-function restoreClass(root: string, roots: string[], saved: TreeBackup, exclude: Excluder, stash: DisplacedStash): void {
-  const current = captureScopedRoots(root, roots, { exclude });
+function restoreClass(root: string, roots: string[], saved: TreeBackup, exclude: Excluder, stash: DisplacedStash, problems: string[]): void {
+  // One entry failing (a file deleted under us by a concurrent writer, say) is recorded and the rest of the surface still restores.
+  const attempt = (label: string, rel: string, run: () => void) => {
+    try { run(); } catch (error) { problems.push(`${label} ${rel}: ${error instanceof Error ? error.message : String(error)}`); }
+  };
+  const current = captureScopedRoots(root, roots, { exclude, tolerateVanished: true });
   for (const [rel, entry] of current) {
-    if (entry.kind === "dir" && (entry.mode & 0o700) !== 0o700) chmodSync(join(root, rel), entry.mode | 0o700);
+    if (entry.kind === "dir" && (entry.mode & 0o700) !== 0o700) attempt("chmod", rel, () => { try { chmodSync(join(root, rel), entry.mode | 0o700); } catch (error) { if (errno(error) !== "ENOENT") throw error; } });
   }
   const removed = [...current.keys()].filter((rel) => !saved.has(rel)).sort(deepestFirst);
   for (const rel of removed) {
     stash.put(rel);
     const full = join(root, rel);
-    try {
-      const stat = lstatSync(full);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) unlinkSync(full);
-      // A dir holding the other class's root (the _bmad memory carve-outs) is only ever rmdir'd.
-      else if (exclude.roots.some((other) => other !== rel && within(other, rel))) rmdirSync(full);
-      else rmSync(full, { recursive: true, force: true });
-    } catch (error) { if (errno(error) !== "ENOENT") throw error; }
+    attempt("remove", rel, () => {
+      try {
+        const stat = lstatSync(full);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) unlinkSync(full);
+        // A dir holding the other class's root (the _bmad memory carve-outs) is only ever rmdir'd.
+        else if (exclude.roots.some((other) => other !== rel && within(other, rel))) rmdirSync(full);
+        else rmSync(full, { recursive: true, force: true });
+      } catch (error) { if (errno(error) !== "ENOENT") throw error; }
+    });
   }
   const dirs = [...saved.entries()]
     .filter((pair): pair is [string, Extract<TreeBackupEntry, { kind: "dir" }>] => pair[1].kind === "dir")
@@ -695,26 +800,30 @@ function restoreClass(root: string, roots: string[], saved: TreeBackup, exclude:
   for (const [rel, entry] of dirs) {
     const now = current.get(rel);
     if (now && now.kind !== "dir") stash.put(rel);
-    restoreSingleEntry(root, rel, { ...entry, mode: entry.mode | 0o700 });
+    attempt("restore", rel, () => restoreSingleEntry(root, rel, { ...entry, mode: entry.mode | 0o700 }));
   }
   for (const [rel, entry] of saved) {
     if (entry.kind === "dir") continue;
     const now = current.get(rel);
     if (now && sameEntry(now, entry)) continue;
     if (now) stash.put(rel);
-    restoreSingleEntry(root, rel, entry);
+    attempt("restore", rel, () => restoreSingleEntry(root, rel, entry));
   }
-  for (const [rel, entry] of [...dirs].reverse()) chmodSync(join(root, rel), entry.mode);
+  for (const [rel, entry] of [...dirs].reverse()) attempt("chmod", rel, () => chmodSync(join(root, rel), entry.mode));
 }
 
 /** Class B narrowed to the companion's inventory: no recursive delete, ever. */
 function restoreListed(root: string, sb: ScopedBackup, listed: string[], exclude: Excluder, stash: DisplacedStash, problems: string[]): void {
   const inB = (rel: string) => sb.scope.companionRoots.some((b) => within(rel, b)) && !exclude(rel);
   const rels = [...new Set(listed.map((path) => posix(isAbsolute(path) ? relative(root, path) : path)))].filter((rel) => rel && !rel.startsWith("..") && inB(rel));
-  for (const rel of rels.filter((rel) => !sb.b.has(rel)).sort(deepestFirst)) {
+  // One listed path failing (it vanished under us, say) is recorded and the rest of the inventory still restores.
+  const step = (rel: string, run: () => void) => {
+    try { run(); } catch (error) { problems.push(`companion surface ${rel}: ${error instanceof Error ? error.message : String(error)}`); }
+  };
+  for (const rel of rels.filter((rel) => !sb.b.has(rel)).sort(deepestFirst)) step(rel, () => {
     const full = join(root, rel);
     let stat;
-    try { stat = lstatSync(full); } catch { continue; }
+    try { stat = lstatSync(full); } catch { return; }
     if (stat.isDirectory() && !stat.isSymbolicLink()) {
       try { rmdirSync(full); }
       catch (error) {
@@ -723,10 +832,10 @@ function restoreListed(root: string, sb: ScopedBackup, listed: string[], exclude
       }
     } else {
       stash.put(rel);
-      unlinkSync(full);
+      try { unlinkSync(full); } catch (error) { if (errno(error) !== "ENOENT") throw error; }
     }
-  }
-  for (const rel of rels.filter((rel) => sb.b.has(rel)).sort(shallowestFirst)) {
+  });
+  for (const rel of rels.filter((rel) => sb.b.has(rel)).sort(shallowestFirst)) step(rel, () => {
     const entry = sb.b.get(rel)!;
     const full = join(root, rel);
     let stat;
@@ -734,20 +843,20 @@ function restoreListed(root: string, sb: ScopedBackup, listed: string[], exclude
     if (entry.kind === "dir") {
       if (stat && !(stat.isDirectory() && !stat.isSymbolicLink())) { stash.put(rel); unlinkSync(full); }
       restoreSingleEntry(root, rel, entry);
-      continue;
+      return;
     }
     if (stat?.isDirectory() && !stat.isSymbolicLink()) {
       try { rmdirSync(full); }
-      catch { problems.push(`cannot restore ${rel}: a non-empty directory is in its place`); continue; }
+      catch { problems.push(`cannot restore ${rel}: a non-empty directory is in its place`); return; }
     } else if (stat) {
       const now: TreeBackupEntry = stat.isSymbolicLink()
         ? { kind: "link", target: readlinkSync(full) }
         : { kind: "file", mode: stat.mode & 0o7777, bytes: readFileSync(full) };
-      if (sameEntry(now, entry)) continue;
+      if (sameEntry(now, entry)) return;
       stash.put(rel);
     }
     restoreSingleEntry(root, rel, entry);
-  }
+  });
 }
 
 function birthtime(path: string): number | undefined {
@@ -878,12 +987,12 @@ export function restoreScopedBackup(projectRoot: string, sb: ScopedBackup, optio
   });
 
   // 2. Class A: byte-exact.
-  phase("installer surface", () => restoreClass(root, sb.scope.installerRoots, sb.a, exclude.a, stash));
+  phase("installer surface", () => restoreClass(root, sb.scope.installerRoots, sb.a, exclude.a, stash, problems));
 
   // 3. Class B: only the companion's own window, unless its inventory failed.
   phase("companion surface", () => {
     if (options.companionChanged === "none") return;
-    if (options.companionChanged === "all") restoreClass(root, sb.scope.companionRoots, sb.b, exclude.b, stash);
+    if (options.companionChanged === "all") restoreClass(root, sb.scope.companionRoots, sb.b, exclude.b, stash, problems);
     else restoreListed(root, sb, options.companionChanged, exclude.b, stash, problems);
   });
 
@@ -921,6 +1030,8 @@ export function restoreScopedBackup(projectRoot: string, sb: ScopedBackup, optio
 
   const details: string[] = [];
   if (stash.count > 0) details.push(`rollback displaced ${stash.count} path(s) changed during the update window; recover from ${stashDir ?? stash.dir}`);
+  // An advisory, not a failure: the surface was restored; only the safety copy of concurrent in-A writes is missing.
+  if (stash.failed > 0) details.push(`rollback could not stash ${stash.failed} displaced path(s) (${stash.failure}); their pre-rollback bytes are not recoverable`);
   details.push(...reports);
   if (!problems.length) return { details, changedFiles: [...leftovers].sort() };
   details.unshift(`rollback incomplete; recover with git: ${problems.join("; ")}${stashDir ? ` (displaced bytes in ${stashDir})` : ""}`);

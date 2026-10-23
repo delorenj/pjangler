@@ -21,6 +21,14 @@ export type TreeBackup = Map<string, TreeBackupEntry>;
 export interface TreeBackupOptions {
   /** Repo-relative paths (and their subtrees) the capture never enters. */
   exclude?: (rel: string) => boolean;
+  /**
+   * An entry that disappears between the lstat and the read (ENOENT) is simply
+   * absent instead of an error. For captures of a LIVE tree during a rollback;
+   * the initial capture stays strict so a racing writer blocks before any write.
+   */
+  tolerateVanished?: boolean;
+  /** Test seam: runs between the lstat and the read/readlink/readdir of an entry. */
+  beforeRead?: (full: string) => void;
 }
 
 export function captureTreeBackup(root: string, current = root, backup: TreeBackup = new Map(), opts: TreeBackupOptions = {}): TreeBackup {
@@ -33,14 +41,22 @@ export function captureTreeBackup(root: string, current = root, backup: TreeBack
   const rel = relative(root, current) || ".";
   if (excludedFromTreeSnapshot(rel, current)) return backup;
   if (rel !== "." && opts.exclude?.(rel)) return backup;
-  if (stat.isSymbolicLink()) {
-    backup.set(rel, { kind: "link", target: readlinkSync(current) });
-  } else if (stat.isFile()) {
-    backup.set(rel, { kind: "file", mode: stat.mode & 0o7777, bytes: Buffer.from(readFileSync(current)) });
-  } else if (stat.isDirectory()) {
-    backup.set(rel, { kind: "dir", mode: stat.mode & 0o7777 });
-    for (const name of readdirSync(current).sort()) captureTreeBackup(root, join(current, name), backup, opts);
+  let names: string[] | undefined;
+  try {
+    opts.beforeRead?.(current);
+    if (stat.isSymbolicLink()) {
+      backup.set(rel, { kind: "link", target: readlinkSync(current) });
+    } else if (stat.isFile()) {
+      backup.set(rel, { kind: "file", mode: stat.mode & 0o7777, bytes: Buffer.from(readFileSync(current)) });
+    } else if (stat.isDirectory()) {
+      backup.set(rel, { kind: "dir", mode: stat.mode & 0o7777 });
+      names = readdirSync(current).sort();
+    }
+  } catch (error) {
+    if (opts.tolerateVanished && (error as NodeJS.ErrnoException).code === "ENOENT") { backup.delete(rel); return backup; }
+    throw error;
   }
+  for (const name of names ?? []) captureTreeBackup(root, join(current, name), backup, opts);
   return backup;
 }
 

@@ -306,6 +306,23 @@ try {
     }
     pass(`${version} S4 copilot-instructions markers + .bak: contained, round-trips; dropping handler files is caught`);
 
+    // S11 a hand-edited manifest ide id in another case: the installer lowercases it (ide/manager.js), so must the scope.
+    {
+      const dir = installed(pkg, "s11");
+      const manifestPath = join(dir, "_bmad", "_config", "manifest.yaml");
+      const manifest = YAML.parse(read(manifestPath)) as Record<string, unknown>;
+      manifest.ides = ["Junie"];
+      put(manifestPath, YAML.stringify(manifest));
+      put(join(dir, ".junie", "skills", "bmad-help", "SKILL.md"), "---\nname: bmad-help\n---\nstale\n");
+      const junie = platformRoots(pkg, ["junie"]);
+      const { scope } = await scenario(pkg, verified, "S11 capitalized manifest ide", dir, {
+        roundTrip: true,
+        mutations: [["case-sensitive ide match", (declared) => without(declared, (rel) => junie.has(rel) && !platformRoots(pkg, TOOLS).has(rel))]],
+      });
+      assert.ok(scope.ides.includes("junie"), `the capitalized id resolves to its platform: ${scope.ides}`);
+    }
+    pass(`${version} S11 capitalized manifest ide [Junie]: contained, round-trips; a case-sensitive match is caught`);
+
     // S5 operator custom + modified files: a clean run, then a SIGKILL while the backup temps exist.
     {
       const seed = (dir: string) => {

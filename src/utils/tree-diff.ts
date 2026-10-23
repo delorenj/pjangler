@@ -39,6 +39,8 @@ export interface TreeSnapshotOptions {
    * chmod, so a change to the unreadable entry is still a change.
    */
   tolerateUnreadable?: boolean;
+  /** An entry that vanishes between the lstat and the read is absent, not an error (a rollback verifying a live tree). */
+  tolerateVanished?: boolean;
 }
 
 const unreadable = (error: unknown): string | undefined => {
@@ -54,6 +56,7 @@ const unreadable = (error: unknown): string | undefined => {
 export function snapshotTree(root: string, options: TreeSnapshotOptions = {}): TreeSnapshot {
   const snapshot: TreeSnapshot = new Map();
   const tolerate = Boolean(options.tolerateUnreadable);
+  const vanished = (error: unknown): boolean => Boolean(options.tolerateVanished) && (error as NodeJS.ErrnoException).code === "ENOENT";
   const walk = (current: string): void => {
     let lstat;
     try { lstat = lstatSync(current); }
@@ -69,11 +72,13 @@ export function snapshotTree(root: string, options: TreeSnapshotOptions = {}): T
     if (excludedFromTreeSnapshot(rel, current)) return;
     const fingerprint = (code: string) => `unreadable:${code}:${stat.mode & 0o7777}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     if (stat.isSymbolicLink()) {
-      snapshot.set(rel, `link:${readlinkSync(current)}`);
+      try { snapshot.set(rel, `link:${readlinkSync(current)}`); }
+      catch (error) { if (!vanished(error)) throw error; }
     } else if (stat.isFile()) {
       let bytes: Buffer;
       try { bytes = readFileSync(current); }
       catch (error) {
+        if (vanished(error)) return;
         const code = tolerate ? unreadable(error) : undefined;
         if (!code) throw error;
         snapshot.set(rel, `file:${fingerprint(code)}`);
@@ -84,6 +89,7 @@ export function snapshotTree(root: string, options: TreeSnapshotOptions = {}): T
       let names: string[];
       try { names = readdirSync(current); }
       catch (error) {
+        if (vanished(error)) return;
         const code = tolerate ? unreadable(error) : undefined;
         if (!code) throw error;
         snapshot.set(rel, `dir:${fingerprint(code)}`);

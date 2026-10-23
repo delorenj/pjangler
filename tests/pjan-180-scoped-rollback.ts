@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { backupToSnapshot, captureTreeBackup } from "../src/utils/tree-restore";
@@ -9,7 +9,7 @@ import { snapshotTree } from "../src/utils/tree-diff";
 import { G33_INVENTORY_FAILED, G33_OWNED_SURFACES, runBmadUpdateWithCompanionPreservation } from "../src/bmad/companion";
 import {
   acquireBmadUpdateLock, captureScopedBackup, deriveBmadUpdateScope, openDisplacedStash, parseInstallerDirectoryLines,
-  restoreScopedBackup, type BmadUpdateScope,
+  processStartId, restoreScopedBackup, type BmadUpdateScope,
 } from "../src/bmad/update-scope";
 import { installerFingerprint } from "../src/bmad/verified-installers";
 
@@ -268,7 +268,7 @@ try {
     writeFileSync(lockPath.path, dead.stdout);
     const taken = acquireBmadUpdateLock(dir);
     assert.equal(taken.ok, true, "a dead holder's lock is taken over");
-    if (taken.ok) { assert.equal(read(taken.path), String(process.pid)); taken.release(); }
+    if (taken.ok) { assert.ok(read(taken.path).startsWith(String(process.pid)), "the lock holds the holder's pid"); taken.release(); }
   }
   pass("U4 lock: a live pid blocks with its pid named; a dead pid's lock is taken over");
 
@@ -452,6 +452,166 @@ try {
     } finally { chmodSync(join(inside, "_bmad", "bmm", "locked"), 0o755); }
     pass("H4 an unreadable entry inside the surface blocks before eviction and installer (fail closed)");
   }
+
+  // R1. The installer lowercases manifest ide ids; so must the declared scope (review: a `Cline` id was outside A).
+  {
+    const dir = project("r1-case");
+    put(join(dir, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 6.11.0\nides:\n  - Cline\n  - CLAUDE-CODE\n");
+    const scope = derive(dir);
+    assert.equal(scope.mode, "declared", scope.reason);
+    assert.ok(scope.ides.includes("cline"), `a capitalized manifest id resolves to its platform: ${scope.ides}`);
+    assert.ok(scope.installerRoots.includes(".cline/skills"), "its target dir is class A (mutation: case-sensitive match)");
+    const sb = captureScopedBackup(dir, scope);
+    writerProcess(writerScript({ ".cline/skills/bmad-help/SKILL.md": "installer wrote this" }, dir));
+    restoreScopedBackup(dir, sb, { companionChanged: "none" });
+    assert.equal(exists(join(dir, ".cline")), false, "the capitalized id's target is rolled back");
+  }
+  pass("R1 manifest ide ids resolve case-insensitively, as the installer's handler lookup does");
+
+  // R2. WDS subfolders are created INSIDE an existing design_artifacts dir (official-modules.js wds_folders).
+  {
+    const cache = join(scratch, "wds-cache");
+    put(join(cache, "wds", "module.yaml"), `code: wds
+design_artifacts:
+  default: "design-artifacts"
+  result: "{project-root}/{value}"
+directories:
+  - "{design_artifacts}"
+wds_folders:
+  - A-Product-Brief
+  - B-Trigger-Map
+  - C-Scenarios
+`);
+    const previous = process.env.BMAD_EXTERNAL_MODULES_CACHE;
+    process.env.BMAD_EXTERNAL_MODULES_CACHE = cache;
+    try {
+      const dir = project("r2-wds");
+      mkdirSync(join(dir, "design-artifacts", "C-Scenarios"), { recursive: true });
+      put(join(dir, "design-artifacts", "brief-notes.md"), "operator notes");
+      const scope = derive(dir);
+      assert.equal(scope.mode, "declared", scope.reason);
+      for (const rel of ["design-artifacts", "design-artifacts/A-Product-Brief", "design-artifacts/B-Trigger-Map", "design-artifacts/C-Scenarios"]) {
+        assert.ok(scope.structuralPaths.includes(rel), `C holds ${rel}: ${scope.structuralPaths}`);
+      }
+      const sb = captureScopedBackup(dir, scope);
+      writerProcess(writerScript({
+        "design-artifacts/A-Product-Brief/": "", "design-artifacts/B-Trigger-Map/story.md": "an agent's story",
+      }, dir));
+      restoreScopedBackup(dir, sb, { companionChanged: "none" });
+      assert.equal(exists(join(dir, "design-artifacts", "A-Product-Brief")), false, "an empty subfolder created in the window is removed (mutation: identity-only for the parent)");
+      assert.equal(read(join(dir, "design-artifacts", "B-Trigger-Map", "story.md")), "an agent's story", "a subfolder holding a file is kept");
+      assert.equal(exists(join(dir, "design-artifacts", "C-Scenarios")), true, "a subfolder that pre-existed is kept");
+      assert.equal(read(join(dir, "design-artifacts", "brief-notes.md")), "operator notes");
+    } finally {
+      if (previous === undefined) delete process.env.BMAD_EXTERNAL_MODULES_CACHE; else process.env.BMAD_EXTERNAL_MODULES_CACHE = previous;
+    }
+  }
+  pass("R2 wds_folders children of an existing design_artifacts dir: new empty ones removed, populated or pre-existing kept");
+
+  // R3. A file that vanishes between lstat and read is "absent" for a restore-time capture, an error for the initial one.
+  {
+    const dir = join(scratch, "r3");
+    const seed = () => {
+      rmSync(dir, { recursive: true, force: true });
+      put(join(dir, "a", "keep.txt"), "keep");
+      put(join(dir, "a", "gone.txt"), "gone");
+      put(join(dir, "a", "sub", "gone2.txt"), "gone2");
+      symlinkSync("keep.txt", join(dir, "a", "gone-link"));
+    };
+    seed();
+    const vanish = (full: string) => {
+      if (/gone/.test(full)) rmSync(full, { recursive: true, force: true });
+    };
+    assert.throws(() => captureTreeBackup(dir, dir, new Map(), { beforeRead: vanish }), /ENOENT/, "the initial capture stays strict");
+    seed();
+    const tolerant = captureTreeBackup(dir, dir, new Map(), { beforeRead: vanish, tolerateVanished: true });
+    assert.ok(tolerant.has("a/keep.txt"), "the stable file is captured");
+    assert.equal(tolerant.has("a/gone.txt"), false, "the vanished file is absent, not an error (mutation: no ENOENT tolerance)");
+    assert.equal(tolerant.has("a/gone-link"), false, "a vanished link too");
+    assert.equal(tolerant.has("a/sub/gone2.txt"), false);
+  }
+  pass("R3 a restore-time capture treats a vanished entry as absent; the initial capture still throws");
+
+  // R4. Real churn inside A (a separate process creating and deleting files) must not abort the restore.
+  {
+    const dir = project("r4-churn");
+    const scope = derive(dir);
+    const sb = captureScopedBackup(dir, scope);
+    const churnDir = join(dir, "_bmad", "churn");
+    mkdirSync(churnDir, { recursive: true });
+    const churn = spawn(process.execPath, ["-e", `const fs=require('node:fs'),path=require('node:path');const d=${JSON.stringify(churnDir)};
+for(;;){for(let i=0;i<600;i++)fs.writeFileSync(path.join(d,'f'+i),'x');for(let i=0;i<600;i++)fs.rmSync(path.join(d,'f'+i),{force:true});}`], { stdio: "ignore" });
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+      let aborted = 0;
+      for (let trial = 0; trial < 120; trial++) {
+        writeFileSync(join(dir, "_bmad", "core", "config.yaml"), "clobbered");
+        writeFileSync(join(dir, ".agents", "skills", "bmad-help", "SKILL.md"), "clobbered");
+        const undone = restoreScopedBackup(dir, sb, { companionChanged: "none" });
+        if (undone.details.some((line) => /ENOENT/.test(line))) aborted++;
+        assert.equal(read(join(dir, "_bmad", "core", "config.yaml")), "project_name: fixture\n", `trial ${trial}: the restore reached the damaged file`);
+        assert.equal(read(join(dir, ".agents", "skills", "bmad-help", "SKILL.md")), "---\nname: bmad-help\n---\nnative\n", `trial ${trial}`);
+      }
+      assert.equal(aborted, 0, "no restore aborted on a vanished churn file");
+    } finally { churn.kill("SIGKILL"); }
+  }
+  pass("R4 churn inside A: 120 restores each reached the damaged files (mutation: ENOENT aborts the surface restore)");
+
+  // R5. Host state never fails the update: an unusable state dir degrades the lock and the stash to advisories.
+  {
+    const stateFile = join(scratch, "state-is-a-file");
+    writeFileSync(stateFile, "not a directory");
+    const savedState = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = stateFile;
+    try {
+      const dir = project("r5-ok");
+      const lock = acquireBmadUpdateLock(dir);
+      assert.equal(lock.ok, true, "an unusable state dir is not a held lock (mutation: mkdir throws)");
+      assert.match((lock as { advisory?: string }).advisory ?? "", /lock unavailable/);
+      if (lock.ok) lock.release();
+      const ok = await runBmadUpdateWithCompanionPreservation(dir, { hadManifestG33: false, hadTomlG33: false, scope: derive(dir), runInstaller: runFake(dir, 0) });
+      assert.equal(ok.ok, true, JSON.stringify(ok));
+      assert.ok(ok.details.some((line) => /lock unavailable/.test(line)), ok.details.join("\n"));
+
+      const failDir = project("r5-fail");
+      const before = snapshotTree(failDir);
+      const rolled = await failedUpdate(failDir, derive(failDir), 1);
+      assert.equal(rolled.ok, false);
+      assert.ok(!rolled.details.some((line) => line.startsWith("rollback incomplete")), rolled.details.join("\n"));
+      assert.ok(rolled.details.some((line) => /could not stash/.test(line)), `an unwritable stash is reported:\n${rolled.details.join("\n")}`);
+      for (const [rel, value] of before) {
+        if (rel === "_bmad" || (rel.startsWith("_bmad/") && !rel.startsWith("_bmad/_memory")) || rel.startsWith(".agents/skills/")) assert.equal(snapshotTree(failDir).get(rel), value, `restored: ${rel}`);
+      }
+      assert.equal(exists(join(failDir, ".agents", "skills", "my-own-skill")), false, "the in-A note is reverted even without a stash");
+      assert.equal(read(join(failDir, "src", "new.ts")), "export const fresh = 1;\n");
+    } finally { process.env.XDG_STATE_HOME = savedState; }
+  }
+  pass("R5 an unusable state dir degrades the lock and stash to advisories; the update and its rollback still work");
+
+  // R6. A recycled pid is not the holder: the lock records the process start time.
+  {
+    const dir = project("r6");
+    const start = processStartId(process.pid);
+    assert.ok(start, "this host can read a process start time");
+    const first = acquireBmadUpdateLock(dir) as { ok: true; path: string; release(): void };
+    first.release();
+    writeFileSync(first.path, `${process.pid}:${start}`);
+    const held = acquireBmadUpdateLock(dir);
+    assert.equal(held.ok, false, "same pid, same start time: the holder is alive");
+    writeFileSync(first.path, `${process.pid}:${start}-recycled`);
+    const recycled = acquireBmadUpdateLock(dir);
+    assert.equal(recycled.ok, true, "same pid, different start time: a recycled pid, stale (mutation: pid-only liveness)");
+    if (recycled.ok) recycled.release();
+    writeFileSync(first.path, String(process.pid));
+    assert.equal(acquireBmadUpdateLock(dir).ok, false, "a legacy pid-only lock with a live pid still blocks");
+    const old = new Date(Date.now() - 7 * 3600_000);
+    utimesSync(first.path, old, old);
+    const aged = acquireBmadUpdateLock(dir);
+    assert.equal(aged.ok, true, "a lock older than the maximum update age is stale even with a live pid");
+    if (aged.ok) aged.release();
+  }
+  pass("R6 lock: pid + start time; a recycled pid and an over-age lock are stale; a legacy pid-only lock still blocks");
+
 
   // H5. The companion's inventory failure widens B to 'all'.
   assert.equal(G33_INVENTORY_FAILED, "Could not inventory partial g33 writes");

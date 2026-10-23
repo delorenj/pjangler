@@ -877,10 +877,13 @@ const companionWindow = (companion: CompanionResult): string[] | "all" =>
 
 /** PJAN-180: the declared-scope run. Nothing outside the installer/companion/structural surface is captured or restored. */
 async function runDeclaredBmadUpdate(root: string, options: BmadUpdateOptions, scope: BmadUpdateScope): Promise<BmadUpdateWithPreservationResult> {
-  const scopeNote = `rollback scope: declared (${scope.reason})`;
+  let scopeNote = `rollback scope: declared (${scope.reason})`;
   let lock: ReturnType<typeof acquireBmadUpdateLock>;
+  // An unusable state dir is host state, not a repo problem: the lock degrades to an advisory and the update runs.
   try { lock = acquireBmadUpdateLock(root); }
-  catch (error) { lock = { ok: false, error: `could not take the pj BMAD update lock: ${error instanceof Error ? error.message : String(error)}` }; }
+  catch (error) {
+    lock = { ok: true, path: "", release: () => {}, advisory: `pj BMAD update lock unavailable (${error instanceof Error ? error.message : String(error)}); concurrent updates of this repo are not serialized` };
+  }
   if (!lock.ok) {
     const held: CompanionResult = {
       schemaVersion: 1, moduleId: "g33", optional: true, status: "conflict", summary: lock.error,
@@ -888,6 +891,7 @@ async function runDeclaredBmadUpdate(root: string, options: BmadUpdateOptions, s
     };
     return { ok: false, error: lock.error, details: [lock.error, ...held.details], changedFiles: [], companion: held };
   }
+  if (lock.advisory) scopeNote = `${scopeNote}; ${lock.advisory}`;
   try {
     const preflight = await runG33PreUpdateCompanion(root);
     if (!["planned", "unchanged"].includes(preflight.status)) {
