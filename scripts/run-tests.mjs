@@ -140,6 +140,7 @@ const SUITES = [
   "tests/pjan-77-notebook-release-gates.mjs",
   "tests/pjan-144-journal-notebook-service.mjs",
   "tests/pjan-174-crank-regressions.mjs",
+  "tests/pjan-182-crank-interval-regressions.mjs",
 ];
 
 const args = process.argv.slice(2);

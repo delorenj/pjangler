@@ -136,7 +136,8 @@ console.log("resolution: agent handle matches a live tab the project name cannot
 console.log("resolution: exact live match wins and uses the live tab's display name");
 {
   const r = resolveTabForProject({ name: "Tower of Lost Things", agents: [] }, [{ name: "Tower of Lost Things", position: 2 }], []);
-  assert.deepEqual(r, { tab: "Tower of Lost Things", source: "live-exact", matched: "Tower of Lost Things", storedAsIs: false });
+  // PJAN-182: a live match also reports the live tab's display name (the rename-migration target).
+  assert.deepEqual(r, { tab: "Tower of Lost Things", source: "live-exact", matched: "Tower of Lost Things", storedAsIs: false, liveTab: "Tower of Lost Things" });
 }
 
 console.log("resolution: live suffix glyphs are stripped before matching");
@@ -353,7 +354,7 @@ console.log("list: every registry project gets a row; orphans are separate; ON/O
   assert.equal(bySlug.gruvato.source, "redis-exact");
   assert.equal(bySlug.holocene.crank, "OFF");
   assert.equal(bySlug.momo.crank, "—", "absent key reads as never-toggled, not OFF");
-  assert.deepEqual(report.orphans, [{ tab: "IPM", enabled: true }]);
+  assert.deepEqual(report.orphans, [{ tab: "IPM", enabled: true, interval: "5m", inherited: true }]); // PJAN-182 adds the interval fields
 
   const text = formatCrankList(report);
   assert.match(text, /gruvato\s+ON/);

@@ -1,25 +1,37 @@
 // `pj crank` — commander wiring for the project-native crank switches.
 //
-// Four subcommands (PJAN-174): enable, disable, list, log. Everything that
-// knows about Redis keys, zellij tabs, or the project→tab mapping lives in
-// ./index; this file only argues with commander and prints.
+// Five subcommands: enable, disable, list, log (PJAN-174) and tui (PJAN-182). Everything
+// that knows about Redis keys, zellij tabs, or the project→tab mapping lives in ./index;
+// this file only argues with commander and prints. The Ink screens (./tui.tsx) are loaded
+// on demand, so every other pj command stays free of ink/react.
 
 import type { Command } from "commander";
 import { resolveProject, BoardError } from "../project/boardQuery";
 import { loadProjectRegistry, projectRegistryPath } from "../project/index";
 import { bold, cyan, dim, green, red, yellow, glyph } from "../utils/style";
+import { isInteractive, loadScreen, TuiUnavailableError } from "../tui/load";
+import { createCrankController } from "./controller";
 import {
+  ZCRANK_INTERVALS,
+  buildCrankContext,
   buildCrankList,
-  crankTimestamp,
+  disableCrank,
+  enableCrank,
   formatCrankList,
   liveTabs,
+  parseInterval,
   projectAgentsFor,
   projectNameFor,
   redis,
   renderLogRow,
-  resolveTabForProject,
+  snapshotCrank,
+  storedTabKeys,
+  type CrankInterval,
   type ProjectNames,
 } from "./index";
+
+type CrankScreens = typeof import("./tui");
+const loadCrankScreens = () => loadScreen<CrankScreens>("./crank/tui.js", import.meta.url);
 
 const xmark = `${red(glyph.fail)}`;
 
@@ -46,9 +58,8 @@ function currentProjectNames(): { slug: string; names: ProjectNames } {
 function resolveCurrentTab(): { slug: string; tab: string; storedAsIs: boolean } {
   const project = currentProjectNames();
   const store = redis();
-  const storedTabs = store.tabKeys().map((key) => key.split(":").slice(2).join(":"));
-  const resolution = resolveTabForProject(project.names, liveTabs(), storedTabs);
-  return { slug: project.slug, tab: resolution.tab, storedAsIs: resolution.storedAsIs };
+  const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
+  return { slug: project.slug, tab: ctx.resolution.tab, storedAsIs: ctx.resolution.storedAsIs };
 }
 
 export function registerCrankCli(program: Command): void {
@@ -58,16 +69,24 @@ export function registerCrankCli(program: Command): void {
 
   crankCmd
     .command("enable")
-    .description("Turn crank ON for this project's zellij tab (Redis zcrank:tab:<tab>)")
-    .action(() => {
-      runToggle(true);
+    .description("Turn crank ON for this project's zellij tab (Redis zcrank:tab:<tab>); a renamed tab's old key is merged away")
+    .option("--interval <interval>", `How often the crank may touch the tab: ${ZCRANK_INTERVALS.join("|")} (asked in a terminal when omitted)`)
+    .action(async (options: { interval?: string }) => {
+      await runEnable(options);
     });
 
   crankCmd
     .command("disable")
     .description("Turn crank OFF for this project's zellij tab")
     .action(() => {
-      runToggle(false);
+      runDisable();
+    });
+
+  crankCmd
+    .command("tui")
+    .description("Full-screen crank dashboard: toggle, interval, last runs, countdown to the next run, log")
+    .action(async () => {
+      await runTui();
     });
 
   crankCmd
@@ -77,7 +96,7 @@ export function registerCrankCli(program: Command): void {
       try {
         const store = redis();
         if (!store.ping()) {
-          console.error(`${xmark} Redis is not answering at 127.0.0.1:6379 — is it running?`);
+          console.error(`${xmark} Redis is not answering at ${store.endpoint} — is it running?`);
           process.exit(1);
         }
         const registry = loadProjectRegistry(projectRegistryPath());
@@ -91,12 +110,14 @@ export function registerCrankCli(program: Command): void {
           })),
         }));
         const live = liveTabs();
-        const storedTabs = store.tabKeys().map((key) => key.split(":").slice(2).join(":"));
+        const storedTabs = storedTabKeys(store);
         const report = buildCrankList({
           projects,
           live,
           storedTabs,
           tabEnabled: (tab) => store.tabEnabled(tab),
+          tabInterval: (tab) => store.tabInterval(tab),
+          globalInterval: store.globalInterval(),
         });
         console.log(formatCrankList(report));
       } catch (error) {
@@ -136,29 +157,92 @@ export function registerCrankCli(program: Command): void {
     });
 }
 
-function runToggle(enabled: boolean): void {
+function fail(error: unknown, what: string): never {
+  if (error instanceof BoardError || error instanceof TuiUnavailableError) {
+    console.error(`${xmark} ${error.message}`);
+  } else {
+    console.error(`${xmark} ${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  process.exit(1);
+}
+
+/** A reachable store, or exit 1 in the same words `pj crank list` uses. */
+function liveStore() {
+  const store = redis();
+  if (!store.ping()) {
+    console.error(`${xmark} Redis is not answering at ${store.endpoint} — is it running?`);
+    process.exit(1);
+  }
+  return store;
+}
+
+async function runEnable(options: { interval?: string }): Promise<void> {
   try {
-    const store = redis();
-    if (!store.ping()) {
-      console.error(`${xmark} Redis is not answering at 127.0.0.1:6379 — is it running?`);
-      process.exit(1);
+    let chosen: CrankInterval | undefined;
+    if (options.interval !== undefined) {
+      chosen = parseInterval(options.interval);
+      if (!chosen) {
+        console.error(`${xmark} --interval needs one of ${ZCRANK_INTERVALS.join(", ")}, got "${options.interval}"`);
+        process.exit(1);
+      }
     }
+    const store = liveStore();
     const project = currentProjectNames();
-    const storedTabs = store.tabKeys().map((key) => key.split(":").slice(2).join(":"));
-    const resolution = resolveTabForProject(project.names, liveTabs(), storedTabs);
-    store.setTabEnabled(resolution.tab, enabled);
-    store.pushLog(resolution.tab, enabled ? "enabled" : "disabled", `pj crank ${enabled ? "enable" : "disable"}`, crankTimestamp());
-    const state = enabled ? green("ON") : dim("OFF");
-    console.log(`  ${state}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(resolution.tab)}`);
-    if (resolution.storedAsIs) {
+    const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
+    if (!chosen && isInteractive()) {
+      // Ask. The picker opens on what the tab runs at now; confirming that while it is only
+      // inherited changes nothing, so the tab keeps following the global default.
+      const snap = snapshotCrank(store, ctx.resolution.tab, ctx.storedKeys, Date.now());
+      const screens = await loadCrankScreens();
+      const picked = await screens.pickInterval({ slug: project.slug, tab: ctx.resolution.liveTab ?? ctx.resolution.tab, effective: snap.interval, inherited: snap.inherited, global: snap.global });
+      if (!picked) {
+        console.log(`  ${yellow(glyph.warn)} aborted ${dim(glyph.dot)} crank left as it was for ${cyan(project.slug)}`);
+        return;
+      }
+      if (!(snap.inherited && picked === snap.interval)) chosen = picked;
+    }
+    const result = enableCrank(store, ctx, { interval: chosen });
+    console.log(`  ${green("ON")}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(result.tab)}`);
+    for (const { from, to } of result.renamed) {
+      console.log(`  ${yellow(glyph.warn)} tab renamed ${dim(glyph.dot)} ${from} ${dim(glyph.pointer)} ${bold(to)} ${dim("(old key merged into the new one and removed)")}`);
+    }
+    const live = snapshotCrank(store, result.tab, [result.tab], Date.now());
+    console.log(`  ${dim("interval")} ${live.interval}${live.inherited ? dim(` (inherits global ${live.global})`) : ""}`);
+    if (ctx.resolution.storedAsIs) {
       console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);
     }
   } catch (error) {
-    if (error instanceof BoardError) {
-      console.error(`${xmark} ${error.message}`);
-    } else {
-      console.error(`${xmark} crank failed: ${error instanceof Error ? error.message : String(error)}`);
+    fail(error, "crank");
+  }
+}
+
+function runDisable(): void {
+  try {
+    const store = liveStore();
+    const project = currentProjectNames();
+    const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
+    disableCrank(store, ctx.resolution.tab);
+    console.log(`  ${dim("OFF")}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(ctx.resolution.tab)}`);
+    if (ctx.resolution.storedAsIs) {
+      console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);
     }
-    process.exit(1);
+  } catch (error) {
+    fail(error, "crank");
+  }
+}
+
+async function runTui(): Promise<void> {
+  try {
+    if (!isInteractive()) {
+      console.error(`${xmark} pj crank tui needs an interactive terminal (stdin and stdout must be a TTY)`);
+      process.exit(1);
+    }
+    const store = liveStore();
+    const project = currentProjectNames();
+    const controller = createCrankController({ slug: project.slug, project: project.names, store });
+    const screens = await loadCrankScreens();
+    await screens.runCrankDashboard(controller);
+  } catch (error) {
+    fail(error, "crank tui");
   }
 }
