@@ -9,7 +9,7 @@
 via `publishConfig.registry` in `package.json`. Publishing uses **npm OIDC
 Trusted Publishing** (GA since July 2025) — no API tokens or 2FA are required.
 The GitHub Actions workflow `.github/workflows/publish.yml` publishes every
-green push to `main` and every `v*` tag push: its `publish` job runs
+green push to `main` (`v*` tags no longer trigger it; see below): its `publish` job runs
 `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
 environment with `id-token: write` permission (see [CI](#ci)). The package is
 installed globally (or run via `npx`) from npmjs.org. Binaries:
