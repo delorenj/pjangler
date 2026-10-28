@@ -1,8 +1,9 @@
 {
-  "//": "c8 config for `npm run test:coverage`. A configured exclude list REPLACES c8's defaults (@istanbuljs/schema/default-exclude) instead of extending them, so every default is restated below verbatim and the last entry, the in-repo .pjan-* test fixtures (PJAN-100), is the only addition. Drop a default and tests/ is counted as source again; scripts/coverage-audit.mjs fails the ratchet when that happens.",
+  "//": "c8 config for `npm run test:coverage`. A configured exclude list REPLACES c8's defaults (@istanbuljs/schema/default-exclude) instead of extending them, so every default is restated below verbatim and the last entry, the in-repo .pjan-* test fixtures (PJAN-100), is the only addition. exclude-after-remap (PJAN-184) makes c8 apply that list to the path a source map points at, not to the scratch bundle the hermetic suites run from: those bundles live outside the repo, so the pre-remap filter dropped them and their src/ coverage with them. Drop a default and tests/ is counted as source again; scripts/coverage-audit.mjs fails the ratchet when that happens.",
   "reporter": ["json-summary", "text-summary"],
   "report-dir": "coverage",
   "src": "src",
+  "exclude-after-remap": true,
   "exclude": [
     "coverage/**",
     "packages/*/test{,s}/**",

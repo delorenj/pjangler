@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { build } from "esbuild";
+import { buildHermeticSuite } from "./helpers/hermetic-bundle.mjs";
 
 // PJAN-180 real-installer surface oracle: a network/cache-backed release gate
 // (like test:bmad-installer-contract), NOT part of the hermetic npm test. It
@@ -13,11 +13,7 @@ const root = resolve(import.meta.dirname, "..");
 const scratch = mkdtempSync(join(tmpdir(), "pjan-180-surface-oracle-build-"));
 try {
   const output = join(scratch, "surface-oracle.mjs");
-  symlinkSync(join(root, "node_modules"), join(scratch, "node_modules"));
-  await build({ entryPoints: [join(root, "tests", "pjan-180-surface-oracle.ts")],
-    bundle: true, packages: "external", platform: "node", format: "esm", outfile: output,
-    define: { "import.meta.dirname": JSON.stringify(join(root, "tests")) },
-  });
+  await buildHermeticSuite({ root, entry: join(root, "tests", "pjan-180-surface-oracle.ts"), output, });
   const result = spawnSync(process.execPath, [output, ...process.argv.slice(2)], { cwd: root, encoding: "utf8", timeout: 30 * 60_000,
     env: {
       PATH: process.env.PATH, TMPDIR: "/tmp", NO_COLOR: "1", GIT_CEILING_DIRECTORIES: "/tmp",
