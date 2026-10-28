@@ -50,54 +50,68 @@ The parity engine reads the shipped scripts from the package root at runtime (`t
 
 ## Release flow
 
+CI is the only publisher, and pushing to `main` is the only way to publish
+(PJAN-189). Every green push to `main` runs `.github/workflows/publish.yml`,
+whose `publish` job bumps the patch version, publishes over npm OIDC with
+provenance, and tags the release. There is nothing to run locally.
+
 ```bash
-git status --short                  # must be clean
-mise run release -- --dry-run       # full non-mutating release gate
-mise run release                    # patch release (or pass minor / major)
+git push                            # CI tests, bumps, publishes and tags
+mise run release                    # the same push, after a clean-tree and fast-forward check
+mise run release minor              # or major: commit the bump, then push
+mise run release -- --dry-run       # say what would happen, change nothing
 ```
 
-The release task owns the only supported bump-and-publish transaction:
+`mise run release` (`.mise/scripts/release.sh`) is a thin wrapper. It requires
+a clean tree and a `HEAD` that fast-forwards `origin/main`. For `minor` or
+`major` it first commits `package.json` and `package-lock.json` at the next
+minor or major version, stepping from the higher of `package.json` and npm's
+latest, as `release(PJAN-<n>): vX.Y.0` (set `RELEASE_TICKET=PJAN-<n>` when
+neither the branch nor HEAD carries the ticket). It then pushes `HEAD` to
+`main` with a plain, unforced push. It never tags and never publishes: CI ships
+that version as-is, because nothing has taken it.
 
-1. Re-exec the complete release under the pinned Node 24.6/npm 11 runtime;
-   the normal Node 26/npm 12 toolchain currently cannot publish tarballs.
-2. Require a clean main repo and clean initialized submodules.
-3. Prove every supported submodule commit is remotely reachable and archive-safe.
-4. Fetch the explicit release target (`RELEASE_REMOTE=origin`,
-   `RELEASE_BRANCH=main`) and require the candidate to fast-forward it.
-5. Run install, production audit, build, typecheck, tests, strict PG coverage,
-   and an unauthenticated exact-tarball publish dry-run before acquiring a token.
-6. Authenticate to the configured registry. For GitHub Packages, authenticate
-   using the active `gh` session with a short-lived token. For npmjs.org (OIDC
-   trusted publishing), no local auth is needed — publishing happens in CI.
-7. Strict disposable PostgreSQL coverage uses `PGHOST`, `PGPORT`, `PGUSER`, and
-   `PGPASSWORD` for the disposable instance. A release fails rather than
-   skipping this database gate.
-8. Bump `package.json`, regenerate `package-lock.json` with npm, verify lock
-   parity, and make one `release(PJAN-<ticket>): vX.Y.Z` commit. Set
-   `RELEASE_TICKET=PJAN-<number>` when neither the branch nor HEAD subject
-   carries the ticket reference.
-9. Build and inspect the actual tarball, run the production audit and
-   tracked/package secret scan.
-10. Create the commit/tag only after those gates, then atomically push both.
-11. **For npmjs.org (OIDC):** the local release stops here — the tag push
-    runs the GitHub Actions `publish.yml` workflow: its `ci` job typechecks,
-    builds and runs the suite under coverage, then its `publish` job runs
-    `npm publish --provenance` with `NODE_AUTH_TOKEN=""` under the `release`
-    environment. The local script logs "tag pushed; GitHub Actions OIDC
-    workflow will publish" and exits. For GitHub Packages, publish that exact
-    `.tgz` locally and verify the new registry version. If the atomic push
-    fails locally, rerun with `--resume-push`.
+Until PJAN-189 it was a second release path. It bumped, committed and tagged
+`vX` locally, pushed `main` and the tag together, and the tag's run published.
+That path is retired, along with `mise run publish` and the `--publish-current`
+and `--resume-push` retries. `v*` tags no longer start the workflow at all:
+
+- It published twice. The same push moved `main`, and main's run found `vX`
+  taken by the tag and published `vX+1` as well.
+- Tag runs and main runs sat in different concurrency groups, so they could
+  publish at the same time. 1.5.21 (main) beat the `v1.5.20` tag run, which then
+  failed with "Cannot implicitly apply the latest tag" (run 40718894891).
+
+What the `publish` job guarantees:
+
+- **One publish at a time.** Main runs queue in the workflow's `ci-<ref>` group,
+  so they publish in push order. The `publish` job also holds a fixed
+  `npm-publish` group across every ref. A newer push replaces a run that is
+  still pending; that run has not started, so it published and tagged nothing,
+  and the newer commit contains it. A run that has started is never cancelled
+  by concurrency.
+- **Every published version gets an annotated `v<version>` tag on origin.**
+  `scripts/release-commit.mjs` builds the release commit on the commit the run
+  built and published (its first parent), with `package.json`,
+  `package-lock.json` and the measured coverage floor. It pushes `main` and the
+  tag atomically. If `main` moved while the run sat between the publish and the
+  push, it pushes the tag alone: the release commit stays off `main`, reachable
+  through its tag, and the commit that moved `main` publishes the next version
+  in its own run. It never forces `main`. Before PJAN-189 that case left npm
+  with an untagged version (1.5.21, 1.5.23).
+- **A published commit is never published again.** npm records each version's
+  source commit as its `gitHead`. When a run is re-run or dispatched again for a
+  commit npm already has, `scripts/release-version.mjs` answers `action=tag`
+  (npm has it, origin has no tag: skip the publish and tag that version) or
+  `action=none` (nothing to do). To retry a failed release, re-run the workflow.
+
+`main`'s `package.json` can lag npm after a release whose commit stayed off
+`main`. That is harmless: the bump steps past the highest version npm or a tag
+has taken, never just past `package.json`.
 
 `prepublishOnly` remains a defense-in-depth build/template/secret gate.
 `PJANGLER_VERSION` is read from `package.json` at runtime, so `pj --version`
 and MCP `serverInfo` match the published package without a separate source bump.
-
-If publication fails after the atomic git push, `mise run release -- --publish-current`
-is a strict retry path. It refuses unless the clean HEAD and its annotated version tag
-are already present on the configured remote main ref, reruns the gates, inspects a
-new exact tarball, and confirms the registry version is still unused. For npmjs.org
-(OIDC), the retry path skips local publish and directs the user to re-run the GitHub
-Actions workflow from the Actions UI.
 
 ### Pre-publish checklist
 
@@ -107,7 +121,7 @@ Actions workflow from the Actions UI.
 4. Run the PG harness in strict mode against a disposable endpoint:
    `PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1 node tests/pg-registry-regressions.mjs`.
 5. Inspect the actual `npm pack --json` tarball (not `--dry-run`) and confirm the
-   six paths the release script requires: `package.json`, `dist/index.js`,
+   six paths the package must carry: `package.json`, `dist/index.js`,
    `dist/mcp-server.js`, `templates/commonproject/copier.yml`, and both
    `.mise/scripts/*.sh` (PJAN-2 guard).
 6. Confirm `templates/commonproject` is populated and remotely reachable.
@@ -123,8 +137,8 @@ real HOME and lent the suite a newer mise, the Krebs adapters and bun. That hid
 two broken suites (PJAN-154, PJAN-155) and a third that skipped itself.
 `tests/release-regressions.mjs` pins every job's runner.
 
-- `publish.yml` (workflow name `CI`) runs on every push to `main`, on `v*` tag
-  pushes, on pull requests and on manual dispatch. Its filename is
+- `publish.yml` (workflow name `CI`) runs on every push to `main`, on pull
+  requests and on manual dispatch, and not on tags (PJAN-189). Its filename is
   load-bearing: npm's trusted publisher for `@delorenj/pjangler` names it. Two
   jobs:
   - `ci` checks out recursively over the HTTPS submodule bridge, fetches the
@@ -139,22 +153,25 @@ two broken suites (PJAN-154, PJAN-155) and a third that skipped itself.
     missing. The coverage ratchet follows: on `main` it raises
     `.coverage-floor.json` (`coverage:apply`) and hands the floor to `publish`
     as an artifact; elsewhere it only checks (`coverage:check`).
-  - `publish` runs after a green `ci`, for `main` pushes and `v*` tags, never
-    for the bot's own release push. On `main` it bumps the patch version past
-    every version npm or a git tag has taken (`scripts/release-version.mjs`).
-    It then runs `npm publish --provenance` over npm OIDC trusted publishing
-    (`release` environment, `id-token: write`, `contents: write`,
-    `NODE_AUTH_TOKEN=""`), and only after npm accepts it, on `main`, commits
-    `chore(release): vX.Y.Z [skip ci]` with the measured coverage floor and
-    pushes that commit and the annotated tag atomically.
+  - `publish` runs after a green `ci`, for `main` only, never for the bot's
+    own release push, one at a time across every ref (`npm-publish`). It bumps
+    the patch version past every version npm or a git tag has taken
+    (`scripts/release-version.mjs`), or finds that npm already has this
+    commit. It then runs `npm publish --provenance` over npm OIDC trusted
+    publishing (`release` environment, `id-token: write`, `contents: write`,
+    `NODE_AUTH_TOKEN=""`). Only after npm accepts it does
+    `scripts/release-commit.mjs` commit `chore(release): vX.Y.Z [skip ci]` with
+    the measured coverage floor. It pushes that commit and the annotated tag
+    atomically, or the tag alone when `main` moved meanwhile.
 - `claude.yml` runs Claude Code when an issue, comment or review mentions
   `@claude`.
 - `claude-code-review.yml` reviews pull requests when they are opened,
   synchronized, reopened or marked ready for review.
 
 Every green push to `main` publishes a patch release; there is no separate
-publish step to remember. `mise run release` (above) is the deliberate path,
-for example for a minor or major bump; its tag push runs the same workflow.
+publish step to remember. `mise run release minor` (above) is how to ship a
+minor or major: it commits the bump and pushes `main`, and the same workflow
+publishes it.
 
 ## Runtime dependencies at the install site
 

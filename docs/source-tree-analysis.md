@@ -108,7 +108,7 @@ pjangler/
 │   │   ├── versioning.sh          # semver workflow (shipped to target repos)
 │   │   ├── link-agentfiles.sh     # AGENTS.md symlink linker (shipped to target repos)
 │   │   ├── materialize-env.sh     # the managed .env.op → .env materializer
-│   │   ├── release.sh             # the only supported bump-and-publish transaction
+│   │   ├── release.sh             # `mise run release`: push main (minor/major: commit the bump); CI publishes
 │   │   └── link-bins.sh / backfill-projects.sh / setup-plane.py
 │   └── version-files.conf
 │
