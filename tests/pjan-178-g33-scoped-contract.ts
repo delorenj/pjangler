@@ -249,6 +249,9 @@ export function companion(req){ if(req.operation==='plan'&&${mutate})chmodSync(j
         assert.ok(enrolled.changedFiles.includes(path), `enrollment still records ${path}`);
       }
       const companion = await runG33Companion(dir, false, "repair");
+      // A 2-vCPU hosted runner can finish the companion before the writer is
+      // scheduled again; give it a moment before calling it dead.
+      for (let tries = 0; read() <= mid && tries < 200; tries++) await new Promise((done) => setTimeout(done, 10));
       assert.ok(read() > mid, "the writer kept writing through the companion run");
       assert.equal(companion.status, "changed", JSON.stringify(companion));
       assert.deepEqual(rel(dir, companion.changedFiles), ["_bmad", "_bmad/g33", "_bmad/g33/companion.md"]);

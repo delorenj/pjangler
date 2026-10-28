@@ -186,8 +186,9 @@ async function runEnable(options: { interval?: string }): Promise<void> {
         process.exit(1);
       }
     }
-    const store = liveStore();
+    // Project first: "not inside a project" must not hide behind a dead Redis.
     const project = currentProjectNames();
+    const store = liveStore();
     const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
     if (!chosen && isInteractive()) {
       // Ask. The picker opens on what the tab runs at now; confirming that while it is only
@@ -218,8 +219,8 @@ async function runEnable(options: { interval?: string }): Promise<void> {
 
 function runDisable(): void {
   try {
-    const store = liveStore();
     const project = currentProjectNames();
+    const store = liveStore();
     const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
     disableCrank(store, ctx.resolution.tab);
     console.log(`  ${dim("OFF")}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(ctx.resolution.tab)}`);
@@ -237,8 +238,8 @@ async function runTui(): Promise<void> {
       console.error(`${xmark} pj crank tui needs an interactive terminal (stdin and stdout must be a TTY)`);
       process.exit(1);
     }
-    const store = liveStore();
     const project = currentProjectNames();
+    const store = liveStore();
     const controller = createCrankController({ slug: project.slug, project: project.names, store });
     const screens = await loadCrankScreens();
     await screens.runCrankDashboard(controller);

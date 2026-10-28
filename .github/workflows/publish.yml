@@ -239,6 +239,15 @@ jobs:
             || { echo "interpreter is not uv-managed; pjangler will refuse it" >&2; exit 1; }
           copier --version
 
+      # pjan-182 starts a throwaway redis-server on a free port and drives it
+      # with redis-cli; a hosted runner ships neither (PJAN-183).
+      - name: Install Redis for the crank suites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server
+          sudo systemctl stop redis-server || true
+          redis-server --version && redis-cli --version
+
       - run: npm ci
       - run: npm run typecheck
       # Build before the contract test, matching the order publish.yml used:
