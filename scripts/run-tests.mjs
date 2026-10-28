@@ -66,6 +66,7 @@ const SUITES = [
   "tests/portable-test-paths-regressions.mjs",
   "tests/release-regressions.mjs",
   "tests/pjan-160-release-version-regressions.mjs",
+  "tests/pjan-189-release-push-regressions.mjs",
   "tests/submodule-contract-regressions.mjs",
   "tests/secret-publication-gate-regressions.mjs",
   "tests/bmad-version-surface-regressions.mjs",

@@ -43,17 +43,48 @@ name: CI
 # fleet running from main trunk should have the latest features; a bug reaching
 # them is cheaper than every agent running weeks-old code. There is exactly one
 # user, and he would rather find the bug than be protected from it.
+#
+# Pushing to main is the ONLY way to publish (PJAN-189). There used to be a
+# second path: `mise run release` (.mise/scripts/release.sh) bumped, tagged vX
+# locally and pushed main and the tag, and the tag's run published vX. That
+# path is retired, and v* tags no longer trigger this workflow at all:
+#   - It always published twice. The same push moved main, and the main run
+#     found vX taken by the tag and bumped past it, so every `mise run release`
+#     shipped vX from the tag run AND vX+1 from the main run.
+#   - Main and tag runs sat in different concurrency groups (ci-<ref>), so the
+#     two could publish at once. 1.5.21 (main) beat the v1.5.20 tag run, which
+#     then failed: "Cannot implicitly apply the latest tag because 1.5.21 is
+#     higher" (run 40718894891).
+#   - A tag push publishes whatever version the tagged package.json names, with
+#     no bump and no check, so pushing a tag for a version npm already has (the
+#     v1.5.21 and v1.5.23 backfills, any re-pushed release tag) could only
+#     produce a failed run. Without the tag trigger it produces no run at all.
+#     (The backfilled tags point at commits whose own publish.yml still has the
+#     old trigger; GitHub reads the workflow from the tagged commit. Those
+#     commits are "[skip ci]" release commits, and GitHub creates no push run
+#     for a tag whose commit message carries a skip instruction.)
+# `mise run release` survives as a thin wrapper that pushes main, and for a
+# minor or major first commits the version bump; it never tags or publishes.
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  # Never let two main runs publish at once. Do not cancel in progress: a
-  # half-finished publish is worse than a queued one.
+  # Main runs queue behind each other, so they publish in push order and never
+  # two at once. Do not cancel in progress: a half-finished publish is worse
+  # than a queued one.
+  #
+  # Superseding is deliberate: GitHub keeps one RUNNING and one PENDING run per
+  # group, and a newer push replaces the pending one. The replaced run never
+  # started, so it published and tagged nothing, and (unless main was
+  # force-pushed) the newer commit contains it, so the newer run ships both.
+  # Nothing here can cancel a run that has started (cancel-in-progress is true
+  # only for pull requests), and the release step below runs even after a
+  # manual cancel once npm has accepted the version (always()), so a cancel
+  # cannot strand an untagged version.
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -102,8 +133,7 @@ jobs:
       PGUSER: postgres
       # pg-registry-regressions skips itself, exit 0, when postgres, psql or
       # bun is missing. This job provides all three, so a missing one is a
-      # broken job and must fail it rather than pass an untested suite
-      # (release.sh sets the same for the local release gate).
+      # broken job and must fail it rather than pass an untested suite.
       PJANGLER_REQUIRE_DISPOSABLE_POSTGRES: '1'
     steps:
       - uses: actions/checkout@v4
@@ -313,10 +343,20 @@ jobs:
     # (tests/release-regressions.mjs pins both).
     needs: ci
     # The gate the release steps had when they lived in the ci job: green main
-    # pushes and v* tags, never the bot's own release push. `needs` already
-    # skips this when ci was skipped or failed; the actor guard is repeated so
-    # that stays true if ci's gate ever changes.
-    if: github.actor != 'github-actions[bot]' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    # pushes, never the bot's own release push. `needs` already skips this when
+    # ci was skipped or failed; the actor guard is repeated so that stays true
+    # if ci's gate ever changes. main only (PJAN-189): no tag, branch or
+    # dispatch on any other ref publishes.
+    if: github.actor != 'github-actions[bot]' && github.ref == 'refs/heads/main'
+    # The npm-publish section is one at a time across EVERY ref, not just
+    # within main's ci-<ref> group above (PJAN-189): a run on any other ref
+    # that ever reached this job would still wait here rather than publish
+    # beside main. No publish job is ever cancelled for it: main runs already
+    # reach this job one at a time, so nothing is ever pending here behind a
+    # running one to be replaced.
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -394,6 +434,13 @@ jobs:
       # lives in scripts/release-version.mjs so it can be tested offline; it
       # fetches tags itself and reads origin's directly. The bump is left in the
       # working tree (package.json, package-lock.json) for the publish to read.
+      #
+      # It also writes `action` (PJAN-189). A re-run or a second dispatch of a
+      # commit npm already published must not publish it again under a new
+      # number: npm records the commit as the version's gitHead, so the script
+      # finds it and answers `tag` (npm has it, origin has no tag: skip the
+      # publish and tag that version) or `none` (published and tagged: nothing
+      # to do, and the job ends green). Otherwise `publish`.
       - name: Bump version from the published one
         if: github.ref == 'refs/heads/main'
         id: bump
@@ -418,37 +465,34 @@ jobs:
       # placeholder when it is unset. Never put a token back here: if OIDC
       # broke, a token would quietly take over and ship without provenance.
       - name: Publish to npm
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        if: steps.bump.outputs.action == 'publish'
         id: publish
         run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ""
 
-      # Only a version npm accepted gets a release commit and a tag. The gate
-      # names the publish outcome, not just the implicit success(), so making
-      # the publish continue-on-error can never let a failed one through. The
-      # coverage-floor raise rides along here too: a failed publish defers it,
-      # and the next green run measures and raises it again. A push that loses
-      # to a moved main fails this step, exactly as it did before the reorder;
-      # npm already has the version by then, so the next run bumps past it
-      # rather than reusing the name. The push is atomic (PJAN-161): main and
-      # the tag land together or neither does. --follow-tags pushed each ref on
-      # its own, so a rejected main still landed the tag, on a commit main never
-      # got.
+      # Only a version npm accepted gets a release commit and a tag, and every
+      # version npm accepted gets one (PJAN-189). The gate names the publish
+      # outcome, not just the implicit success(), so making the publish
+      # continue-on-error can never let a failed one through; `tag` is the
+      # re-run case above, where npm already has the version. always() keeps a
+      # cancel that lands after npm accepted the version from skipping its tag.
+      # The coverage-floor raise rides along: a failed publish defers it, and
+      # the next green run measures and raises it again.
+      #
+      # scripts/release-commit.mjs builds the release commit on the commit this
+      # run built (GITHUB_SHA), tags it v<version> (annotated), and pushes main
+      # and the tag atomically (PJAN-161: both or neither). When main moved
+      # while this run was between the publish and here, that push is rejected,
+      # and it pushes the tag alone: the release commit stays off main,
+      # reachable through its tag, and the commit that moved main publishes the
+      # next version in its own run. Until PJAN-189 that rejection failed this
+      # step and left npm with a version that had no tag (1.5.21, 1.5.23). It
+      # never forces main, so a release commit that reached main stays there.
+      # The script's header has the whole reasoning, and
+      # tests/pjan-189-release-push-regressions.mjs runs it against real Git.
       - name: Commit the release
-        if: github.ref == 'refs/heads/main' && steps.publish.outcome == 'success'
-        run: |
-          set -euo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json .coverage-floor.json
-          # [skip ci] keeps this push from retriggering the workflow.
-          git commit -m "chore(release): v${{ steps.bump.outputs.next }} [skip ci]" || {
-            echo "nothing to commit"; exit 0; }
-          # Annotated. The push used to be --follow-tags, which pushes only
-          # annotated tags: the lightweight v1.4.3-v1.4.6 created here never
-          # reached origin, so the next run could not see them as taken. The
-          # push names the tag explicitly now, and it stays annotated so a
-          # release tag carries its tagger and date and `git describe` sees it.
-          git tag -a "v${{ steps.bump.outputs.next }}" -m "v${{ steps.bump.outputs.next }}"
-          git push --atomic origin HEAD:refs/heads/main "refs/tags/v${{ steps.bump.outputs.next }}"
+        if: always() && github.ref == 'refs/heads/main' && (steps.publish.outcome == 'success' || steps.bump.outputs.action == 'tag')
+        run: node scripts/release-commit.mjs
+        env:
+          RELEASE_VERSION: ${{ steps.bump.outputs.next }}

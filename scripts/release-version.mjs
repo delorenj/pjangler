@@ -25,8 +25,24 @@
 // FIRST and commits and tags only after npm accepted the version: a failed
 // publish leaves nothing behind, so its version is free again next run.
 //
+// One question comes before all of that (PJAN-189): has npm ALREADY published
+// this very commit? npm records the commit it published from as the version's
+// gitHead (the same commit the provenance attestation names). That happens when
+// a run is re-run or dispatched again after its publish succeeded, most often
+// because 'Commit the release' failed to push the tag. Bumping again would ship
+// the same code a second time under a new number and leave the first version
+// untagged forever, which is the drift PJAN-189 repaired. So:
+//   - npm has a version from this commit and origin has its tag: action=none.
+//     Nothing to publish, nothing to tag; the job ends cleanly.
+//   - npm has a version from this commit and origin has no tag for it:
+//     action=tag. The tree is set to that version and the publish step is
+//     skipped; 'Commit the release' tags the version npm already has.
+//   - otherwise: action=publish, with `next` decided as above.
+// A failed lookup reads as "nothing published from here", which is exactly the
+// pre-PJAN-189 behaviour, and is reported as a warning.
+//
 // Usage:
-//   node scripts/release-version.mjs            # decide, run `npm version`, write `next` to $GITHUB_OUTPUT
+//   node scripts/release-version.mjs            # decide, run `npm version`, write `next` and `action` to $GITHUB_OUTPUT
 //   node scripts/release-version.mjs --dry-run  # decide and print; change nothing
 //
 // RELEASE_ROOT overrides the package root so the CLI can be exercised against a
@@ -59,11 +75,16 @@ export function nextPatch(version) {
 
 /** The higher of two X.Y.Z versions, compared numerically (what `sort -V | tail -1` did). */
 export function higherVersion(a, b) {
+  return compareVersions(a, b) < 0 ? b : a;
+}
+
+/** Numeric X.Y.Z comparison, for sorting. */
+export function compareVersions(a, b) {
   const [x, y] = [parse(a), parse(b)];
   for (let i = 0; i < 3; i += 1) {
-    if (x[i] !== y[i]) return x[i] > y[i] ? a : b;
+    if (x[i] !== y[i]) return x[i] - y[i];
   }
-  return a;
+  return 0;
 }
 
 /**
@@ -101,6 +122,40 @@ export function decideReleaseVersion({ localVersion, onNpm, gitTag, latestPublis
     skipped.push({ version: candidate, reasons });
     candidate = nextPatch(candidate);
   }
+}
+
+/**
+ * What to do when npm already has versions published from the commit this run
+ * built (PJAN-189). Pure: the tag lookup is injected.
+ *
+ * Only a tag on ORIGIN counts as done: a release is finished when origin has its
+ * tag, and a local-only tag would make 'Commit the release' fail at `git tag`.
+ *
+ * @param {object} options
+ * @param {string[]} options.builtVersions versions npm has whose gitHead is this commit
+ * @param {(version: string) => string | null} options.gitTag where tag v<version> exists ("origin", "local"), or null
+ * @returns {null | { next: string, action: "tag" | "none", untagged: string[] }}
+ *   null when npm has nothing from this commit (publish as usual)
+ */
+export function decideRepublish({ builtVersions, gitTag }) {
+  if (builtVersions.length === 0) return null;
+  const ascending = [...builtVersions].sort(compareVersions);
+  const untagged = ascending.filter((version) => gitTag(version) !== REMOTE);
+  if (untagged.length === 0) return { next: ascending.at(-1), action: "none", untagged };
+  return { next: untagged.at(-1), action: "tag", untagged };
+}
+
+/**
+ * Parse `npm view <name>@>=0.0.0 version gitHead --json`. npm 11 prints a
+ * single object when one version matches and an array when several do (npm 12
+ * always prints an array), so both shapes are accepted.
+ */
+export function versionsBuiltFrom(json, sha) {
+  const parsed = JSON.parse(json);
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+  return entries
+    .filter((entry) => entry && typeof entry === "object" && entry.gitHead === sha && SEMVER.test(String(entry.version)))
+    .map((entry) => entry.version);
 }
 
 function run(command, args, cwd) {
@@ -148,9 +203,55 @@ function main(argv) {
   const localVersion = pkg.version;
 
   const tags = readGitTags(root);
+  const gitTag = (version) => tags.get(`v${version}`) ?? null;
+  const output = (next, action) => {
+    if (dryRun) {
+      console.log(`next=${next} (dry run: package.json and $GITHUB_OUTPUT untouched)`);
+      console.log(`action=${action}`);
+    } else if (process.env.GITHUB_OUTPUT) {
+      appendFileSync(process.env.GITHUB_OUTPUT, `next=${next}\naction=${action}\n`);
+    } else {
+      console.log(`next=${next}\naction=${action}`);
+    }
+  };
+
+  // PJAN-189: has npm already published this very commit? (See the header.)
+  const head = run("git", ["rev-parse", "HEAD"], root);
+  if (head.status !== 0) die(`git rev-parse HEAD failed; cannot tell which commit this run built:\n${head.stderr}`);
+  const built = head.stdout.trim();
+  const fromHere = run("npm", ["view", `${name}@>=0.0.0`, "version", "gitHead", "--json"], root);
+  let builtVersions = [];
+  if (fromHere.status === 0) {
+    try {
+      builtVersions = versionsBuiltFrom(fromHere.stdout, built);
+    } catch (error) {
+      console.log(`warning: could not parse npm's versions and gitHeads (${error.message}); treating ${built} as unpublished`);
+    }
+  } else {
+    console.log(`warning: could not read which versions npm has from ${built}; treating it as unpublished`);
+  }
+  const republish = decideRepublish({ builtVersions, gitTag });
+  if (republish) {
+    console.log(`npm already has ${builtVersions.join(", ")} from ${built}`);
+    if (republish.action === "none") {
+      console.log(`${republish.next} is published from this commit and tagged on ${REMOTE}; nothing to publish or tag`);
+    } else {
+      if (republish.untagged.length > 1) {
+        console.log(`warning: ${republish.untagged.join(", ")} are all untagged; tagging the highest, ${republish.next}`);
+      }
+      console.log(`${republish.next} is published from this commit but v${republish.next} is not on ${REMOTE}; tagging it instead of publishing again`);
+      if (!dryRun) {
+        const set = spawnSync("npm", ["version", republish.next, "--no-git-tag-version", "--allow-same-version"], { cwd: root, stdio: "inherit" });
+        if (set.status !== 0) die(`npm version ${republish.next} failed`);
+      }
+    }
+    output(republish.next, republish.action);
+    return;
+  }
+
   const decision = decideReleaseVersion({
     localVersion,
-    gitTag: (version) => tags.get(`v${version}`) ?? null,
+    gitTag,
     // Any failure reads as "not on npm", exactly as the inline step had it: a
     // version npm does have still fails loudly at `npm publish`, never silently.
     onNpm: (version) => run("npm", ["view", `${name}@${version}`, "version"], root).status === 0,
@@ -173,13 +274,7 @@ function main(argv) {
     console.log(`${localVersion} is unpublished; shipping it as-is`);
   }
 
-  if (dryRun) {
-    console.log(`next=${decision.next} (dry run: package.json and $GITHUB_OUTPUT untouched)`);
-  } else if (process.env.GITHUB_OUTPUT) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `next=${decision.next}\n`);
-  } else {
-    console.log(`next=${decision.next}`);
-  }
+  output(decision.next, "publish");
 }
 
 const invokedDirectly = (() => {

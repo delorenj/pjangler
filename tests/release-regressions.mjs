@@ -112,14 +112,16 @@ try {
     }
   }
 
-  // The gate the release steps had inside ci: main pushes and v* tags, with the
-  // actor guard against the bot's own release push.
+  // The gate the release steps had inside ci, with the actor guard against the
+  // bot's own release push. main only since PJAN-189: v* tags no longer start
+  // the workflow, and no other ref publishes.
   assert.equal(ciJob.if, "github.actor != 'github-actions[bot]'", "ci keeps the actor guard against a publish loop");
   assert.equal(
     publishJob.if,
-    "github.actor != 'github-actions[bot]' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))",
-    "publish runs for main pushes and v* tags, never for the bot's own push",
+    "github.actor != 'github-actions[bot]' && github.ref == 'refs/heads/main'",
+    "publish runs for main pushes, never for a tag and never for the bot's own push",
   );
+  assert.deepEqual(workflow.on.push, { branches: ["main"] }, "no v* tag trigger (PJAN-189)");
   assert.equal(publishJob.environment, "release", "publish runs in the release environment");
   assert.equal(ciJob.environment, undefined, "ci publishes nothing, so it is not a release deployment");
 
@@ -332,8 +334,8 @@ try {
   assert.ok(floorDownload < floorCopy && floorCopy < releaseCommitStep, "the measured floor is in the tree before the release commit");
   assert.equal(
     releaseSteps[releaseCommitStep].if,
-    "github.ref == 'refs/heads/main' && steps.publish.outcome == 'success'",
-    "the release commit is gated on the publish's own success",
+    "always() && github.ref == 'refs/heads/main' && (steps.publish.outcome == 'success' || steps.bump.outputs.action == 'tag')",
+    "the release commit is gated on the publish's own success, or on a version npm already has (PJAN-189)",
   );
 
   // OIDC, with provenance, and no token. setup-node's .npmrc reads
@@ -371,30 +373,39 @@ try {
     assert.ok(!settings.some((line) => /^\s*provenance\s*=\s*false\b/.test(line)), ".npmrc must not turn provenance off");
   }
 
-  // PJAN-161: the release push is atomic, so a rejected main can never leave a
-  // tag on a commit main never got. pjan-160-release-version-regressions owns
-  // the commit step: it pins the exact command and proves it with real git.
+  // PJAN-161, PJAN-189: no step writes to git inline. The release step runs
+  // scripts/release-commit.mjs, which pushes main and the tag atomically and,
+  // when main moved, the tag alone; tests/pjan-189-release-push-regressions.mjs
+  // runs it against real Git.
   const pushes = Object.entries(workflow.jobs).flatMap(([name, job]) =>
     job.steps.flatMap((step) =>
       String(step.run ?? "")
         .split("\n")
-        .filter((line) => !line.trim().startsWith("#") && /\bgit\s+push\b/.test(line))
+        .filter((line) => !line.trim().startsWith("#") && /\bgit\s+(?:push|commit|tag)\b/.test(line))
         .map((line) => ({ name, step: step.name, line })),
     ),
   );
-  assert.equal(pushes.length, 1, "the workflow pushes exactly once");
-  assert.equal(pushes[0].name, "publish", "only the publish job pushes");
-  assert.equal(pushes[0].step, "Commit the release", "only the release commit step pushes");
-  assert.match(pushes[0].line, /\bgit push --atomic origin HEAD:refs\/heads\/main "refs\/tags\/v/, "the release push must be atomic");
-  assert.doesNotMatch(pushes[0].line, /--follow-tags/, "--follow-tags pushes each ref on its own");
+  assert.deepEqual(pushes, [], "no workflow step commits, tags or pushes inline");
+  assert.equal(releaseSteps[releaseCommitStep].run, "node scripts/release-commit.mjs", "the release step is the tested script");
+  assert.equal(publishStep.if, "steps.bump.outputs.action == 'publish'", "a commit npm already has is never published again");
+
+  // .mise/scripts/release.sh (`mise run release`) is a thin wrapper since
+  // PJAN-189: it pushes main, and for a minor or major first commits the bump.
+  // It never tags, publishes or forces. Its behaviour is run against a real
+  // origin in the PJAN-189 suite; what is pinned here is the transaction order
+  // it kept from PJAN-44 and PJAN-86.
+  const code = source.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  assert.doesNotMatch(code, /\bgit\s+tag\b|\bnpm\s+publish\b|--force|--follow-tags/, "release.sh never tags, publishes or forces");
+  assert.equal(code.match(/\bgit\s+push\b/g)?.length, 1, "release.sh pushes exactly once");
+  assert.match(source, /^git push "\$REMOTE" "HEAD:refs\/heads\/\$BRANCH"$/m, "a plain push of HEAD to main");
   assert.ok(
-    indexOf("require_clean_tree") < indexOf("versioning.sh\" bump"),
-    "clean-tree gate must precede the version bump",
+    indexOf("require_clean_tree\n\ngit fetch") < indexOf('npm version "${NEW#v}"'),
+    "clean-tree gate must precede the remote and the version bump",
   );
+  assert.ok(indexOf("git merge-base --is-ancestor") < indexOf('git push "$REMOTE"'), "HEAD must fast-forward main before the push");
   assert.ok(
-    indexOf("npm install --package-lock-only --ignore-scripts") <
-      indexOf(releaseCommit),
-    "lockfile regeneration must be inside the release commit",
+    indexOf('npm version "${NEW#v}" --no-git-tag-version --ignore-scripts') < indexOf(releaseCommit),
+    "the version bump is inside the release commit",
   );
   assert.doesNotMatch(
     source,
@@ -407,115 +418,23 @@ try {
   assert.match(source, /git log -1 --pretty=%s/, "release should fall back to the HEAD subject after the branch");
   assert.match(source, /\^PJAN-\[1-9\]\[0-9\]\*\$/, "release must validate the exact ticket format");
   assert.ok(
-    indexOf('RELEASE_TICKET_ID="$(resolve_release_ticket)"') <
-      indexOf(releaseCommit),
+    indexOf('RELEASE_TICKET_ID="$(resolve_release_ticket)"') < indexOf(releaseCommit),
     "the validated release ticket must be resolved before commit creation",
-  );
-  assert.ok(
-    indexOf("inspect_tarball") < indexOf("git push --atomic"),
-    "the exact tarball must be inspected before the remote release mutation",
-  );
-  assert.ok(
-    indexOf("git push --atomic") < source.lastIndexOf('npm publish "$TARBALL"'),
-    "release commit and tag must be pushed before publishing",
   );
   assert.match(source, /RELEASE_REMOTE:-origin/);
   assert.match(source, /RELEASE_BRANCH:-main/);
-  assert.match(source, /HEAD:refs\/heads\/\$BRANCH/);
-  assert.match(source, /refs\/tags\/\$NEW:refs\/tags\/\$NEW/);
-  assert.match(source, /gh auth token 2>\/dev\/null/);
-  assert.match(source, /mise exec node@24\.6 --/);
-  assert.match(source, /expected npm 11\.x/);
-  assert.doesNotMatch(source, /export NODE_AUTH_TOKEN/);
-  assert.match(source, /NODE_AUTH_TOKEN="\$token" NPM_CONFIG_USERCONFIG=/);
-  assert.ok(
-    indexOf("unset NODE_AUTH_TOKEN") < indexOf('log "installing from the committed npm lockfile..."; npm ci'),
-  );
-  assert.ok(
-    indexOf('log "testing..."') < source.indexOf("\nregistry_auth\n", indexOf("# Only trusted")),
-    "credentials must be acquired only after install/build/test gates",
-  );
-  assert.match(source, /\$\{NODE_AUTH_TOKEN\}/);
-  assert.match(source, /registry_npm\(\) \(/);
-  assert.match(source, /cd "\$AUTH_DIR"/);
-  assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-auth\.XXXXXX"/);
-  assert.match(source, /"\$PACK_BASE"\/pjangler-auth\.\*\) rm -rf -- "\$AUTH_DIR"/);
-  assert.match(source, /registry_npm whoami --registry=/);
-  assert.match(source, /registry_npm view/);
-  assert.match(source, /registry_npm publish "\$TARBALL"/);
-  assert.ok(
-    indexOf("printf '%s\\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'") <
-      indexOf('chmod 600 "$AUTH_CONFIG"'),
-    "the auth config must exist before its mode is restricted",
-  );
-  assert.doesNotMatch(
-    source,
-    /NPM_CONFIG_USERCONFIG="\$AUTH_CONFIG" npm (?:whoami|view|publish)/,
-    "authenticated npm commands must not run from the repository",
-  );
-  assert.match(source, /TARBALL="\$PACK_DIR\/\$filename"/);
-  assert.match(source, /PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1/);
-  assert.match(source, /PJAN21_PG_HARNESS_SELF_TEST=0 PJANGLER_REQUIRE/);
-  assert.match(source, /npm run check:audit:prod/);
-  assert.ok(
-    source.lastIndexOf("npm run check:audit:prod", indexOf(releaseCommit)) <
-      indexOf(releaseCommit),
-    "production audit must rerun after the bumped lock is generated",
-  );
-  assert.match(source, /--resume-push/);
-  assert.match(source, /would atomically resume pushing HEAD\+\$TARGET/);
-  assert.match(source, /refs\/tags\/\$TARGET:refs\/tags\/\$TARGET/);
-  assert.match(source, /npm publish "\$TARBALL"[\s\\\n]+--dry-run --ignore-scripts/);
-  assert.match(source, /E404\|404 Not Found/);
-  assert.match(source, /failed without a definitive 404/);
-  assert.ok(
-    source.lastIndexOf("preflight_publish_cli", indexOf(releaseCommit)) <
-      indexOf(releaseCommit),
-    "exact-tarball preflight must precede the final commit",
-  );
-  // PJAN-61: the PRE-bump preflight must stay gated to the retry paths. On the
-  // bump path the tree still carries CUR — the version just published — so an
-  // ungated `npm publish --dry-run` there returns E403 forever, which broke
-  // both `release` and `release --dry-run` from the first release onward.
-  assert.match(
-    source,
-    /if \[ -n "\$PUBLISH_CURRENT" \] \|\| \[ -n "\$RESUME_PUSH" \]; then\n\s*preflight_publish_cli\n\s*fi/,
-    "the pre-bump publish preflight must run only on --publish-current/--resume-push",
-  );
-  assert.ok(
-    source.lastIndexOf("preflight_publish_cli") >
-      source.lastIndexOf('NEW="$("$SCRIPTS_DIR/versioning.sh" bump'),
-    "the bump path must still preflight the exact tarball AFTER the version bump",
-  );
-  assert.ok(
-    source.lastIndexOf("npm run check:tracked-secrets", indexOf(releaseCommit)) <
-      indexOf(releaseCommit),
-    "payload secret gate must precede the final commit",
-  );
   const commitIndex = indexOf(releaseCommit);
-  const subjectVerificationIndex = source.indexOf("\nverify_release_commit_subject\n", commitIndex);
-  const tagIndex = indexOf('git tag -a "$NEW" -m "$NEW" HEAD');
+  const subjectVerificationIndex = source.indexOf("\n  verify_release_commit_subject\n", commitIndex);
+  const pushIndex = indexOf('git push "$REMOTE"');
   assert.ok(indexOf('RELEASE_BASE_HEAD="$(git rev-parse HEAD)"') < commitIndex);
-  assert.ok(commitIndex < subjectVerificationIndex && subjectVerificationIndex < tagIndex, "the final hook-mutated subject must be verified before tagging");
+  assert.ok(commitIndex < subjectVerificationIndex && subjectVerificationIndex < pushIndex, "the final hook-mutated subject must be verified before the push");
   assert.match(source, /expected="release\(\$\{RELEASE_TICKET_ID\}\): v\$\{NEW#v\}"/);
-  assert.ok(indexOf('git rev-parse HEAD^') > commitIndex, "hook-safe transaction must verify the release parent");
+  assert.ok(indexOf("git rev-parse HEAD^") > commitIndex, "hook-safe transaction must verify the release parent");
   assert.ok(indexOf("git diff-tree --no-commit-id --name-only -r HEAD") > commitIndex, "hook-safe transaction must verify committed paths");
   assert.ok(source.lastIndexOf("require_clean_tree") > commitIndex, "post-commit hooks must leave a clean tree");
-  assert.ok(source.lastIndexOf("inspect_tarball") > commitIndex, "the published tarball must be rebuilt after hooks");
-  assert.ok(source.lastIndexOf("preflight_publish_cli") > commitIndex, "the rebuilt tarball must be preflighted after hooks");
-  assert.ok(source.lastIndexOf("npm run check:tracked-secrets") > commitIndex, "the committed payload must be rescanned after hooks");
-  assert.ok(tagIndex > source.lastIndexOf("npm run check:tracked-secrets"), "no release tag may exist before post-hook gates pass");
-  assert.match(pgSource, /"ON_ERROR_STOP=1"/);
-  assert.match(source, /mktemp -d "\$PACK_BASE\/pjangler-pack\.XXXXXX"/);
-  assert.match(source, /--pack-destination "\$PACK_DIR"/);
-  assert.match(source, /"\$PACK_BASE"\/pjangler-pack\.\*\) rm -rf -- "\$PACK_DIR"/);
-  assert.match(source, /basename "\$filename"/);
-  assert.match(
-    source,
-    /Array\.isArray\(parsed\) \? parsed : Object\.values\(parsed\)/,
-    "tarball inspection must accept npm's array and keyed-object JSON formats",
-  );
+  assert.ok(source.lastIndexOf("require_clean_tree") < pushIndex, "and that is proved before the push");
   assert.doesNotMatch(source, /op item get|--otp=|git add -A/);
+  assert.match(pgSource, /"ON_ERROR_STOP=1"/);
 
   // Prove a dirty tree is rejected before npm, remote, auth, or bump commands.
   mkdirSync(join(temp, ".mise", "scripts"), { recursive: true });
@@ -662,7 +581,6 @@ try {
     encoding: "utf8",
     env: {
       ...process.env,
-      PJANGLER_RELEASE_RUNTIME_ACTIVE: "1",
       PATH: `${fakeBin}${delimiter}${process.env.PATH}`,
     },
   });

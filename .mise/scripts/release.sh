@@ -1,62 +1,54 @@
 #!/usr/bin/env bash
-# release.sh — cut a release in one clean, reviewable version commit.
+# release.sh — `mise run release`: hand a release to CI (PJAN-189).
 #
-# Transaction order:
-#   clean tree -> remote/template gates -> npm ci/build/typecheck/tests -> auth
-#   -> bump package + lock -> inspect staged tarball -> commit with normal hooks
-#   -> re-audit + rebuild exact tarball -> annotated tag -> atomic push -> publish
+# CI is the only publisher. Every green push to main publishes:
+# .github/workflows/publish.yml bumps past every version npm or a v* tag has
+# taken, runs `npm publish --provenance` over npm OIDC, then commits and tags
+# the release (scripts/release-version.mjs, scripts/release-commit.mjs).
 #
-# Usage:
-#   release.sh [patch|minor|major]   bump level (default: patch)
-#   release.sh --dry-run             run every non-mutating gate
-#   release.sh --publish-current     retry publication only after proving the
-#                                    current HEAD/tag are already on main
-#   release.sh --resume-push         resume after a failed atomic git push
+# This script used to be a second release path. It bumped, committed, tagged
+# vX locally and pushed main plus the tag, and the tag's run published vX.
+# That path is retired, and v* tags no longer start the workflow:
+#   - It published twice. The same push moved main, and main's run found vX
+#     taken by the tag and published vX+1 as well.
+#   - The tag run and main's run were in different concurrency groups, so they
+#     could publish at once: 1.5.21 (main) beat the v1.5.20 tag run, which then
+#     failed with "Cannot implicitly apply the latest tag because 1.5.21 is
+#     higher" (run 40718894891).
+# What is left is a thin wrapper around the one path, pushing main:
+#
+#   release.sh [patch]       push HEAD to origin/main. CI tests it, bumps the
+#                            patch, publishes and tags.
+#   release.sh minor|major   first commit package.json and package-lock.json at
+#                            the next minor/major, as release(PJAN-<n>): vX.Y.Z,
+#                            then push. CI ships that version as-is, because
+#                            nothing has taken it (no tag is made here).
+#   release.sh --dry-run     say what would happen; change nothing.
+#
+# It never tags, never publishes and never forces: the push is a plain
+# fast-forward of main, and it stops if HEAD does not fast-forward origin/main.
+# --publish-current and --resume-push went with the tag path (and so did
+# `mise run publish`). To retry a publish, re-run the main workflow; its bump
+# step tags a version npm already has from that commit instead of publishing it
+# again.
+#
+# tests/pjan-189-release-push-regressions.mjs runs this against a real bare
+# origin; tests/release-regressions.mjs pins the ticket and commit helpers.
 set -euo pipefail
-
-# npm 12 in the normal Node 26 toolchain currently cannot publish tarballs
-# (missing sigstore runtime module). Re-exec the entire release under the proven
-# Node 24.6/npm 11 toolchain so every npm gate, pack, and publish uses one runtime.
-SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-if [ "${PJANGLER_RELEASE_RUNTIME_ACTIVE:-}" != "1" ]; then
-  command -v mise >/dev/null 2>&1 || {
-    echo "release: mise is required for the Node 24.6 release runtime" >&2; exit 1; }
-  exec env PJANGLER_RELEASE_RUNTIME_ACTIVE=1 \
-    mise exec node@24.6 -- "$SELF_PATH" "$@"
-fi
-NODE_RELEASE_VERSION="$(node --version)"
-NPM_RELEASE_VERSION="$(npm --version)"
-[[ "$NODE_RELEASE_VERSION" == v24.6.* ]] || {
-  echo "release: expected Node 24.6.x, got $NODE_RELEASE_VERSION" >&2; exit 1; }
-[[ "$NPM_RELEASE_VERSION" == 11.* ]] || {
-  echo "release: expected npm 11.x, got $NPM_RELEASE_VERSION" >&2; exit 1; }
-
-SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(git -C "$SCRIPTS_DIR" rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
 
 LEVEL="patch"
 DRY="${RELEASE_DRY_RUN:-}"
-PUBLISH_CURRENT=""
-RESUME_PUSH=""
 REMOTE="${RELEASE_REMOTE:-origin}"
 BRANCH="${RELEASE_BRANCH:-main}"
-AUTH_CONFIG=""
-AUTH_DIR=""
-TARBALL=""
-PACK_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
-PACK_DIR=""
-# Never let an inherited package credential reach npm ci, build scripts, or
-# tests. Authenticated registry calls receive their own short-lived token below.
-unset NODE_AUTH_TOKEN
 
 for arg in "$@"; do
   case "$arg" in
     patch|minor|major) LEVEL="$arg" ;;
     --dry-run|-n) DRY=1 ;;
-    --publish-current) PUBLISH_CURRENT=1 ;;
-    --resume-push) RESUME_PUSH=1 ;;
-    *) echo "release: unknown arg '$arg' (expected patch|minor|major|--dry-run|--publish-current|--resume-push)" >&2; exit 2 ;;
+    --publish-current|--resume-push)
+      echo "release: $arg was retired with the v* tag release path (PJAN-189). CI is the only publisher: re-run the main workflow (gh run rerun <run-id> --failed)." >&2
+      exit 2 ;;
+    *) echo "release: unknown arg '$arg' (expected patch|minor|major|--dry-run)" >&2; exit 2 ;;
   esac
 done
 
@@ -85,364 +77,73 @@ verify_release_commit_subject() {
   expected="release(${RELEASE_TICKET_ID}): v${NEW#v}"
   actual="$(git log -1 --pretty=%s)"
   [ "$actual" = "$expected" ] ||
-    die "release hook changed the commit subject; expected '$expected', got '$actual'; no tag or remote ref was created"
+    die "release hook changed the commit subject; expected '$expected', got '$actual'; nothing was pushed"
 }
-cleanup_pack_dir() {
-  if [ -n "$PACK_DIR" ] && [ -d "$PACK_DIR" ]; then
-    case "$PACK_DIR" in
-      "$PACK_BASE"/pjangler-pack.*) rm -rf -- "$PACK_DIR" ;;
-      *) die "refusing to clean unexpected package directory: $PACK_DIR" ;;
-    esac
-  fi
-  PACK_DIR=""
-  TARBALL=""
-}
-cleanup() {
-  if [ -n "$AUTH_DIR" ] && [ -d "$AUTH_DIR" ]; then
-    case "$AUTH_DIR" in
-      "$PACK_BASE"/pjangler-auth.*) rm -rf -- "$AUTH_DIR" ;;
-      *) log "refusing to clean unexpected auth directory: $AUTH_DIR" ;;
-    esac
-  fi
-  cleanup_pack_dir
-}
-trap cleanup EXIT
-
 require_clean_tree() {
   [ -z "$(git status --porcelain=v1 --untracked-files=all)" ] ||
     die "working tree must be clean; commit PJAN work before releasing"
-  git submodule foreach --quiet \
-    'test -z "$(git status --porcelain=v1 --untracked-files=all)"' >/dev/null ||
-    die "initialized submodules must be clean"
 }
 
-next_version() {
-  node -e '
-    const [version, level] = process.argv.slice(1);
-    let [major, minor, patch] = version.replace(/^v/, "").split(".").map(Number);
-    if (level === "major") [major, minor, patch] = [major + 1, 0, 0];
-    else if (level === "minor") [minor, patch] = [minor + 1, 0];
-    else patch += 1;
-    process.stdout.write(`v${major}.${minor}.${patch}`);
-  ' "$1" "$2"
-}
+SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPTS_DIR" rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
-# npm loads a project .npmrc from its current working directory even when a
-# different userconfig is supplied. Run every authenticated command outside the
-# repository so stale project credentials cannot override the runtime gh token.
-registry_npm() (
-  case "${REGISTRY%/}" in
-    https://registry.npmjs.org)
-      # Public registry; no auth needed for view. Publishing happens in CI via OIDC.
-      npm "$@"
-      ;;
-    https://npm.pkg.github.com)
-      local token
-      [ -n "$AUTH_DIR" ] && [ -d "$AUTH_DIR" ] || die "registry auth directory is unavailable"
-      token="$(gh auth token 2>/dev/null)" ||
-        die "GitHub Packages auth unavailable; run gh auth login"
-      [ -n "$token" ] || die "gh returned an empty auth token"
-      cd "$AUTH_DIR"
-      NODE_AUTH_TOKEN="$token" NPM_CONFIG_USERCONFIG="$AUTH_CONFIG" npm "$@"
-      ;;
-    *)
-      die "unsupported registry in registry_npm: $REGISTRY"
-      ;;
-  esac
-)
-
-registry_config() {
-  REGISTRY="$(node -e '
-    const pkg = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
-    process.stdout.write(pkg.publishConfig?.registry || "https://registry.npmjs.org");
-  ')"
-  case "${REGISTRY%/}" in
-    https://npm.pkg.github.com)
-      command -v gh >/dev/null 2>&1 || die "gh is required for GitHub Packages auth"
-      ;;
-    https://registry.npmjs.org)
-      : # OIDC trusted publishing; auth happens in CI only
-      ;;
-    *)
-      die "unsupported publishConfig.registry: $REGISTRY (expected GitHub Packages or npmjs.org)"
-      ;;
-  esac
-}
-
-registry_auth() {
-  case "${REGISTRY%/}" in
-    https://npm.pkg.github.com)
-      AUTH_DIR="$(mktemp -d "$PACK_BASE/pjangler-auth.XXXXXX")"
-      AUTH_CONFIG="$AUTH_DIR/.npmrc"
-      # Keep only the environment-variable reference on disk; the token remains
-      # process-local and is cleared by the EXIT trap.
-      printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' >"$AUTH_CONFIG"
-      chmod 600 "$AUTH_CONFIG"
-      registry_npm whoami --registry="$REGISTRY" >/dev/null ||
-        die "GitHub Packages authentication failed"
-      ;;
-    https://registry.npmjs.org)
-      log "OIDC trusted publishing: no local auth needed; publish happens in CI"
-      ;;
-    *)
-      die "registry configuration was not initialized"
-      ;;
-  esac
-}
-
-ensure_version_unused() {
-  local output status
-  set +e
-  output="$(registry_npm view "$PACKAGE_NAME@${TARGET#v}" version \
-    --registry="$REGISTRY" --json 2>&1)"
-  status=$?
-  set -e
-  [ "$status" -ne 0 ] || die "$PACKAGE_NAME@${TARGET#v} already exists in $REGISTRY"
-  printf '%s' "$output" | grep -Eq 'E404|404 Not Found' ||
-    die "registry version lookup failed without a definitive 404 (status $status)"
-  log "registry confirms $PACKAGE_NAME@${TARGET#v} is unused"
-}
-
-preflight_publish_cli() (
-  cd "$PACK_DIR"
-  NODE_AUTH_TOKEN= NPM_CONFIG_USERCONFIG=/dev/null npm publish "$TARBALL" \
-    --dry-run --ignore-scripts --registry="$REGISTRY" >/dev/null ||
-    die "npm exact-tarball publish preflight failed under Node $NODE_RELEASE_VERSION/npm $NPM_RELEASE_VERSION"
-)
-
-inspect_tarball() {
-  local pack_json package_name package_version filename
-  cleanup_pack_dir
-  PACK_DIR="$(mktemp -d "$PACK_BASE/pjangler-pack.XXXXXX")"
-  pack_json="$(npm pack --json --ignore-scripts --pack-destination "$PACK_DIR")" ||
-    die "npm pack failed"
-  filename="$(printf '%s' "$pack_json" | node -e '
-    let input = "";
-    process.stdin.on("data", chunk => input += chunk);
-    process.stdin.on("end", () => {
-      const parsed = JSON.parse(input);
-      const entries = Array.isArray(parsed) ? parsed : Object.values(parsed);
-      if (entries.length !== 1 || !entries[0].filename) process.exit(1);
-      process.stdout.write(entries[0].filename);
-    });
-  ')" || die "could not resolve the exact npm tarball"
-  [ "$(basename "$filename")" = "$filename" ] || die "npm returned an unsafe tarball filename"
-  TARBALL="$PACK_DIR/$filename"
-  [ -f "$TARBALL" ] || die "npm pack did not create $TARBALL"
-
-  package_name="$(node -p 'require("./package.json").name')"
-  package_version="$(node -p 'require("./package.json").version')"
-  printf '%s' "$pack_json" | node -e '
-    let input = "";
-    process.stdin.on("data", chunk => input += chunk);
-    process.stdin.on("end", () => {
-      const parsed = JSON.parse(input);
-      const [entry] = Array.isArray(parsed) ? parsed : Object.values(parsed);
-      const [name, version] = process.argv.slice(1);
-      if (entry.name !== name || entry.version !== version || !entry.integrity || !entry.shasum) process.exit(1);
-    });
-  ' "$package_name" "$package_version" || die "tarball metadata does not match package.json"
-
-  for path in package/package.json package/dist/index.js package/dist/mcp-server.js \
-    package/templates/commonproject/copier.yml \
-    package/.mise/scripts/versioning.sh package/.mise/scripts/link-agentfiles.sh; do
-    tar -tzf "$TARBALL" | grep -Fx "$path" >/dev/null ||
-      die "tarball missing required path: $path"
-  done
-  log "inspected exact tarball $TARBALL"
-}
-
-# Refuse unrelated work before even probing or building.
+# Refuse unrelated work before touching the remote or the version.
 require_clean_tree
-[ -f "$REPO_ROOT/templates/commonproject/copier.yml" ] ||
-  die "templates/ submodules not initialized; run: git submodule update --init --recursive"
-
-# A release can only reference commits that clean consumers can fetch/archive.
-npm run check:submodules -- --remote --recursive --archive --npm
 
 git fetch --quiet "$REMOTE" "$BRANCH" || die "cannot fetch $REMOTE/$BRANCH"
 REMOTE_HEAD="$(git rev-parse FETCH_HEAD)"
 git merge-base --is-ancestor "$REMOTE_HEAD" HEAD ||
-  die "HEAD is not a fast-forward of $REMOTE/$BRANCH"
+  die "HEAD is not a fast-forward of $REMOTE/$BRANCH; rebase onto it first"
 
-CUR="$("$SCRIPTS_DIR/versioning.sh" current)"
-NEXT="$(next_version "$CUR" "$LEVEL")"
-PACKAGE_NAME="$(node -p 'require("./package.json").name')"
-registry_config
-
-if [ -n "$PUBLISH_CURRENT" ]; then
-  TARGET="$CUR"
-  [ "$(git rev-list -n 1 "$TARGET" 2>/dev/null || true)" = "$(git rev-parse HEAD)" ] ||
-    die "$TARGET must be an existing local tag on HEAD for publish retry"
-  [ "$(git ls-remote "$REMOTE" "refs/heads/$BRANCH" | awk '{print $1}')" = "$(git rev-parse HEAD)" ] ||
-    die "HEAD must already be pushed to $REMOTE/$BRANCH for publish retry"
-  REMOTE_TAG="$(git ls-remote "$REMOTE" "refs/tags/$TARGET^{}" | awk '{print $1}')"
-  [ "$REMOTE_TAG" = "$(git rev-parse HEAD)" ] ||
-    die "$TARGET must already be an annotated remote tag on HEAD for publish retry"
-elif [ -n "$RESUME_PUSH" ]; then
-  TARGET="$CUR"
-  [ "$(git rev-list -n 1 "$TARGET" 2>/dev/null || true)" = "$(git rev-parse HEAD)" ] ||
-    die "$TARGET must be an existing local tag on HEAD for push resume"
-  [ -z "$(git ls-remote --tags "$REMOTE" "refs/tags/$TARGET")" ] ||
-    die "remote tag already exists: $TARGET (use --publish-current if main also points at HEAD)"
-else
-  TARGET="$NEXT"
-  [ -z "$(git tag --list "$TARGET")" ] || die "local tag already exists: $TARGET"
-  [ -z "$(git ls-remote --tags "$REMOTE" "refs/tags/$TARGET")" ] ||
-    die "remote tag already exists: $TARGET"
-fi
-
-RELEASE_TICKET_ID=""
-if [ -z "$PUBLISH_CURRENT" ] && [ -z "$RESUME_PUSH" ]; then
+if [ "$LEVEL" != patch ]; then
   RELEASE_TICKET_ID="$(resolve_release_ticket)"
-  log "release commit ticket: $RELEASE_TICKET_ID"
-fi
-
-log "installing from the committed npm lockfile..."; npm ci
-log "auditing production dependencies..."; npm run check:audit:prod
-log "building..."; npm run build
-log "typechecking..."; npm run typecheck
-log "testing..."; npm test
-log "requiring disposable PostgreSQL coverage..."
-PJAN21_PG_HARNESS_SELF_TEST=0 PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1 \
-  node tests/pg-registry-regressions.mjs
-
-# Builds and tests may never smuggle generated or unrelated changes into the
-# release commit.
-require_clean_tree
-inspect_tarball
-# The exact-tarball publish preflight can only run here on the retry paths,
-# where TARGET is CUR and the working tree already carries that version. On the
-# bump path the tree is still at CUR — the version that was just published —
-# so `npm publish --dry-run` returns E403 "cannot publish over the previously
-# published versions" no matter how healthy the release is. That made the gate
-# fail permanently from the first successful release onward, taking `release`
-# and `release --dry-run` down with it. The bump path gets the same preflight
-# after the bump (see below), where it checks the version actually being
-# published; inspect_tarball above still smoke-tests packing early on all paths.
-if [ -n "$PUBLISH_CURRENT" ] || [ -n "$RESUME_PUSH" ]; then
-  preflight_publish_cli
-fi
-
-# Only trusted, isolated registry commands receive a fresh token. All package
-# installation, lifecycle scripts, builds, tests, and PG checks above ran with
-# NODE_AUTH_TOKEN explicitly absent.
-registry_auth
-ensure_version_unused
-
-if [ -n "$DRY" ]; then
-  if [ -n "$PUBLISH_CURRENT" ]; then
-    case "${REGISTRY%/}" in
-      https://registry.npmjs.org)
-        log "DRY RUN — gates passed; would inspect the exact $TARGET tarball from the already-pushed HEAD/tag. GitHub Actions OIDC workflow handles publishing. Nothing mutated."
-        ;;
-      *)
-        log "DRY RUN — gates passed; would inspect and publish the exact $TARGET tarball from the already-pushed HEAD/tag. Nothing mutated."
-        ;;
-    esac
-  elif [ -n "$RESUME_PUSH" ]; then
-    case "${REGISTRY%/}" in
-      https://registry.npmjs.org)
-        log "DRY RUN — gates passed; would atomically resume pushing HEAD+$TARGET. GitHub Actions OIDC workflow handles publishing. Nothing mutated."
-        ;;
-      *)
-        log "DRY RUN — gates passed; would atomically resume pushing HEAD+$TARGET, then publish the inspected tarball. Nothing mutated."
-        ;;
-    esac
-  else
-    case "${REGISTRY%/}" in
-      https://registry.npmjs.org)
-        log "DRY RUN — gates passed; would bump $CUR -> $NEXT, commit package+lock, inspect tarball, atomically push HEAD to $REMOTE/$BRANCH with $NEXT. GitHub Actions OIDC workflow handles publishing. Nothing mutated."
-        ;;
-      *)
-        log "DRY RUN — gates passed; would bump $CUR -> $NEXT, commit package+lock, inspect tarball, atomically push HEAD to $REMOTE/$BRANCH with $NEXT, then publish the exact tarball. Nothing mutated."
-        ;;
-    esac
+  PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+  CUR="$(node -p 'require("./package.json").version')"
+  # main's package.json can lag npm: a release whose commit stayed off main
+  # (scripts/release-commit.mjs) leaves it behind. Step from the higher of the
+  # two, or a "minor" could land on a version already taken and be bumped to a
+  # patch of it.
+  LATEST="$(npm view "$PACKAGE_NAME" version 2>/dev/null || true)"
+  NEW="v$(node --input-type=module -e '
+    import { higherVersion } from "./scripts/release-version.mjs";
+    const [current, latest, level] = process.argv.slice(1);
+    const base = /^\d+\.\d+\.\d+$/.test(latest.trim()) ? higherVersion(current, latest.trim()) : current;
+    const [major, minor] = base.split(".").map(Number);
+    process.stdout.write(level === "major" ? `${major + 1}.0.0` : `${major}.${minor + 1}.0`);
+  ' "$CUR" "$LATEST" "$LEVEL")"
+  if [ -n "$DRY" ]; then
+    log "DRY RUN — would commit package.json and package-lock.json at $NEW (from $CUR; npm latest ${LATEST:-unknown}) as release($RELEASE_TICKET_ID): $NEW, then push HEAD to $REMOTE/$BRANCH for CI to publish and tag. Nothing mutated."
+    exit 0
   fi
+  npm version "${NEW#v}" --no-git-tag-version --ignore-scripts >/dev/null
+  git add package.json package-lock.json
+  [ -z "$(git diff --name-only)" ] ||
+    die "version bump changed files outside package.json/package-lock.json"
+  [ "$(git diff --cached --name-only | sort)" = $'package-lock.json\npackage.json' ] ||
+    die "release commit must contain exactly package.json and package-lock.json"
+  # Hooks are part of the repository's release policy and run normally; the
+  # result is re-proved after they have had their chance to act.
+  RELEASE_BASE_HEAD="$(git rev-parse HEAD)"
+  git commit -m "release($RELEASE_TICKET_ID): $NEW"
+  verify_release_commit_subject
+  [ "$(git rev-parse HEAD^)" = "$RELEASE_BASE_HEAD" ] ||
+    die "release hook changed HEAD topology; nothing was pushed"
+  [ "$(git diff-tree --no-commit-id --name-only -r HEAD | sort)" = $'package-lock.json\npackage.json' ] ||
+    die "release commit contains paths outside package.json/package-lock.json"
+  [ "$(node -p 'require("./package.json").version')" = "${NEW#v}" ] ||
+    die "release hook changed the committed version; nothing was pushed"
+  require_clean_tree
+fi
+
+if [ "$(git rev-parse HEAD)" = "$REMOTE_HEAD" ]; then
+  log "nothing to push: $REMOTE/$BRANCH is already at HEAD, and its own run publishes it (gh run list --branch $BRANCH)"
   exit 0
 fi
-
-if [ -n "$PUBLISH_CURRENT" ] || [ -n "$RESUME_PUSH" ]; then
-  npm run check:tracked-secrets
-  if [ -n "$RESUME_PUSH" ]; then
-    git push --atomic "$REMOTE" \
-      "HEAD:refs/heads/$BRANCH" \
-      "refs/tags/$TARGET:refs/tags/$TARGET"
-  fi
-  case "${REGISTRY%/}" in
-    https://registry.npmjs.org)
-      log "tag pushed; GitHub Actions OIDC workflow will publish $PACKAGE_NAME@$TARGET"
-      log "if the workflow did not publish, re-run the workflow from the GitHub Actions UI"
-      exit 0
-      ;;
-    *)
-      registry_npm publish "$TARBALL" \
-        --registry="$REGISTRY" --access public
-      PUBLISHED="$(registry_npm view \
-        "$PACKAGE_NAME@${TARGET#v}" version --registry="$REGISTRY")"
-      [ "$PUBLISHED" = "${TARGET#v}" ] || die "registry verification failed for $PACKAGE_NAME@$TARGET"
-      log "published and verified $PACKAGE_NAME@$TARGET from $TARBALL"
-      exit 0
-      ;;
-  esac
+if [ -n "$DRY" ]; then
+  log "DRY RUN — would push HEAD ($(git rev-parse --short HEAD)) to $REMOTE/$BRANCH; CI publishes and tags it. Nothing mutated."
+  exit 0
 fi
-
-NEW="$("$SCRIPTS_DIR/versioning.sh" bump "$LEVEL")"
-[ "$NEW" = "$NEXT" ] || die "unexpected version bump: expected $NEXT, got $NEW"
-# versioning.sh maintains generic manifests and creates a provisional tag. npm
-# owns package-lock structure, so regenerate it and create the final tag only
-# after the release commit exists.
-git tag -d "$NEW" >/dev/null
-npm install --package-lock-only --ignore-scripts
-npm run check:lock
-npm run check:audit:prod
-
-git add package.json package-lock.json
-[ -z "$(git diff --name-only)" ] ||
-  die "version bump changed files outside package.json/package-lock.json"
-[ "$(git diff --cached --name-only | sort)" = $'package-lock.json\npackage.json' ] ||
-  die "release commit must contain exactly package.json and package-lock.json"
-git diff --cached --check
-inspect_tarball
-preflight_publish_cli
-npm run check:tracked-secrets
-
-# Hooks are part of the repository's release policy and must run normally.
-# Capture the parent first, then re-prove the committed payload and rebuild the
-# exact tarball after all pre/post-commit hooks have had their chance to act.
-RELEASE_BASE_HEAD="$(git rev-parse HEAD)"
-git commit -m "release($RELEASE_TICKET_ID): $NEW"
-verify_release_commit_subject
-[ "$(git rev-parse HEAD^)" = "$RELEASE_BASE_HEAD" ] ||
-  die "release hook changed HEAD topology; no tag or remote ref was created"
-[ "$(git diff-tree --no-commit-id --name-only -r HEAD | sort)" = $'package-lock.json\npackage.json' ] ||
-  die "release commit contains paths outside package.json/package-lock.json"
-[ "$("$SCRIPTS_DIR/versioning.sh" current)" = "$NEW" ] ||
-  die "release hook changed the committed version; no tag or remote ref was created"
-require_clean_tree
-npm run check:lock
-npm run check:audit:prod
-inspect_tarball
-preflight_publish_cli
-npm run check:tracked-secrets
-git tag -a "$NEW" -m "$NEW" HEAD
-
-# Commit and annotated tag become remotely durable together. A concurrent main
-# update rejects this normal fast-forward push rather than overwriting it.
-git push --atomic "$REMOTE" \
-  "HEAD:refs/heads/$BRANCH" \
-  "refs/tags/$NEW:refs/tags/$NEW"
-
-case "${REGISTRY%/}" in
-  https://registry.npmjs.org)
-    log "tag pushed; GitHub Actions OIDC workflow will publish $PACKAGE_NAME@$NEW"
-    ;;
-  *)
-    registry_npm publish "$TARBALL" \
-      --registry="$REGISTRY" --access public
-    PUBLISHED="$(registry_npm view \
-      "$PACKAGE_NAME@${NEW#v}" version --registry="$REGISTRY")"
-    [ "$PUBLISHED" = "${NEW#v}" ] || die "registry verification failed for $PACKAGE_NAME@$NEW"
-    log "published and verified $PACKAGE_NAME@$NEW from $TARBALL"
-    ;;
-esac
+# A plain push: fast-forward or rejected, never forced, and no tag.
+git push "$REMOTE" "HEAD:refs/heads/$BRANCH"
+log "pushed $(git rev-parse --short HEAD) to $REMOTE/$BRANCH; CI publishes and tags it (gh run watch)"

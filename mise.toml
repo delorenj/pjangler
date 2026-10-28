@@ -98,21 +98,17 @@ run = "npm run typecheck"
 description = "Verify a bmad-method installer's write surface (PJAN-180) and print its fingerprint"
 run = 'node tests/pjan-180-surface-oracle.mjs --version {{arg(name="version")}} --print-fingerprint'
 
-# Cut a release in ONE commit: clean/remote/auth gates -> build+test -> bump ->
-# commit + annotated tag -> inspect the exact tarball -> atomically push the
-# configured main branch + tag -> publish that tarball. Level defaults to patch.
-#   mise run release            # patch
-#   mise run release minor      # or major
-#   mise run release -- --dry-run   # gates + intent only, mutates nothing
+# Hand a release to CI (PJAN-189). CI is the only publisher: every green push
+# to main bumps the patch, publishes over npm OIDC and tags the release. This
+# pushes HEAD to main (fast-forward only); minor/major first commit the version
+# bump. It never tags or publishes. The old v* tag path, and `mise run publish`
+# with it, is retired; see .mise/scripts/release.sh and publish.yml.
+#   mise run release            # push; CI ships the next patch
+#   mise run release minor      # or major: commit the bump, then push
+#   mise run release -- --dry-run   # say what would happen, mutate nothing
 [tasks.release]
-description = "Cut a release: gate, bump, commit+tag, inspect, push explicit main, publish exact tarball"
+description = "Hand a release to CI: push main (minor/major: commit the bump first); never tags or publishes"
 run = "{{config_root}}/.mise/scripts/release.sh"
-
-# Publish the CURRENT package.json version as-is (NO bump). This is a strict
-# retry path: HEAD and its annotated version tag must already be on origin/main.
-[tasks.publish]
-description = "Retry exact-tarball publication for a release commit+tag already pushed to origin/main"
-run = "{{config_root}}/.mise/scripts/release.sh --publish-current"
 
 [tasks.mcp]
 description = "Run the pjangler MCP server from the built bundle"
