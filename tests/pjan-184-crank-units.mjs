@@ -83,9 +83,16 @@ try {
       assert.match(error.message, /screen blew up on load/);
       return true;
     });
-    // a missing DEPENDENCY of an existing screen is also ERR_MODULE_NOT_FOUND: the loader reports it
-    // as the screen being unbuilt, which is the message that tells the operator to rebuild.
-    await assert.rejects(loadScreen("./crank/needs.js", base), TuiUnavailableError);
+    // a missing DEPENDENCY of an existing screen is also ERR_MODULE_NOT_FOUND: the screen is
+    // built, so since PJAN-187 the loader names the missing package and an install remedy
+    // instead of telling the operator to rebuild.
+    await assert.rejects(loadScreen("./crank/needs.js", base), (error) => {
+      assert.ok(error instanceof TuiUnavailableError);
+      assert.match(error.message, /is built but its dependencies are not installed/);
+      assert.match(error.message, /cannot find package 'no-such-package-pjan-184'/);
+      assert.doesNotMatch(error.message, /npm run build/);
+      return true;
+    });
   }
 
   console.log("projectNameFor / projectAgentsFor: registry first, then the manifest, then the slug");
