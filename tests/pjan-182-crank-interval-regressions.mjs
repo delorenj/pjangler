@@ -38,7 +38,7 @@ writeFileSync(
 const kitOut = join(workspace, "kit.mjs");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
-  [join(workspace, "kit-entry.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--jsx=automatic", `--outfile=${kitOut}`],
+  [join(workspace, "kit-entry.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--jsx=automatic", "--sourcemap=inline", `--outfile=${kitOut}`],
   { encoding: "utf8" },
 );
 if (built.status !== 0) {

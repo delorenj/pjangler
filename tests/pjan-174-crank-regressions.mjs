@@ -27,7 +27,7 @@ const esbuild = join(root, "node_modules", ".bin", "esbuild");
 const kitOut = join(workspace, "crank-kit.mjs");
 const kitBuilt = spawnSync(
   esbuild,
-  [join(root, "src", "crank", "index.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${kitOut}`],
+  [join(root, "src", "crank", "index.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--sourcemap=inline", `--outfile=${kitOut}`],
   { encoding: "utf8" },
 );
 if (kitBuilt.status !== 0) {
@@ -439,6 +439,7 @@ console.log("cli: pj crank --help lists enable/disable/list/log");
       "--banner:js=import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
       "--platform=node",
       "--format=esm",
+      "--sourcemap=inline",
       `--outfile=${join(workspace, "pj.mjs")}`,
     ],
     { encoding: "utf8" },
