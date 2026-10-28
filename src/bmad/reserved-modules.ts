@@ -23,7 +23,10 @@ export interface ReservedModuleEviction {
 }
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
-const isBlankOrComment = (line: string): boolean => /^\s*(#.*)?$/.test(line);
+// Split lines keep their line ending, and `.` never spans it while `$` matches only at end of
+// input: without the optional CRLF/LF tail a line like "  # note\n" is NOT blank-or-comment
+// (PJAN-185), which hid legacy reserved entries behind any comment inside the list.
+const isBlankOrComment = (line: string): boolean => /^\s*(#.*)?\r?\n?$/.test(line);
 
 /** True for a null / absent / empty / "unknown" scalar: no evidence the entry is a real install. */
 const isAbsent = (value: unknown, sentinels: string[] = []): boolean =>
@@ -67,7 +70,17 @@ export function stripReservedModuleEntries(raw: string): { text: string; evicted
   const items: Array<{ start: number; stop: number }> = [];
   for (let index = first; index < end; index++) {
     if (indentOf(lines[index]!) === itemIndent && /^\s*-(\s|$)/.test(lines[index]!) && !isBlankOrComment(lines[index]!)) {
-      if (items.length) items[items.length - 1]!.stop = index;
+      // Comment ownership (PJAN-185): an evicted entry takes only its own body. In the blank/comment
+      // run before the next item, lines at or left of the item indent annotate the NEXT entry, so they
+      // fall in no item's span and always survive; only deeper-indent lines are inside the previous
+      // item's body and follow it when it is evicted. Comments before the first item and after the
+      // list are likewise never dropped.
+      if (items.length) {
+        let stop = index;
+        const start = items[items.length - 1]!.start;
+        while (stop - 1 > start && isBlankOrComment(lines[stop - 1]!) && indentOf(lines[stop - 1]!) <= itemIndent) stop--;
+        items[items.length - 1]!.stop = stop;
+      }
       items.push({ start: index, stop: end });
     }
   }

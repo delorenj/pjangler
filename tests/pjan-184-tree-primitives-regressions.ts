@@ -10,6 +10,7 @@ import {
 } from "../src/utils/tree-restore";
 import { runG33Companion } from "../src/bmad/companion";
 import { evictReservedModuleEntries, isLegacyReservedModuleEntry, stripReservedModuleEntries } from "../src/bmad/reserved-modules";
+import YAML from "yaml";
 
 // PJAN-184: direct regressions for the byte-exact tree primitives (tree-diff,
 // tree-restore), the g33 adapter resolver in companion.ts and the manifest
@@ -314,6 +315,52 @@ export function companion(req){
     assert.equal(isLegacyReservedModuleEntry({ name: "bmm" }), false, "not a reserved name");
     assert.equal(isLegacyReservedModuleEntry(["custom"]), false);
     assert.equal(isLegacyReservedModuleEntry(null), false);
+
+    // PJAN-185: a comment inside the modules list used to hide legacy entries (split lines keep
+    // their line ending, which the blank/comment test never spanned), blocking the eviction that
+    // keeps the BMAD installer from deleting _bmad/custom.
+    {
+      const crlf = (text: string) => text.replace(/\n/g, "\r\n");
+      // A comment between `modules:` and the first item: the entry below it is evicted.
+      const lead = `modules:\n  # note\n${legacy}ides:\n  - claude\n`;
+      assert.deepEqual(stripReservedModuleEntries(lead)!.evicted, ["custom"]);
+      assert.equal(stripReservedModuleEntries(lead)!.text, "modules:\n  # note\nides:\n  - claude\n");
+      // A comment between items at item indent no longer ends the block early.
+      const mid = `modules:\n${real}  # note\n${legacy}`;
+      assert.deepEqual(stripReservedModuleEntries(mid)!.evicted, ["custom"]);
+      assert.equal(stripReservedModuleEntries(mid)!.text, `modules:\n${real}  # note\n`);
+      // CRLF manifests: comments recognized, and the output keeps CRLF byte for byte.
+      assert.deepEqual(stripReservedModuleEntries(crlf(lead))!.evicted, ["custom"]);
+      assert.equal(stripReservedModuleEntries(crlf(lead))!.text, crlf("modules:\n  # note\nides:\n  - claude\n"));
+      // The last line without its newline (comment or entry) is still handled.
+      assert.deepEqual(stripReservedModuleEntries(`modules:\n  # note\n${legacy.replace(/\n$/, "")}`)!.evicted, ["custom"]);
+      assert.equal(stripReservedModuleEntries(`modules:\n${legacy}# section note\n${real}`)!.text, `modules:\n# section note\n${real}`, "an unindented comment between items is kept");
+
+      // Comment ownership: a comment at or left of the item indent annotates the NEXT entry and
+      // always survives -- above a kept entry, and even above an evicted one.
+      assert.equal(stripReservedModuleEntries(`modules:\n${legacy}  # the real module\n${real}`)!.text, `modules:\n  # the real module\n${real}`);
+      assert.equal(stripReservedModuleEntries(`modules:\n${real}  # legacy junk\n${legacy}`)!.text, `modules:\n${real}  # legacy junk\n`);
+      assert.equal(stripReservedModuleEntries(`modules:\n${legacy}  # odd spot\n  - name: scripts\n    version: null\n    source: unknown\nnext: 1\n`)!.text,
+        "modules:\n  # odd spot\nnext: 1\n", "a comment between two evicted entries is kept");
+      // A comment deeper than the item indent is inside the previous item's body and follows it:
+      assert.equal(stripReservedModuleEntries(`modules:\n${legacy}    # body trailer\n${real}`)!.text, `modules:\n${real}`);
+      assert.equal(stripReservedModuleEntries(`modules:\n  - name: custom\n    # why null\n    version: null\n    source: unknown\n${real}`)!.text, `modules:\n${real}`);
+      // A bare `- custom` scalar stays an operator selection, byte for byte, comment or not.
+      assert.equal(stripReservedModuleEntries("modules:\n  # pick\n  - custom\nnext: 1\n"), undefined);
+      assert.equal(stripReservedModuleEntries(`modules:\n${legacy}  - custom\n`)!.text, "modules:\n  - custom\n");
+
+      // Parse equality: the edited manifest parses as the original minus exactly the evicted
+      // entry, every other key unchanged, comments and all.
+      const original = "installation:\n  version: 6.12.0\nmodules:\n  # lead\n" +
+        `${real}  # kept note\n${legacy}    # deep trailer\nides:\n  - claude\n`;
+      const edited = stripReservedModuleEntries(original)!;
+      assert.deepEqual(edited.evicted, ["custom"]);
+      const before = YAML.parse(original) as { installation: unknown; modules: Array<{ name: string }>; ides: unknown };
+      const after = YAML.parse(edited.text) as typeof before;
+      assert.deepEqual(after.installation, before.installation);
+      assert.deepEqual(after.ides, before.ides);
+      assert.deepEqual(after.modules, before.modules.filter((module) => module.name !== "custom"));
+    }
 
     // evictReservedModuleEntries: dry run reports without writing; a real run writes; an unreadable manifest is left alone.
     const repo = fresh("manifest"); const path = join(repo, "_bmad", "_config", "manifest.yaml");

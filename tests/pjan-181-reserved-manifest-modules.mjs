@@ -224,6 +224,28 @@ try {
   }
   checkpoint("all six BMAD-reserved names are evicted when they carry no version/source");
 
+  // 7. PJAN-185: a comment inside the modules list used to hide the legacy entry (split lines
+  //    keep their line ending, which the blank/comment test never spanned). End to end through
+  //    the bmad.version parity rule: the installer is handed the manifest minus the entry with
+  //    every comment intact, and _bmad/custom survives.
+  {
+    const head = ["installation:", "  version: 6.11.0", "modules:", "  # the core module",
+      "  - name: core", "    version: 6.11.0", "    source: built-in", "    npmPackage: null", "  # legacy entry below"];
+    const manifest = [...head, ...LEGACY_CUSTOM.replace(/\n$/, "").split("\n"), "ides:", "  - claude-code", "  - codex"].join("\n");
+    // Same manifest with only the legacy `custom` lines gone; both comments survive.
+    const expected = [...head, "ides:", "  - claude-code", "  - codex"].join("\n");
+    const { target } = project("commented-manifest", { g33: false, manifest });
+    const preview = run(target, ["migrate", "bmad.version", "--dry-run"], 0);
+    assert.match(preview.results[0].details.join("\n"), /would remove legacy manifest module "custom" \(no version or source\)/);
+    rmSync(seen, { force: true });
+    const upgraded = run(target, ["migrate", "bmad.version"], 0, recording);
+    assert.equal(upgraded.results[0].status, "applied", JSON.stringify(upgraded.results[0]));
+    assert.equal(recorded().manifest, expected, "the installer saw the manifest minus only the legacy entry, comments intact");
+    assert.equal(recorded().customExists, true);
+    customIntact(target);
+    checkpoint("a comment inside modules: no longer blocks the legacy eviction (end to end)");
+  }
+
   console.log(`PJAN-181 reserved manifest modules: ${checks} checkpoint groups passed`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
