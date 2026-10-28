@@ -136,23 +136,24 @@ export function registerCrankCli(program: Command): void {
         console.error(`${xmark} --tail needs a positive integer, got "${options.tail}"`);
         process.exit(1);
       }
-      let current: { slug: string; tab: string };
+      // The store call itself can fail (Redis gone mid-read, an error reply on the log key):
+      // that is a one-line failure here, not a stack trace or error text shown as log rows.
       try {
-        current = resolveCurrentTab();
+        const current = resolveCurrentTab();
+        const store = redis();
+        const rows = store.logRows(current.tab);
+        if (!rows.length) {
+          console.log(`  ${dim(`no crank log rows for ${current.tab}`)}`);
+          return;
+        }
+        const shown = rows.slice(-tail);
+        console.log(`  ${bold("crank log")} ${dim(glyph.dot)} ${cyan(current.tab)} ${dim(`(${shown.length}/${rows.length} rows, newest last)`)}`);
+        for (const raw of shown) {
+          console.log(renderLogRow(raw) ?? raw);
+        }
       } catch (error) {
         console.error(`${xmark} ${error instanceof Error ? error.message : String(error)}`);
         process.exit(1);
-      }
-      const store = redis();
-      const rows = store.logRows(current.tab);
-      if (!rows.length) {
-        console.log(`  ${dim(`no crank log rows for ${current.tab}`)}`);
-        return;
-      }
-      const shown = rows.slice(-tail);
-      console.log(`  ${bold("crank log")} ${dim(glyph.dot)} ${cyan(current.tab)} ${dim(`(${shown.length}/${rows.length} rows, newest last)`)}`);
-      for (const raw of shown) {
-        console.log(renderLogRow(raw) ?? raw);
       }
     });
 }

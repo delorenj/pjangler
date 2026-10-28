@@ -702,14 +702,15 @@ print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due":
       enable: () => { throw new Error("nope"); }, disable: () => {}, setInterval: () => {},
     };
     assert.equal(dead.ping(), false);
-    // first read happens in useState: the dashboard cannot start without one, so the CLI pings first;
-    // here prove the periodic re-read path degrades instead of unmounting.
+    // the first two reads succeed (runCrankDashboard's pre-read, then useState's mount read:
+    // both before the CLI would show anything, PJAN-186); here prove the periodic re-read
+    // path degrades instead of unmounting.
     let calls = 0;
     const flaky = {
       ...controller,
       read: () => {
         calls += 1;
-        if (calls > 1) throw new Error("Redis is not answering at 127.0.0.1:1");
+        if (calls > 2) throw new Error("Redis is not answering at 127.0.0.1:1");
         return createCrankController({ slug: "x", project: { name: "Solo", agents: [] }, store, live: () => [] }).read();
       },
     };

@@ -217,8 +217,12 @@ function fakeRedis() {
   const shell = (command, args) => {
     calls.push([command, ...args].join(" "));
     if (command !== "redis-cli") return { stdout: "", status: 127 };
-    const op = args[5];
-    const rest = args.slice(6);
+    // --help is the store's -e probe (PJAN-186): answer like a real redis-cli's help page.
+    if (args[0] === "--help") {
+      return { stdout: "Usage: redis-cli [OPTIONS] [cmd [arg [arg ...]]]\n  -e                 Return exit error code when command execution fails.\n", status: 0 };
+    }
+    const op = args[6];
+    const rest = args.slice(7);
     if (op === "PING") return { stdout: "PONG\n", status: 0 };
     if (op === "HGET") {
       const [key, field] = rest;
@@ -288,12 +292,13 @@ console.log("redis seam: absent key reads as undefined, not 0");
   assert.equal(store.tabEnabled("nothing"), undefined);
 }
 
-console.log("redis seam: commands go to 127.0.0.1:6379 with --raw");
+console.log("redis seam: commands go to 127.0.0.1:6379 with --raw and -e (the error-reply exit code, PJAN-186)");
 {
   const fake = fakeRedis();
   const store = redis({ shell: fake.shell });
   store.tabEnabled("x");
-  assert.match(fake.calls[0], /^redis-cli --raw -h 127\.0\.0\.1 -p 6379 HGET zcrank:tab:x enabled$/);
+  const commands = fake.calls.filter((call) => !call.endsWith("--help"));
+  assert.match(commands[0], /^redis-cli --raw -e -h 127\.0\.0\.1 -p 6379 HGET zcrank:tab:x enabled$/);
 }
 
 // ---------------------------------------------------------------------------

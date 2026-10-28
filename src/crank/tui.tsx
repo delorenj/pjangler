@@ -199,5 +199,10 @@ export function CrankDashboard({ controller, refreshMs = 5000, clock = Date.now,
 /** Run the dashboard full-screen until the operator quits. */
 export async function runCrankDashboard(controller: CrankController, run: RunInkOptions & { refreshMs?: number } = {}): Promise<void> {
   const { refreshMs, ...ink } = run;
+  // Read once BEFORE taking over the terminal: a store that throws on first read (Redis
+  // gone, an error reply on a key) must come out as the CLI's one-line ✖, not as an Ink
+  // crash frame with a code excerpt (PJAN-186). Once open, refresh()/act() show the same
+  // error inline instead.
+  controller.read();
   await runInk<void>((finish) => <CrankDashboard controller={controller} refreshMs={refreshMs} onQuit={() => finish()} />, { alternateScreen: true, ...ink });
 }

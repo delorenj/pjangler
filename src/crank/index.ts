@@ -55,12 +55,12 @@ export const ZCRANK_LOG_CAP = 500;
 const TAB_STATUS_SUFFIX = /[\s🟢🟡🔴🔔⚫✳✻●·─]+$/u;
 
 /** Command runner seam: tests substitute this to fake redis-cli/zellij. */
-export type Shell = (command: string, args: string[]) => { stdout: string; status: number };
+export type Shell = (command: string, args: string[]) => { stdout: string; status: number; stderr?: string };
 
 export const defaultShell: Shell = (command, args) => {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 10_000 });
   if (result.error) return { stdout: "", status: 127 };
-  return { stdout: result.stdout ?? "", status: result.status ?? 1 };
+  return { stdout: result.stdout ?? "", status: result.status ?? 1, stderr: result.stderr ?? "" };
 };
 
 /** Strip a live tab name's status suffix (same rule as zcrankctl). */
@@ -219,12 +219,44 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
   const endpoint = redisEndpoint();
   const host = deps.host ?? endpoint.host;
   const port = deps.port ?? endpoint.port;
-  const call = (args: string[]) => shell("redis-cli", ["--raw", "-h", host, "-p", String(port), ...args]);
+  // -e (redis-tools >= 6.2; CI's apt redis-cli 7.0.15 and the dev box's 8.0.2 both have it)
+  // moves a Redis error reply from stdout to stderr and exits non-zero. Without it redis-cli
+  // exits 0 on WRONGTYPE/ERR replies, so the error text posed as a value and a failed write
+  // read as success (PJAN-186). The exit code — never stdout sniffing — tells a value from an
+  // error reply: a stored "WRONGTYPE ..." or "ERR no such key" string still reads back as itself.
+  const call = (args: string[]) => shell("redis-cli", ["--raw", "-e", "-h", host, "-p", String(port), ...args]);
+  // Fail loudly when the installed redis-cli proves (via its own --help) too old for -e,
+  // instead of silently regressing to errors-as-values. An unreadable help page (a fake in
+  // tests, an odd PATH) stays permissive: the call goes out with -e and its own failure names it.
+  let errorExitSupport: "unprobed" | "yes" | "no" | "unknown" = "unprobed";
+  const requireErrorExit = (): void => {
+    if (errorExitSupport === "unprobed") {
+      const help = shell("redis-cli", ["--help"]);
+      errorExitSupport = help.status === 0 && /^usage: redis-cli/im.test(help.stdout)
+        ? (/(^|\n)\s+-e\s/.test(help.stdout) ? "yes" : "no")
+        : "unknown";
+    }
+    if (errorExitSupport === "no") {
+      throw new Error(
+        `redis-cli is too old for the crank store at ${host}:${port}: no -e flag (needs redis-tools >= 6.2) to fail on Redis error replies — upgrade redis-tools`,
+      );
+    }
+  };
+  // redis-cli's own failures (never a reply): connection refused ("Could not connect to Redis
+  // at ..."), a dropped connection ("Error: ..."), a missing binary or a killed timeout (no
+  // stderr at all). Anything else on stderr is the server's error reply, verbatim.
+  const notAnswering = (stderr: string): boolean =>
+    !stderr || stderr.startsWith("Could not connect to Redis at") || stderr.startsWith("Error: ");
   // A failed redis-cli (Redis gone, error reply) throws: a write that did not land must never read
   // as success, and a dead read must not pose as "no keys / absent" (PJAN-182 review).
   const run = (...args: string[]): string => {
+    requireErrorExit();
     const result = call(args);
-    if (result.status !== 0) throw new Error(`Redis is not answering at ${host}:${port} (${args[0]} failed)`);
+    if (result.status !== 0) {
+      const stderr = (result.stderr ?? "").trim();
+      if (notAnswering(stderr)) throw new Error(`Redis is not answering at ${host}:${port} (${args[0]} failed)`);
+      throw new Error(`Redis error reply at ${host}:${port}: ${stderr.split("\n")[0]} (${args.join(" ")})`);
+    }
     return result.stdout.replace(/\r?\n$/, "");
   };
   const lines = (out: string): string[] => out.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
@@ -233,6 +265,7 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
     endpoint: `${host}:${port}`,
     /** PING -> true only when Redis answers PONG. */
     ping: (): boolean => {
+      requireErrorExit();
       const result = call(["PING"]);
       return result.status === 0 && result.stdout.replace(/\r?\n$/, "") === "PONG";
     },
