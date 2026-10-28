@@ -25,7 +25,15 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, test } from "node:test";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseTomlRaw } from "smol-toml";
+
+// smol-toml >= 1.9 returns null-prototype tables (prototype-pollution fix);
+// strict deepEqual against plain literals needs ordinary objects back.
+const plain = (value) => Array.isArray(value) ? value.map(plain)
+  : value !== null && typeof value === "object" && Object.getPrototypeOf(value) === null
+    ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, plain(inner)]))
+    : value;
+const parseToml = (text) => plain(parseTomlRaw(text));
 
 const root = resolve(import.meta.dirname, "..");
 const work = mkdtempSync("/tmp/pjan135-rewrite-");

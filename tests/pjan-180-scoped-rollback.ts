@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { backupToSnapshot, captureTreeBackup } from "../src/utils/tree-restore";
@@ -173,7 +173,9 @@ try {
     mkdirSync(join(dir, ".claude"));
     symlinkSync("../tooling/claude-skills", join(dir, ".claude", "skills"));
     assert.ok(derive(dir).installerRoots.includes("tooling/claude-skills"), "an in-repo link adds its target as an A root");
-    rmSync(join(dir, ".claude", "skills"));
+    // unlink, not rmSync: Node 24.6 (the release runtime) follows a symlink to a
+    // directory in rmSync and throws EISDIR.
+    unlinkSync(join(dir, ".claude", "skills"));
     mkdirSync(join(scratch, "outside-skills"), { recursive: true });
     symlinkSync(join(scratch, "outside-skills"), join(dir, ".claude", "skills"));
     assert.equal(derive(dir).reason, ".claude/skills resolves outside the repo via .claude/skills");
