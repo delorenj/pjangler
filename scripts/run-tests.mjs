@@ -94,6 +94,7 @@ const SUITES = [
   "tests/pjan-179-g33-preupdate-gap.mjs",
   "tests/pjan-180-scoped-rollback.mjs",
   "tests/pjan-181-reserved-manifest-modules.mjs",
+  "tests/pjan-184-tree-primitives-regressions.mjs",
   "tests/pjan-57-dogfood-regressions.mjs",
   "tests/generated-project-lifecycle-regressions.mjs",
   "tests/pjan-23-regressions.mjs",
