@@ -142,6 +142,8 @@ const SUITES = [
   "tests/pjan-144-journal-notebook-service.mjs",
   "tests/pjan-174-crank-regressions.mjs",
   "tests/pjan-182-crank-interval-regressions.mjs",
+  "tests/pjan-184-crank-cli.mjs",
+  "tests/pjan-184-crank-units.mjs",
 ];
 
 const args = process.argv.slice(2);
