@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import YAML from "yaml";
 import { createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
@@ -25,7 +25,7 @@ function run(args, cwd = root) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: process.env,
+    env: suiteEnv,
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.status !== 0) {
@@ -35,13 +35,13 @@ function run(args, cwd = root) {
 }
 
 function git(cwd, args) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: suiteEnv });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed in ${cwd}:\n${result.stderr}`);
   return result.stdout.trim();
 }
 
 function copier(command, cwd) {
-  const result = spawnSync(command[0], command.slice(1), { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+  const result = spawnSync(command[0], command.slice(1), { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, env: suiteEnv });
   if (result.status !== 0) {
     throw new Error(`copier failed (${result.status}):\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
@@ -52,16 +52,19 @@ function answersCommit(target) {
   return YAML.parse(readFileSync(join(target, ".copier-answers.yml"), "utf8"))._commit;
 }
 
-const tmp = mkdtempSync(join(tmpdir(), "pjan-49-"));
-process.env.HOME = join(tmp, "home");
-mkdirSync(process.env.HOME);
+const tmp = hermeticScratch("pjan-49-");
+mkdirSync(join(tmp, "home"));
 const skillRegistry = join(tmp, "registry");
 createSkillPackFixture(skillRegistry);
-process.env.SKILLEX_REGISTRY_ROOT = skillRegistry;
-process.env.PJ_SKILLS_REGISTRY_ROOT = skillRegistry;
-process.env.XDG_STATE_HOME = join(tmp, "state");
-process.env.PATH = `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`;
-process.env.MISE_YES = "1";
+// Every child (pj, git, copier) runs in this one fixture env.
+const suiteEnv = hermeticEnv({
+  HOME: join(tmp, "home"),
+  SKILLEX_REGISTRY_ROOT: skillRegistry,
+  PJ_SKILLS_REGISTRY_ROOT: skillRegistry,
+  XDG_STATE_HOME: join(tmp, "state"),
+  PATH: `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`,
+  MISE_YES: "1",
+});
 try {
   // --- the flag is on the command pjangler actually executes ---
   const planned = JSON.parse(run([
@@ -177,6 +180,7 @@ try {
   const taggedExactly = spawnSync("git", ["describe", "--tags", "--exact-match", "HEAD"], {
     cwd: repoRootTemplate,
     encoding: "utf8",
+    env: suiteEnv,
   }).status === 0;
   if (taggedExactly) {
     console.log("pjan-49 regressions: control skipped (template HEAD is itself the newest tag)");

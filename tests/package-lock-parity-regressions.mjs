@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import {
   cpSync,
   mkdtempSync,
@@ -23,6 +24,7 @@ const writeJson = (path, value) => {
 const runChecker = () => spawnSync(process.execPath, [fixtureChecker], {
   cwd: temp,
   encoding: "utf8",
+  env: hermeticEnv(),
 });
 
 try {

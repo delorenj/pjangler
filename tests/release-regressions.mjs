@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import {
   chmodSync,
   cpSync,
@@ -446,7 +447,7 @@ try {
   writeFileSync(join(temp, "package.json"), '{"name":"fixture","version":"1.0.0"}\n');
 
   const git = (args) => {
-    const result = spawnSync("git", args, { cwd: temp, encoding: "utf8" });
+    const result = spawnSync("git", args, { cwd: temp, encoding: "utf8", env: hermeticEnv() });
     assert.equal(result.status, 0, result.stderr);
   };
   git(["init", "-q"]);
@@ -464,21 +465,21 @@ try {
   const derivedTicket = spawnSync(ticketHarness, [], {
     cwd: temp,
     encoding: "utf8",
-    env: { ...process.env, RELEASE_TICKET: "" },
+    env: hermeticEnv({ RELEASE_TICKET: "" }),
   });
   assert.equal(derivedTicket.status, 0, derivedTicket.stderr);
   assert.equal(derivedTicket.stdout.trim(), "PJAN-86");
   const explicitTicket = spawnSync(ticketHarness, [], {
     cwd: temp,
     encoding: "utf8",
-    env: { ...process.env, RELEASE_TICKET: "PJAN-99" },
+    env: hermeticEnv({ RELEASE_TICKET: "PJAN-99" }),
   });
   assert.equal(explicitTicket.status, 0, explicitTicket.stderr);
   assert.equal(explicitTicket.stdout.trim(), "PJAN-99");
   const invalidTicket = spawnSync(ticketHarness, [], {
     cwd: temp,
     encoding: "utf8",
-    env: { ...process.env, RELEASE_TICKET: "pjan-86 extra" },
+    env: hermeticEnv({ RELEASE_TICKET: "pjan-86 extra" }),
   });
   assert.notEqual(invalidTicket.status, 0);
   assert.match(invalidTicket.stderr, /release ticket is missing or invalid/);
@@ -502,15 +503,15 @@ try {
     `#!/usr/bin/env bash\nset -euo pipefail\nRELEASE_TICKET_ID=PJAN-86\nNEW=v1.0.1\n${releaseCommit}\n`,
   );
   chmodSync(commitHarness, 0o755);
-  const beforeRejectedCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim();
+  const beforeRejectedCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8", env: hermeticEnv() }).stdout.trim();
   const rejectedCommit = spawnSync(commitHarness, [], {
     cwd: temp,
     encoding: "utf8",
-    env: { ...process.env, PJAN86_HOOK_SENTINEL: hookSentinel },
+    env: hermeticEnv({ PJAN86_HOOK_SENTINEL: hookSentinel }),
   });
   assert.notEqual(rejectedCommit.status, 0, "configured pre-commit hook must block the release commit");
   assert.equal(readFileSync(hookSentinel, "utf8"), "ran\n");
-  assert.equal(spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim(), beforeRejectedCommit);
+  assert.equal(spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8", env: hermeticEnv() }).stdout.trim(), beforeRejectedCommit);
   git(["restore", "--staged", "package.json"]);
   git(["restore", "package.json"]);
   git(["config", "--unset", "core.hooksPath"]);
@@ -541,21 +542,20 @@ try {
     `#!/usr/bin/env bash\nset -euo pipefail\ndie() { printf '%s\\n' "$1" >&2; exit 1; }\n${subjectVerifier}\nRELEASE_TICKET_ID=PJAN-86\nNEW=v1.0.1\n${releaseCommit}\nverify_release_commit_subject\n: > "$PJAN86_TAG_BOUNDARY"\ngit tag -a "$NEW" -m "$NEW" HEAD\n: > "$PJAN86_PUSH_BOUNDARY"\ngit push origin HEAD\n`,
   );
   chmodSync(rewriteHarness, 0o755);
-  const beforeRewrittenCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim();
+  const beforeRewrittenCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8", env: hermeticEnv() }).stdout.trim();
   const rewrittenCommit = spawnSync(rewriteHarness, [], {
     cwd: temp,
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: hermeticEnv({
       PJAN86_TAG_BOUNDARY: tagBoundary,
       PJAN86_PUSH_BOUNDARY: pushBoundary,
-    },
+    }),
   });
   assert.notEqual(rewrittenCommit.status, 0, "a successful subject-rewriting hook must still abort release");
   assert.match(rewrittenCommit.stderr, /release hook changed the commit subject/);
-  assert.notEqual(spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8" }).stdout.trim(), beforeRewrittenCommit, "the hook-modified commit itself should succeed before verification rejects it");
-  assert.equal(spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: temp, encoding: "utf8" }).stdout.trim(), "release(PJAN-86): v1.0.1 rewritten-by-hook");
-  assert.equal(spawnSync("git", ["tag", "--list", "v1.0.1"], { cwd: temp, encoding: "utf8" }).stdout.trim(), "");
+  assert.notEqual(spawnSync("git", ["rev-parse", "HEAD"], { cwd: temp, encoding: "utf8", env: hermeticEnv() }).stdout.trim(), beforeRewrittenCommit, "the hook-modified commit itself should succeed before verification rejects it");
+  assert.equal(spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: temp, encoding: "utf8", env: hermeticEnv() }).stdout.trim(), "release(PJAN-86): v1.0.1 rewritten-by-hook");
+  assert.equal(spawnSync("git", ["tag", "--list", "v1.0.1"], { cwd: temp, encoding: "utf8", env: hermeticEnv() }).stdout.trim(), "");
   assert.equal(existsSync(tagBoundary), false, "subject mismatch must abort before tag creation");
   assert.equal(existsSync(pushBoundary), false, "subject mismatch must abort before push");
   git(["config", "--unset", "core.hooksPath"]);
@@ -579,15 +579,14 @@ try {
   const dirtyResult = spawnSync(copiedRelease, ["--dry-run"], {
     cwd: temp,
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: hermeticEnv({
       PATH: `${fakeBin}${delimiter}${process.env.PATH}`,
-    },
+    }),
   });
   assert.notEqual(dirtyResult.status, 0);
   assert.match(dirtyResult.stderr, /working tree must be clean/);
   assert.equal(
-    spawnSync("test", ["-e", npmSentinel]).status,
+    spawnSync("test", ["-e", npmSentinel], { env: hermeticEnv() }).status,
     1,
     "dirty-tree rejection must happen before npm is called",
   );

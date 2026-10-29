@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./hermetic-env.mjs";
 
 function runGit(cwd, args, options = {}) {
   const result = spawnSync("git", args, {
@@ -8,6 +9,7 @@ function runGit(cwd, args, options = {}) {
     encoding: options.encoding ?? "utf8",
     maxBuffer: 64 * 1024 * 1024,
     ...options,
+    env: hermeticEnv(options.env),
   });
   if (result.status !== 0) {
     const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr;
@@ -50,6 +52,7 @@ export function materializeGitCommit(repositoryRoot, commit, destination) {
     input: archive,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    env: hermeticEnv(),
   });
   if (extract.status !== 0) {
     throw new Error(`failed to extract ${commit} into ${destination}: ${extract.stderr || extract.error?.message || `exit ${extract.status}`}`);

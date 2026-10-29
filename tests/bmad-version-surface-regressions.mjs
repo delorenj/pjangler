@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const retiredVersion = ["6", "10", "2"].join(".");
@@ -16,6 +17,7 @@ function trackedFiles(repository) {
   const result = spawnSync("git", ["ls-files", "-z"], {
     cwd: repository,
     encoding: "buffer",
+    env: hermeticEnv(),
   });
   assert.equal(result.status, 0, result.stderr.toString("utf8"));
   return result.stdout.toString("utf8").split("\0").filter(Boolean);

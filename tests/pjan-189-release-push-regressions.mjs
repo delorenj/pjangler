@@ -30,6 +30,7 @@
 //      only, and one npm-publish section across every ref.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -58,7 +59,9 @@ function test(name, fn) {
 
 const emptyXdg = join(dir, "xdg-empty");
 mkdirSync(emptyXdg);
-const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_") && !key.startsWith("npm_")));
+// The allowlist copies no GIT_* (a hook's GIT_DIR) and no npm_* (what `npm
+// test` injects) from the operator, so neither needs filtering here.
+const GIT_ENV = hermeticEnv();
 Object.assign(GIT_ENV, {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
@@ -80,7 +83,7 @@ function git(cwd, ...args) {
 }
 const gitOk = (cwd, ...args) => spawnSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" }).status === 0;
 
-const realNpm = spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).stdout.trim();
+const realNpm = spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8", env: hermeticEnv() }).stdout.trim();
 assert.ok(realNpm, "npm must be on PATH: `npm version` runs for real here");
 
 // The registry is the one thing faked: `npm view` answers from FAKE_NPM_LATEST

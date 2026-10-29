@@ -28,6 +28,7 @@
 // to run against real Git, is tests/pjan-189-release-push-regressions.mjs now.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -285,8 +286,7 @@ function cli({ args = [], env = {} } = {}) {
   rmSync(OUTPUT, { force: true });
   const run = spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: hermeticEnv({
       PATH: `${bin}${delimiter}${process.env.PATH}`,
       RELEASE_ROOT: pkgRoot,
       GITHUB_OUTPUT: OUTPUT,
@@ -297,7 +297,7 @@ function cli({ args = [], env = {} } = {}) {
       FAKE_NPM_LATEST: "",
       FAKE_NPM_GITHEADS: "",
       ...env,
-    },
+    }),
   });
   const calls = existsSync(LOG) ? readFileSync(LOG, "utf8").trim().split("\n") : [];
   const output = existsSync(OUTPUT) ? readFileSync(OUTPUT, "utf8") : null;
@@ -425,9 +425,10 @@ test("CLI: an unreadable gitHead list reads as 'nothing from here' and is report
 // ---- 3. the CLI in real Git repositories, with only npm faked ---------------
 
 // Hermetic git: no user or system config (and so none of the host's global
-// hooks), no inherited GIT_DIR from a hook that happens to run this suite, a
-// fixed identity for the fixture commits and tags, and never a prompt.
-const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+// hooks), no inherited GIT_DIR from a hook that happens to run this suite (the
+// allowlist copies no GIT_* at all), a fixed identity for the fixture commits
+// and tags, and never a prompt.
+const GIT_ENV = hermeticEnv();
 // TMPDIR can sit inside another work tree on the operator's machine, so
 // discovery stops at this suite's scratch root, and git reads its excludes and
 // attributes from an empty XDG_CONFIG_HOME rather than the operator's.

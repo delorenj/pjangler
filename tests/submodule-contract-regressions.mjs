@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CHECKER = join(ROOT, "scripts", "check-submodule-contract.mjs");
@@ -14,7 +15,7 @@ function run(command, args, cwd, options = {}) {
   return spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: options.env ?? process.env,
+    env: options.env ?? hermeticEnv(),
     maxBuffer: 64 * 1024 * 1024,
   });
 }
@@ -35,12 +36,11 @@ function standaloneBareSnapshot(source, bare) {
   configureFixtureIdentity(bare);
   const tree = git(source, ["rev-parse", "HEAD^{tree}"]);
   const objects = git(source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]);
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     GIT_ALTERNATE_OBJECT_DIRECTORIES: objects,
     GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
     GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
-  };
+  });
   const pin = git(bare, ["commit-tree", tree, "-m", "standalone tree snapshot"], { env });
   git(bare, ["update-ref", "refs/heads/main", pin], { env });
   git(bare, ["repack", "-a", "-d", "--quiet"], { env });

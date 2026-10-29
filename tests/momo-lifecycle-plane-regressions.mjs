@@ -3,12 +3,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 
 function run(args, cwd = root) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8" });
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: hermeticEnv() });
   if (result.status !== 0) {
     throw new Error(`command failed: node ${cli} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
@@ -16,7 +17,7 @@ function run(args, cwd = root) {
 }
 
 function runAllowFailure(args, cwd = root) {
-  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8" });
+  const result = spawnSync("node", [cli, ...args], { cwd, encoding: "utf8", env: hermeticEnv() });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 

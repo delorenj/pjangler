@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const gate = join(root, "scripts", "check-tracked-secrets.mjs");
@@ -12,7 +13,7 @@ function run(command, args, cwd, options = {}) {
   return spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: options.env ?? process.env,
+    env: options.env ?? hermeticEnv(),
     input: options.input,
   });
 }
@@ -39,7 +40,7 @@ function track(repo, path, content) {
   assert.equal(add.status, 0, add.stderr);
 }
 
-function check(repo, env = process.env) {
+function check(repo, env = hermeticEnv()) {
   return run(process.execPath, [gate], repo, { env });
 }
 
@@ -219,10 +220,9 @@ try {
   {
     const notARepo = mkdtempSync(join(tmpdir(), "pjangler-secret-gate-no-git-"));
     repos.push(notARepo);
-    const result = check(notARepo, {
-      ...process.env,
+    const result = check(notARepo, hermeticEnv({
       GIT_CEILING_DIRECTORIES: dirname(notARepo),
-    });
+    }));
     assert.equal(result.status, 2, "Git enumeration failure must return status 2");
     assert.match(result.stderr, /unable to enumerate the Git index/);
     assert.doesNotMatch(result.stderr, /fatal:/i, "raw Git diagnostics must remain suppressed");
@@ -301,7 +301,7 @@ try {
       ].join("\n"),
     );
 
-    const result = check(repo, { ...process.env, NODE_AUTH_TOKEN: "synthetic-fixture-value" });
+    const result = check(repo, hermeticEnv({ NODE_AUTH_TOKEN: "synthetic-fixture-value" }));
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /tracked-secret gate: PASS/);
   }

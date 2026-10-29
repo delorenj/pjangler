@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -10,13 +11,13 @@ const temporary = mkdtempSync(join(tmpdir(), "pjan-126-gitignore-"));
 const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
 
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: hermeticEnv() });
   assert.equal(result.status, 0, `${command} ${args.join(" ")} failed\n${result.stdout}\n${result.stderr}`);
   return result;
 }
 
 function runJson(args) {
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, encoding: "utf8", env: hermeticEnv() });
   assert.ok(result.stdout.trim(), `${args.join(" ")} produced no JSON\n${result.stderr}`);
   return JSON.parse(result.stdout);
 }
