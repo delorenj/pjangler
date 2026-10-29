@@ -19,6 +19,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,7 +36,7 @@ const rs = await startThrowawayRedis();
 let failed;
 
 /** Absolute path of a binary on the real PATH. */
-const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8", env: hermeticEnv() }).stdout.trim();
 
 try {
   // --- two PATHs: no zellij, and a zellij that prints $FAKE_ZELLIJ_TABS ---------------------
@@ -83,18 +84,16 @@ ${extra || "      {}"}
   const brokenRegistry = join(workspace, "broken.yaml");
   writeFileSync(brokenRegistry, "schema_version: 99\nprojects: {}\n");
 
-  const baseEnv = (path) => ({
+  // hermeticEnv pins TMPDIR and passes NODE_V8_COVERAGE (c8) itself.
+  const baseEnv = (path) => hermeticEnv({
     PATH: path,
     HOME: workspace,
-    TMPDIR: process.env.TMPDIR ?? tmpdir(),
     GIT_CEILING_DIRECTORIES: workspace,
     NO_COLOR: "1",
     ZCRANK_REDIS_HOST: "127.0.0.1",
     ZCRANK_REDIS_PORT: String(rs.port),
     PJ_PROJECT_REGISTRY: registry,
     FAKE_ZELLIJ_TABS: tabsFile,
-    // coverage: c8 hands children NODE_V8_COVERAGE; an explicit env must pass it on
-    ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
   });
   const run = (args, { cwd = alpha, path = noZellij, env = {} } = {}) =>
     spawnSync(process.execPath, [pj, ...args], { cwd, encoding: "utf8", timeout: 30_000, env: { ...baseEnv(path), ...env } });
@@ -276,7 +275,7 @@ ${extra || "      {}"}
         socket.once("data", (data) => (/PING/i.test(data.toString()) ? socket.end("+PONG\\r\\n") : socket.destroy()));
       });
       server.listen(0, "127.0.0.1", () => console.log(server.address().port));
-    `], { stdio: ["ignore", "pipe", "inherit"] });
+    `], { stdio: ["ignore", "pipe", "inherit"], env: hermeticEnv() });
     const port = await new Promise((resolve) => flaky.stdout.once("data", (d) => resolve(Number(d.toString().trim()))));
     const env = { ZCRANK_REDIS_PORT: String(port) };
     try {

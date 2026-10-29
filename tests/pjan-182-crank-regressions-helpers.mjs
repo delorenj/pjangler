@@ -2,6 +2,7 @@
 // Ink-compatible fake terminal streams. Kept out of the suite so the suite reads as claims.
 
 import { spawn } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { Writable } from "node:stream";
@@ -24,10 +25,11 @@ export async function startThrowawayRedis() {
   if (port === 6379) throw new Error("refusing to use the live crank Redis port");
   const child = spawn("redis-server", ["--port", String(port), "--bind", "127.0.0.1", "--save", "", "--appendonly", "no"], {
     stdio: "ignore",
+    env: hermeticEnv(),
   });
   const exited = new Promise((resolve) => child.once("exit", resolve));
   const { spawnSync } = await import("node:child_process");
-  const ping = () => spawnSync("redis-cli", ["-h", "127.0.0.1", "-p", String(port), "PING"], { encoding: "utf8" }).stdout.trim();
+  const ping = () => spawnSync("redis-cli", ["-h", "127.0.0.1", "-p", String(port), "PING"], { encoding: "utf8", env: hermeticEnv() }).stdout.trim();
   for (let i = 0; i < 100; i++) {
     if (ping() === "PONG") break;
     await new Promise((r) => setTimeout(r, 50));
@@ -38,7 +40,7 @@ export async function startThrowawayRedis() {
   }
   return {
     port,
-    cli: (...args) => spawnSync("redis-cli", ["--raw", "-h", "127.0.0.1", "-p", String(port), ...args], { encoding: "utf8" }).stdout.replace(/\r?\n$/, ""),
+    cli: (...args) => spawnSync("redis-cli", ["--raw", "-h", "127.0.0.1", "-p", String(port), ...args], { encoding: "utf8", env: hermeticEnv() }).stdout.replace(/\r?\n$/, ""),
     async stop() {
       child.kill("SIGTERM");
       await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);

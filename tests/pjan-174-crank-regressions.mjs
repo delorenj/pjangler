@@ -23,12 +23,13 @@ symlinkSync(join(root, "node_modules"), join(workspace, "node_modules"), "dir");
 
 // The crank kit bundles cleanly without the commander CLI.
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 const esbuild = join(root, "node_modules", ".bin", "esbuild");
 const kitOut = join(workspace, "crank-kit.mjs");
 const kitBuilt = spawnSync(
   esbuild,
   [join(root, "src", "crank", "index.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--sourcemap=inline", `--outfile=${kitOut}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (kitBuilt.status !== 0) {
   console.error(`failed to bundle the crank kit:\n${kitBuilt.stderr}`);
@@ -447,20 +448,20 @@ console.log("cli: pj crank --help lists enable/disable/list/log");
       "--sourcemap=inline",
       `--outfile=${join(workspace, "pj.mjs")}`,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: hermeticEnv() },
   );
   if (built.status !== 0) {
     console.error(`failed to bundle the CLI:\n${built.stderr}`);
     process.exit(1);
   }
-  const help = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "--help"], { encoding: "utf8" });
+  const help = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "--help"], { encoding: "utf8", env: hermeticEnv() });
   assert.equal(help.status, 0, help.stderr);
   for (const word of ["enable", "disable", "list", "log"]) {
     assert.ok(help.stdout.includes(word), `crank --help must mention ${word}`);
   }
-  const badTail = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "log", "--tail", "zero"], { encoding: "utf8", cwd: workspace });
+  const badTail = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "log", "--tail", "zero"], { encoding: "utf8", cwd: workspace, env: hermeticEnv() });
   assert.notEqual(badTail.status, 0, "--tail zero must be refused");
-  const outside = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "enable"], { encoding: "utf8", cwd: workspace });
+  const outside = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "enable"], { encoding: "utf8", cwd: workspace, env: hermeticEnv() });
   assert.notEqual(outside.status, 0, "crank enable outside a project must fail");
   assert.match(outside.stderr, /not inside a pjangler project/);
 }

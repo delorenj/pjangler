@@ -19,6 +19,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -42,7 +43,7 @@ const kitOut = join(workspace, "kit.mjs");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
   [join(workspace, "entry.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--sourcemap=inline", `--outfile=${kitOut}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (built.status !== 0) {
   console.error(`failed to bundle the loadScreen kit:\n${built.stderr}`);
@@ -163,7 +164,7 @@ try {
     assert.ok(existsSync(join(install, "node_modules", "commander")), "the entry's own deps are present");
 
     // A PATH with what the crank path shells out to (redis-cli; no zellij: the degrade path).
-    const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+    const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8", env: hermeticEnv() }).stdout.trim();
     const bin = join(workspace, "bin");
     mkdirSync(bin, { recursive: true });
     for (const tool of ["env", "timeout", "redis-cli"]) symlinkSync(which(tool), join(bin, tool));
@@ -176,18 +177,16 @@ try {
     const r = runOnPty({
       argv: [process.execPath, join(install, "dist", "index.js"), "crank", "tui"],
       cwd: project,
-      env: {
+      env: hermeticEnv({
         PATH: bin,
         HOME: workspace,
-        TMPDIR: process.env.TMPDIR ?? tmpdir(),
         GIT_CEILING_DIRECTORIES: workspace,
         NO_COLOR: "1",
         TERM: "xterm-256color",
         ZCRANK_REDIS_HOST: "127.0.0.1",
         ZCRANK_REDIS_PORT: String(rs.port),
         PJ_PROJECT_REGISTRY: join(workspace, "absent-registry.yaml"),
-        ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
-      },
+      }),
       steps: [{ wait: "dependencies are not installed" }],
     });
     assert.equal(r.timedOut, false, r.output);

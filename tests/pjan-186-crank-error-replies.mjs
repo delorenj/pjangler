@@ -19,6 +19,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -41,7 +42,7 @@ const kitOut = join(workspace, "kit.mjs");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
   [join(workspace, "entry.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--sourcemap=inline", `--outfile=${kitOut}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (built.status !== 0) {
   console.error(`failed to bundle the units kit:\n${built.stderr}`);
@@ -174,7 +175,7 @@ try {
   // End to end: the built CLI turns a store error into one ✖ line and exit 1
   // -------------------------------------------------------------------------
 
-  const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+  const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8", env: hermeticEnv() }).stdout.trim();
   const bin = join(workspace, "bin");
   mkdirSync(bin, { recursive: true });
   for (const tool of ["env", "timeout", "redis-cli", "cat"]) symlinkSync(which(tool), join(bin, tool));
@@ -183,17 +184,16 @@ try {
   writeFileSync(join(alpha, ".project.json"), JSON.stringify({ project_id: "alpha", project_name: "Alpha Project" }));
   const registry = join(workspace, "registry.yaml");
   writeFileSync(registry, `schema_version: 1\nprojects:\n  alpha:\n    name: Alpha Project\n    slug: alpha\n    repo_path: ${alpha}\n    source_artifacts: []\n    ticket_provider: {}\n    agents: {}\n`);
-  const baseEnv = {
+  // hermeticEnv pins TMPDIR and passes NODE_V8_COVERAGE (c8) itself.
+  const baseEnv = hermeticEnv({
     PATH: bin,
     HOME: workspace,
-    TMPDIR: process.env.TMPDIR ?? tmpdir(),
     GIT_CEILING_DIRECTORIES: workspace,
     NO_COLOR: "1",
     ZCRANK_REDIS_HOST: "127.0.0.1",
     ZCRANK_REDIS_PORT: String(rs.port),
     PJ_PROJECT_REGISTRY: registry,
-    ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
-  };
+  });
   const run = (args, env = {}) =>
     spawnSync(process.execPath, [pj, ...args], { cwd: alpha, encoding: "utf8", timeout: 30_000, env: { ...baseEnv, ...env } });
   const TAB = "zcrank:tab:Alpha Project";

@@ -10,6 +10,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -32,7 +33,7 @@ const kitOut = join(workspace, "kit.mjs");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
   [join(workspace, "entry.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--sourcemap=inline", `--outfile=${kitOut}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (built.status !== 0) {
   console.error(`failed to bundle the units kit:\n${built.stderr}`);

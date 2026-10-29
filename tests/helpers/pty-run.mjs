@@ -35,6 +35,7 @@
 //     own timeout) takes the group down with it.
 
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./hermetic-env.mjs";
 
 const DRIVER = `
 import fcntl, json, os, pty, re, select, signal, struct, sys, termios, time
@@ -178,7 +179,8 @@ print(json.dumps({"status": status, "output": text(), "timedOut": timed_out, "re
 
 export function runOnPty({ argv, cwd, env, steps, timeoutMs = 20_000, settleMs = 5_000 }) {
   const spec = JSON.stringify({ argv, cwd, env, steps, timeout: timeoutMs / 1000, settle: settleMs / 1000 });
-  const result = spawnSync("python3", ["-I", "-c", DRIVER, spec], { encoding: "utf8", timeout: timeoutMs + settleMs + 10_000 });
+  // The driver gets the allowlisted env; the child on the PTY gets exactly `env`.
+  const result = spawnSync("python3", ["-I", "-c", DRIVER, spec], { encoding: "utf8", timeout: timeoutMs + settleMs + 10_000, env: hermeticEnv() });
   if (result.status !== 0) {
     throw new Error(`pty driver failed (status ${result.status}, signal ${result.signal}${result.error ? `, ${result.error.message}` : ""}): ${result.stderr}`);
   }

@@ -15,6 +15,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -39,7 +40,7 @@ const kitOut = join(workspace, "kit.mjs");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
   [join(workspace, "kit-entry.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", "--jsx=automatic", "--sourcemap=inline", `--outfile=${kitOut}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (built.status !== 0) {
   console.error(`failed to bundle the crank kit:\n${built.stderr}`);
@@ -425,7 +426,7 @@ print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due":
         if (c.global) rs.cli("HSET", "zcrank:config", "interval", c.global);
         const py = spawnSync("python3", ["-I", "-c", probe, engine, c.tab, String(nowMs)], {
           encoding: "utf8",
-          env: { PATH: process.env.PATH, HOME: home, ZCRANK_REDIS_HOST: "127.0.0.1", ZCRANK_REDIS_PORT: String(rs.port) },
+          env: hermeticEnv({ HOME: home, ZCRANK_REDIS_HOST: "127.0.0.1", ZCRANK_REDIS_PORT: String(rs.port) }),
         });
         assert.equal(py.status, 0, `${c.name}: engine probe failed: ${py.stderr}`);
         const eng = JSON.parse(py.stdout);
@@ -492,7 +493,7 @@ print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due":
   assert.ok(existsSync(join(root, "dist", "crank", "tui.js")), "dist/crank/tui.js missing: the TUI screens are a separate build entry");
   const runPj = (args, env = {}) => spawnSync(process.execPath, [pj, ...args], {
     cwd: root, encoding: "utf8", timeout: 30_000,
-    env: { ...process.env, ZCRANK_REDIS_PORT: String(rs.port), ZCRANK_REDIS_HOST: "127.0.0.1", NO_COLOR: "1", ...env },
+    env: hermeticEnv({ ZCRANK_REDIS_PORT: String(rs.port), ZCRANK_REDIS_HOST: "127.0.0.1", NO_COLOR: "1", ...env }),
   });
 
   console.log("cli: `pj crank enable --interval` validates, writes, and non-TTY enable never prompts");

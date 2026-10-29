@@ -19,8 +19,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runOnPty } from "./helpers/pty-run.mjs";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
-const env = { PATH: process.env.PATH, TERM: "xterm-256color" };
+const env = hermeticEnv({ TERM: "xterm-256color" });
 const py = (code) => ["python3", "-I", "-c", code];
 const run = (code, steps, extra = {}) => {
   const started = Date.now();
