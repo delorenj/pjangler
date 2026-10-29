@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -101,13 +101,18 @@ process.on("exit", () => writeFileSync(${JSON.stringify(dump)}, JSON.stringify({
     checkpoint("`pass` copies only named variables and refuses HOME and XDG_*");
 
     // ---- the launcher of the bundled TypeScript suites ----------------------
-    // A bundled suite is a child too. It must still see CI, which
-    // pjan-77-notebook-hooks-capture.ts reads to widen its latency budget on a
-    // shared runner (PJAN-132; dropping it blocked releases on a 354ms
-    // reading), and none of the planted credentials. The probe is run through
-    // the real launcher and reports the env it sees from inside itself.
-    const consumer = readFileSync(join(root, "tests", "pjan-77-notebook-hooks-capture.ts"), "utf8");
-    assert.match(consumer, /process\.env\.CI\b/, "the bundled suite that needed CI no longer reads it; drop CI from BUNDLED_SUITE_PASSTHROUGH");
+    // A bundled suite is a child too. It sees the Postgres names it is listed
+    // for and none of the planted credentials. CI is NOT passed (PJAN-194):
+    // tests/pjan-77-notebook-hooks-capture.ts was its only reader, to widen a
+    // latency budget on a shared runner (PJAN-132), and now measures CPU time
+    // and event order instead. A suite that behaves differently on a hosted
+    // runner than on a workstation is the flake this removes, so a bundled
+    // suite that READS process.env.CI (assigning it, as the pjan-180 suites do
+    // for their own children, is not reading it) must fail here and either
+    // drop the dependency or list CI in BUNDLED_SUITE_PASSTHROUGH on purpose.
+    const readsCi = readdirSync(join(root, "tests")).filter((name) => name.endsWith(".ts"))
+      .filter((name) => /process\.env\.CI\b(?!\s*=[^=])|process\.env\[["']CI["']\](?!\s*=[^=])/.test(readFileSync(join(root, "tests", name), "utf8")));
+    assert.equal(BUNDLED_SUITE_PASSTHROUGH.includes("CI"), readsCi.length > 0, `CI passthrough and CI readers disagree: passed=${BUNDLED_SUITE_PASSTHROUGH.includes("CI")}, read by ${JSON.stringify(readsCi)}`);
     const probe = join(scratch, "bundled-probe.ts");
     put(probe, 'process.stdout.write(JSON.stringify({ ci: process.env.CI ?? null, keys: Object.keys(process.env) }));\n');
     const bundledSees = (ci) => {
@@ -123,12 +128,12 @@ process.on("exit", () => writeFileSync(${JSON.stringify(dump)}, JSON.stringify({
       return JSON.parse(captured);
     };
     const withCi = bundledSees("true");
-    assert.equal(withCi.ci, "true", "a bundled suite must see CI=true from a hosted runner");
+    assert.equal(withCi.ci, readsCi.length > 0 ? "true" : null, "CI reaches a bundled suite exactly when a bundled suite reads it");
     assert.equal(bundledSees(undefined).ci, null, "CI is passed through, never invented");
     for (const name of Object.keys(planted)) assert.equal(withCi.keys.includes(name), false, `${name} reached the bundled suite`);
     const bundledAllowed = new Set([...allowed, ...BUNDLED_SUITE_PASSTHROUGH]);
     assert.deepEqual(withCi.keys.filter((name) => !bundledAllowed.has(name) && !/^LC_[A-Z]+$/.test(name)), [], "nothing off the allowlist reached the bundled suite");
-    checkpoint("a bundled TypeScript suite sees CI (hosted-runner latency slack) and none of the planted credentials");
+    checkpoint("a bundled TypeScript suite sees CI only if one reads it, and none of the planted credentials");
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;

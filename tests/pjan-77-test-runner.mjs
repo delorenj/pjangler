@@ -11,15 +11,19 @@ import { hermeticEnv } from "./helpers/hermetic-env.mjs";
  * - PG*, PJ_TEST_ADMIN_DATABASE, PJANGLER_REQUIRE_DISPOSABLE_POSTGRES: the
  *   Postgres-backed ones (pjan-80-*, pjan-129) reach the operator's or CI's
  *   database through them.
- * - CI: tests/pjan-77-notebook-hooks-capture.ts widens its SessionEnd p95
- *   latency budget on a shared runner (`process.env.CI ? 2.4 : 1`, PJAN-132).
- *   Dropping it made a hosted runner judge a 354ms reading against the strict
- *   250ms budget again, the failure PJAN-132 fixed. It is not a credential.
  * tests/pjan-193-env-allowlist-regressions.mjs runs a probe through this
- * launcher to keep both halves true: CI arrives, credentials do not.
+ * launcher to keep both halves true: these arrive, credentials do not.
+ *
+ * CI is deliberately NOT here any more (PJAN-194). tests/pjan-77-notebook-hooks-
+ * capture.ts used to widen its latency budgets on a shared runner
+ * (`process.env.CI ? 2.4 : 1`, PJAN-132) and so needed it. Its budgets are now
+ * measured in CPU time and by event order, which a busy machine cannot inflate,
+ * so the suite behaves identically on a hosted runner and on a workstation and
+ * nothing bundled reads CI. pjan-193 fails if a bundled suite reads it again
+ * without it being passed here.
  */
 export const BUNDLED_SUITE_PASSTHROUGH = Object.freeze([
-  "CI", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PJ_TEST_ADMIN_DATABASE", "PJANGLER_REQUIRE_DISPOSABLE_POSTGRES",
+  "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PJ_TEST_ADMIN_DATABASE", "PJANGLER_REQUIRE_DISPOSABLE_POSTGRES",
 ]);
 
 export function runTypescriptRegression(sourceName) {
