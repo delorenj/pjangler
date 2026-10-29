@@ -18,7 +18,7 @@ function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return hermeticEnv(extra);
 }
 
-function runCli(entry: string, args: string[], env: NodeJS.ProcessEnv, cwd = root) {
+function runCli(entry: string, args: string[], env: NodeJS.ProcessEnv = hermeticEnv(), cwd = root) {
   return spawnSync(process.execPath, [entry, ...args], { cwd, env, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
 }
 

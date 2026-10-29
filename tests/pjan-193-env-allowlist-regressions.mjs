@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { HERMETIC_TMP_BASE, PASSTHROUGH, hermeticDefaultHome, hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import { checkTree, scanSource } from "../scripts/check-hermetic-test-env.mjs";
+import { BUNDLED_SUITE_PASSTHROUGH, runTypescriptRegression } from "./pjan-77-test-runner.mjs";
 
 // PJAN-193: a child env is an ALLOWLIST. Two guards, both proven here.
 //
@@ -98,6 +99,36 @@ process.on("exit", () => writeFileSync(${JSON.stringify(dump)}, JSON.stringify({
     assert.equal(Object.hasOwn(passed, "PJ_NOT_SET_ANYWHERE_193"), false, "an unset `pass` name stays absent");
     assert.equal(Object.hasOwn(hermeticEnv({ TMPDIR: undefined }), "TMPDIR"), false, "a fixture undefined removes the key");
     checkpoint("`pass` copies only named variables and refuses HOME and XDG_*");
+
+    // ---- the launcher of the bundled TypeScript suites ----------------------
+    // A bundled suite is a child too. It must still see CI, which
+    // pjan-77-notebook-hooks-capture.ts reads to widen its latency budget on a
+    // shared runner (PJAN-132; dropping it blocked releases on a 354ms
+    // reading), and none of the planted credentials. The probe is run through
+    // the real launcher and reports the env it sees from inside itself.
+    const consumer = readFileSync(join(root, "tests", "pjan-77-notebook-hooks-capture.ts"), "utf8");
+    assert.match(consumer, /process\.env\.CI\b/, "the bundled suite that needed CI no longer reads it; drop CI from BUNDLED_SUITE_PASSTHROUGH");
+    const probe = join(scratch, "bundled-probe.ts");
+    put(probe, 'process.stdout.write(JSON.stringify({ ci: process.env.CI ?? null, keys: Object.keys(process.env) }));\n');
+    const bundledSees = (ci) => {
+      const savedCi = process.env.CI;
+      if (ci === undefined) delete process.env.CI; else process.env.CI = ci;
+      const realWrite = process.stdout.write;
+      let captured = "";
+      process.stdout.write = (chunk) => { captured += chunk; return true; };
+      try { runTypescriptRegression(relative(join(root, "tests"), probe)); } finally {
+        process.stdout.write = realWrite;
+        if (savedCi === undefined) delete process.env.CI; else process.env.CI = savedCi;
+      }
+      return JSON.parse(captured);
+    };
+    const withCi = bundledSees("true");
+    assert.equal(withCi.ci, "true", "a bundled suite must see CI=true from a hosted runner");
+    assert.equal(bundledSees(undefined).ci, null, "CI is passed through, never invented");
+    for (const name of Object.keys(planted)) assert.equal(withCi.keys.includes(name), false, `${name} reached the bundled suite`);
+    const bundledAllowed = new Set([...allowed, ...BUNDLED_SUITE_PASSTHROUGH]);
+    assert.deepEqual(withCi.keys.filter((name) => !bundledAllowed.has(name) && !/^LC_[A-Z]+$/.test(name)), [], "nothing off the allowlist reached the bundled suite");
+    checkpoint("a bundled TypeScript suite sees CI (hosted-runner latency slack) and none of the planted credentials");
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
@@ -121,12 +152,55 @@ process.on("exit", () => writeFileSync(${JSON.stringify(dump)}, JSON.stringify({
   assert.deepEqual(kinds('new StdioClientTransport({ command: "node", args: [] });'), ["implicit"]);
   assert.deepEqual(kinds("runOnPty({ argv: [], steps: [] });"), ["implicit"]);
   assert.deepEqual(kinds('const s: string = "x"; spawnSync("x", [], { env: { ...(process.env as any) } });', "x.ts"), ["spread"]);
+  // Aliasing and renaming: the shapes the literal `process.env` match missed.
+  const spawnWith = (prelude, options = "{ env: base }") => `${prelude}\nspawnSync("git", [], ${options});`;
+  assert.deepEqual(kinds(spawnWith("const base = process.env;")), ["alias", "pass"]);
+  assert.deepEqual(kinds(spawnWith("const base = process.env;", '{ env: { ...base, X: "1" } }')), ["alias", "spread"]);
+  assert.deepEqual(kinds(spawnWith("const { env } = process;", "{ env }")), ["alias", "pass"]);
+  assert.deepEqual(kinds(spawnWith("const { env: operator } = process;", '{ env: { ...operator } }')), ["alias", "spread"]);
+  assert.deepEqual(kinds(spawnWith("const { HOME, ...rest } = process.env;", "{ env: rest }")), ["alias", "pass"]);
+  assert.deepEqual(kinds(spawnWith("let base; base = process.env;", "{ env: base }")), ["pass"]);
+  assert.deepEqual(kinds(spawnWith("const a = process.env;\nconst b = a;", "{ env: b }")), ["alias", "alias", "pass"]);
+  assert.deepEqual(kinds(spawnWith("", "{ env: { ...globalThis.process.env } }")), ["spread"]);
+  assert.deepEqual(kinds(spawnWith("", '{ env: { ...process["env"] } }')), ["spread"]);
+  assert.deepEqual(kinds(spawnWith('import p from "node:process";', "{ env: { ...p.env } }")), ["spread"]);
+  assert.deepEqual(kinds(spawnWith('import * as p from "process";', "{ env: p.env }")), ["pass"]);
+  assert.deepEqual(kinds(spawnWith('import { env } from "node:process";', "{ env }")), ["alias", "pass"]);
+  assert.deepEqual(kinds(spawnWith('const p = require("node:process");', "{ env: p.env }")), ["pass"]);
+  assert.deepEqual(kinds("const e = JSON.parse(JSON.stringify(process.env));"), ["copy"]);
+  assert.deepEqual(kinds(spawnWith("", "{ env: Object.create(process.env) }")), ["copy"]);
+  assert.deepEqual(kinds('spawnSync("x", [], { env: { ...(process.env as any) } });', "x.ts"), ["spread"]);
+  assert.deepEqual(kinds('import { spawnSync as run } from "node:child_process";\nrun("x", [], { cwd });'), ["implicit"]);
+  assert.deepEqual(kinds('import { spawnSync as run } from "node:child_process";\nrun("x", [], { env: process.env });'), ["pass"]);
+  assert.deepEqual(kinds('import { execFile } from "node:child_process";\nconst sp = execFile; sp("x", []);'), ["implicit"]);
+  assert.deepEqual(kinds('import { execFile } from "node:child_process";\nimport { promisify } from "node:util";\npromisify(execFile)("x", []);'), ["implicit"]);
+  assert.deepEqual(kinds('import { execFile } from "node:child_process";\nimport { promisify } from "node:util";\nconst run = promisify(execFile);\nawait run("x", [], { cwd });'), ["implicit"]);
+  assert.deepEqual(kinds('import cp2 from "node:child_process";\ncp2.exec("ls");'), ["implicit"]);
+  assert.deepEqual(kinds('import * as proc from "child_process";\nproc.execSync("ls");'), ["implicit"]);
+  assert.deepEqual(kinds('const { spawnSync: go } = require("child_process");\ngo("x", []);'), ["implicit"]);
+  assert.deepEqual(kinds('const cp = await import("node:child_process");\ncp.spawnSync("x", []);'), ["implicit"]);
+  assert.deepEqual(kinds('import spawn from "cross-spawn";\nspawn("x", []);'), ["implicit"]);
+  // An env that can be undefined is no env: node falls back to process.env.
+  assert.deepEqual(kinds('spawnSync("x", [], { env: undefined });'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('spawnSync("x", [], { env: null });'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('spawnSync("x", [], { env: cond ? hermeticEnv() : undefined });'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('function run(args, env) { return spawnSync("x", args, { env }); }'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('const run = (args, env) => spawnSync("x", args, { env: env });'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('function run(args, { env }) { return spawnSync("x", args, { env }); }'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('function run(args, options) { return spawnSync("x", args, { env: options.env }); }'), ["implicit (env may be undefined)"]);
+  assert.deepEqual(kinds('function run(args, env = hermeticEnv()) { return spawnSync("x", args, { env }); }'), [], "a parameter with a built default is a built env");
+  assert.deepEqual(kinds('function run(args, { env = hermeticEnv() } = {}) { return spawnSync("x", args, { env }); }'), []);
+  assert.deepEqual(kinds('const env = hermeticEnv(); spawnSync("x", [], { env });'), []);
+  assert.deepEqual(kinds('spawnSync("x", [], { cwd, ...options, env: hermeticEnv() });'), [], "a spread BEFORE env cannot override it");
+  assert.deepEqual(kinds('spawnSync("x", [], { cwd, env: hermeticEnv(), ...options });'), ["implicit (options spread after env)"]);
   // Not children, not inheritance:
   assert.deepEqual(kinds('spawnSync("git", [], { env: hermeticEnv({ A: "1" }) });'), []);
   assert.deepEqual(kinds("const m = /a(b)/.exec(text); db.exec(sql);"), []);
   assert.deepEqual(kinds("Object.assign(process.env, { HOME: home });"), [], "writing into this process's env copies nothing out");
   assert.deepEqual(kinds('const fixture = `spawnSync("git", [], { env: process.env }); ${"x"}`;'), [], "fixture source in a template literal is text, not a call");
   assert.deepEqual(kinds('const home = process.env.HOME; inspect({ env: process.env });'), [], "reading a variable or passing the suite's own env in-process builds no child env");
+  assert.deepEqual(kinds("const { HOME, PATH } = process.env;"), [], "reading named variables is not holding the env");
+  assert.deepEqual(kinds("const env = hermeticEnv(); const copy = { ...env, A: 1 };"), [], "spreading a built env is the normal idiom");
   assert.deepEqual(kinds('// hermetic-env: inherits -- build step\nspawnSync("npm", ["run", "build"]);'), []);
   checkpoint("scanSource flags spread, copy, default, pass and implicit inheritance, and nothing else");
 

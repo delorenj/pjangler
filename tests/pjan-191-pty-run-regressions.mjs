@@ -25,7 +25,7 @@ const env = hermeticEnv({ TERM: "xterm-256color" });
 const py = (code) => ["python3", "-I", "-c", code];
 const run = (code, steps, extra = {}) => {
   const started = Date.now();
-  const result = runOnPty({ argv: py(code), cwd: "/", env, steps, ...extra });
+  const result = runOnPty({ argv: py(code), cwd: "/", steps, ...extra, env });
   return { ...result, elapsedMs: Date.now() - started };
 };
 /** A process that is a zombie or gone is dead for our purposes. */

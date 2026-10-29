@@ -57,6 +57,7 @@ const run = (cmd, args, opts = {}) => {
     timeoutMs = CHILD_TIMEOUT_MS,
     maxBuffer = CHILD_MAX_BUFFER,
     timeout: _ignoredTimeout,
+    env: childEnv = env,
     ...spawnOptions
   } = opts;
   if (
@@ -69,8 +70,10 @@ const run = (cmd, args, opts = {}) => {
   }
   return spawnSync(cmd, args, {
     encoding: "utf8",
-    env,
     ...spawnOptions,
+    // After the spread: options can pick another env (always a built one, see
+    // the callers) but can never null it out and make the child inherit.
+    env: childEnv ?? env,
     timeout: timeoutMs,
     maxBuffer,
   });

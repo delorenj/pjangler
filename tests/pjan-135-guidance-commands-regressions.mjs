@@ -51,7 +51,7 @@ const env = hermeticEnv({
   XDG_CACHE_HOME: join(work, "cache"),
 });
 function pj(args, options = {}) {
-  return spawnSync(process.execPath, [join(work, "pj.mjs"), ...args], { encoding: "utf8", env, cwd: work, ...options });
+  return spawnSync(process.execPath, [join(work, "pj.mjs"), ...args], { encoding: "utf8", cwd: work, ...options, env });
 }
 
 /** `pj <words> --help` against the CLI bundled at `bundle`, parsed: the command path commander (or skillex) resolved. */

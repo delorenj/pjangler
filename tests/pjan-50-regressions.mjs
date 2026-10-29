@@ -19,6 +19,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
@@ -135,14 +136,14 @@ function runPlane(args, responses) {
   const result = spawnSync("sh", [adapter, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: {
+    env: hermeticEnv({
       PATH: `${curlBin}:/usr/bin:/bin`,
       HOME: home,
       HERMES_FLEET_ENV: join(home, "missing-fleet.env"),
       PLANE_API_KEY: KEY,
       PJAN50_LOG: log,
       PJAN50_RESPONSES: fixture,
-    },
+    }),
   });
   const requests = existsSync(log)
     ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))

@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
@@ -189,7 +190,9 @@ function runOp({ adapter, args, responses = [], env = {} }) {
   const result = spawnSync("sh", [adapter, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: {
+    // PATH is narrowed to the curl stub plus the system tools; everything else
+    // comes from the allowlist helper.
+    env: hermeticEnv({
       PATH: `${curlBin}:/usr/bin:/bin`,
       HOME: home,
       // The Plane adapter reads the fleet env file for a fallback key; point it
@@ -198,7 +201,7 @@ function runOp({ adapter, args, responses = [], env = {} }) {
       PJAN23_LOG: log,
       PJAN23_RESPONSES: fixture,
       ...env,
-    },
+    }),
   });
   const requests = existsSync(log)
     ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))

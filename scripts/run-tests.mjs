@@ -252,6 +252,21 @@ if (!skipBuild) {
  *   PJANGLER_REQUIRE_DISPOSABLE_POSTGRES (publish.yml's Postgres service),
  *   PJ_TICKET_PROVIDER_ADAPTERS (the Krebs adapters CI fetches),
  *   NODE_V8_COVERAGE (c8). Suites pass what a child needs by name.
+ *
+ * Known residual surface, accepted: a suite that calls pjangler library code
+ * IN-PROCESS (inspectStatus, syncOptions, ...) hands that code this process's
+ * env, and a child that code spawns inherits it. That is the suite's subject,
+ * not a test-harness child, and the code path under test is what gets
+ * exercised; the suites that do it pass an explicit `env` option (see
+ * pjan-135-skill-roots, pjan-176) or blank what they read (pjan-30). The
+ * static guard cannot see through a library call.
+ *
+ * CI parity: a hosted runner sets CI, GITHUB_*, RUNNER_* and UV_PYTHON_INSTALL_DIR
+ * (publish.yml). None is a credential a child needs, with one exception that is
+ * passed by name: CI for the bundled notebook-hooks suite's latency slack
+ * (tests/pjan-77-test-runner.mjs, PJAN-132). pjangler never reads
+ * UV_PYTHON_INSTALL_DIR (src/lifecycle/preflight.ts trusts the default under
+ * the account home), so nothing downstream of an allowlisted env needs it.
  */
 const SUITE_ENV = process.env;
 
