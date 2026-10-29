@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
-import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -44,7 +44,7 @@ function cli(args, { env = {} } = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: ROOT,
     encoding: "utf8",
-    env: { ...process.env, ...hermeticChildEnv(temporary[0] ?? ROOT), GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv, ...env },
+    env: hermeticEnv({ GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv, ...env }),
   });
 }
 

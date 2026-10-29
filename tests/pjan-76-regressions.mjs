@@ -1,4 +1,5 @@
 import { createSkillPackFixture, createBmadInstallerFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 // PJAN-76 — BMAD is owned by bmad-method, not a frozen Skillex pack.
 //
 // pjangler used to pin `packs/bmad/<version>` in the Skillex registry and
@@ -24,7 +25,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = hermeticScratch("pjan-76-");
@@ -135,8 +135,8 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
   writeFileSync(globalIgnore, `${SUPPORTED.map((clientRoot) => `${clientRoot}/`).join("\n")}\n`);
 
-  const isolatedEnv = {
-    ...process.env, PATH: `${skillexBin}:${process.env.PATH}`, PJ_SKILLS_REGISTRY_ROOT: join(workspace, "catalog"), PJ_BMAD_INSTALLER: bmadInstaller,
+  const isolatedEnv = hermeticEnv({
+    PATH: `${skillexBin}:${process.env.PATH}`, PJ_SKILLS_REGISTRY_ROOT: join(workspace, "catalog"), PJ_BMAD_INSTALLER: bmadInstaller,
     PJ_PROJECT_REGISTRY: registry,
     HOME: home,
     XDG_CACHE_HOME: join(home, ".cache"),
@@ -146,7 +146,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
     GIT_CONFIG_KEY_0: "core.excludesFile",
     GIT_CONFIG_VALUE_0: globalIgnore,
     NO_COLOR: "1",
-  };
+  });
 
   const result = spawnSync(
     process.execPath,

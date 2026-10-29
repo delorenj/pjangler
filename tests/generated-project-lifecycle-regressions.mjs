@@ -18,7 +18,7 @@ import {
   createSkillPackFixture,
   createSkillexMiseFixture,
 } from "./helpers/pack-fixture.mjs";
-import { hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const temporary = hermeticScratch("pjan-57-packed-lifecycle-");
@@ -37,7 +37,7 @@ let packedCli = "";
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? root,
-    env: options.env ?? process.env,
+    env: options.env ?? hermeticEnv(),
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
   });
@@ -152,8 +152,9 @@ try {
   assert.equal(existsSync(packedCli), true, "packed artifact must contain the CLI bundle");
 
   const npmCache = join(temporary, "empty-npm-cache");
-  const baseEnv = {
-    ...process.env,
+  // hermeticEnv() inherits no GIT_AUTHOR_*/GIT_COMMITTER_* from the operator,
+  // so the generated commit's identity can only come from pjangler itself.
+  const baseEnv = hermeticEnv({
     PATH: `${createSkillexMiseFixture(temporary)}:${process.env.PATH}`,
     HOME: isolatedHome,
     XDG_CONFIG_HOME: join(isolatedHome, ".config"),
@@ -174,10 +175,7 @@ try {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "core.excludesFile",
     GIT_CONFIG_VALUE_0: globalIgnore,
-  };
-  for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]) {
-    delete baseEnv[key];
-  }
+  });
 
   // Empty-cache offline default: the exact npm installer cannot be resolved,
   // and failure occurs before Copier, target creation, or registry persistence.

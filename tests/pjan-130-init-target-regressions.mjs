@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
-import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -54,7 +54,7 @@ function cli(args, cwd) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...hermeticChildEnv(temporary[0] ?? ROOT), GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv },
+    env: hermeticEnv({ GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv }),
     maxBuffer: 32 * 1024 * 1024,
   });
 }
@@ -69,7 +69,7 @@ function plan(args, cwd) {
 function hostRepo(root, dirName, { projectName, projectId }) {
   const dir = join(root, dirName);
   mkdirSync(dir, { recursive: true });
-  assert.equal(spawnSync("git", ["init", "-q", "--initial-branch=main"], { cwd: dir }).status, 0, "git init");
+  assert.equal(spawnSync("git", ["init", "-q", "--initial-branch=main"], { cwd: dir, env: hermeticEnv(lifecycleEnv) }).status, 0, "git init");
   writeFileSync(
     join(dir, ".project.json"),
     `${JSON.stringify({ project_name: projectName, project_id: projectId, repo_path: dir, status: "active" }, null, 2)}\n`,
@@ -214,7 +214,7 @@ try {
     const probe = spawnSync("git", ["rev-parse", "--show-toplevel"], {
       cwd: vault,
       encoding: "utf8",
-      env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+      env: hermeticEnv({ ...lifecycleEnv, GIT_CEILING_DIRECTORIES: root }),
     });
     assert.notEqual(probe.status, 0, "fixture must sit outside every git work tree");
     const planned = plan(["init", ...base], vault);

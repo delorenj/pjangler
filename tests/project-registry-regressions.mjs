@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
-import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -16,7 +16,7 @@ function spawnCli(args, env, cwd = root) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...hermeticChildEnv(tmp), ...portableLifecycleEnv, ...env },
+    env: hermeticEnv({ ...portableLifecycleEnv, ...env }),
     maxBuffer: 10 * 1024 * 1024,
   });
 }
@@ -60,7 +60,7 @@ function git(args, cwd) {
     mkdirSync(join(cwd, ".agents"), { recursive: true });
     writeFileSync(join(cwd, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, packs: [], skills: [] }));
   }
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticEnv(portableLifecycleEnv) });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }

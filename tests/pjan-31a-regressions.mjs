@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
-import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 // PJAN-31a: the CommonProject template shipped no .github at all, so no project
 // pjangler created ever got PR review. These guards render a REAL project with
@@ -29,7 +29,7 @@ function run(args, env = {}, cwd = root) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...hermeticChildEnv(tmp), ...lifecycleEnv, ...env },
+    env: hermeticEnv({ ...lifecycleEnv, ...env }),
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.status !== 0) {
@@ -151,7 +151,7 @@ try {
   // The rendered project carries the guard and it passes on its own workflow.
   const guard = join(targetDir, ".github", "scripts", "check-gateway-routing.sh");
   assert.ok(existsSync(guard), "every rendered project must get the gateway routing guard");
-  const guarded = spawnSync("bash", [guard, join(targetDir, ".github", "workflows")], { encoding: "utf8" });
+  const guarded = spawnSync("bash", [guard, join(targetDir, ".github", "workflows")], { encoding: "utf8", env: hermeticEnv() });
   assert.equal(guarded.status, 0, guarded.stdout + guarded.stderr);
 
   // Unconditional: no copier question gates the workflow.

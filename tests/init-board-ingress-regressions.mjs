@@ -28,7 +28,7 @@ import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
-import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -79,6 +79,9 @@ writeFileSync(join(home, ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stri
  * The legacy `~/.config/zshyzsh/secrets.zsh` fallback is a real source on this
  * host, so XDG_CONFIG_HOME has to move too or these fixtures reach production
  * Plane — which is exactly what happened the first time this change was run.
+ * The credential VARIABLES need no blanking: hermeticEnv() (PJAN-193) copies
+ * nothing outside its allowlist, so an operator PLANE_/TRELLO_ key never
+ * reaches a child in the first place.
  */
 const NO_CREDENTIALS = {
   HOME: home,
@@ -88,11 +91,6 @@ const NO_CREDENTIALS = {
   SKILLEX_REGISTRY_ROOT: skillRegistry,
   PJ_SKILLS_REGISTRY_ROOT: skillRegistry,
   PJ_BMAD_INSTALLER: bmadInstaller,
-  PLANE_API_KEY: "",
-  PLANE_DEFAULT_API_KEY: "",
-  PLANE_33GOD_API_KEY: "",
-  TRELLO_KEY: "",
-  TRELLO_TOKEN: "",
   HERMES_FLEET_ENV: join(home, ".hermes", "fleet.env"),
   XDG_CONFIG_HOME: join(home, ".config"),
 };
@@ -101,7 +99,7 @@ function cli(args, env = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: workspace,
     encoding: "utf8",
-    env: { ...process.env, ...hermeticChildEnv(workspace), ...NO_CREDENTIALS, GIT_CEILING_DIRECTORIES: workspace, ...env },
+    env: hermeticEnv({ ...NO_CREDENTIALS, GIT_CEILING_DIRECTORIES: workspace, ...env }),
     maxBuffer: 32 * 1024 * 1024,
   });
 }
@@ -127,7 +125,7 @@ printf '{"board_id":"${BOARD_ID}","identifier":"STUB","board_url":"https://plane
 function target(name) {
   const dir = join(workspace, name);
   mkdirSync(dir, { recursive: true });
-  assert.equal(spawnSync("git", ["init", "-q"], { cwd: dir }).status, 0, "git init");
+  assert.equal(spawnSync("git", ["init", "-q"], { cwd: dir, env: hermeticEnv(NO_CREDENTIALS) }).status, 0, "git init");
   mkdirSync(join(dir, ".agents"), { recursive: true });
   writeFileSync(join(dir, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, packs: [], skills: [] }));
   return dir;
@@ -283,7 +281,7 @@ const server = createServer((request, response) => {
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `,
   );
-  const stub = spawn(process.execPath, [serverScript], { stdio: ["ignore", "pipe", "inherit"] });
+  const stub = spawn(process.execPath, [serverScript], { stdio: ["ignore", "pipe", "inherit"], env: hermeticEnv() });
   const planePort = await new Promise((done, fail) => {
     const timer = setTimeout(() => fail(new Error("the Plane stub never reported a port")), 10_000);
     stub.stdout.once("data", (chunk) => { clearTimeout(timer); done(String(chunk).trim()); });
@@ -395,7 +393,7 @@ server.listen(0, "127.0.0.1", () => console.log(server.address().port));
         boardId: "abc123",
         apply: true,
         registryPath: registry,
-        env: { ...process.env, TRELLO_API_KEY: "k", TRELLO_TOKEN: "t" },
+        env: hermeticEnv({ TRELLO_API_KEY: "k", TRELLO_TOKEN: "t" }),
       });
       assert.equal(result.state, "linked");
       assert.ok(result.boardConfirmedAt, "any provider can confirm a board exists, and a link rests on that");
@@ -429,7 +427,7 @@ server.listen(0, "127.0.0.1", () => console.log(server.address().port));
           boardId: "abc123",
           apply: true,
           registryPath: registry,
-          env: { ...process.env, TRELLO_API_KEY: "k", TRELLO_TOKEN: "t" },
+          env: hermeticEnv({ TRELLO_API_KEY: "k", TRELLO_TOKEN: "t" }),
         }),
         /archived/,
       );

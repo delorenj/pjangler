@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createBmadInstallerFixture } from "./helpers/pack-fixture.mjs";
-import { HERMETIC_TMP_BASE, hermeticChildEnv, hermeticScratch, pickHermeticTmpBase } from "./helpers/hermetic-env.mjs";
+import { HERMETIC_TMP_BASE, hermeticEnv, hermeticScratch, pickHermeticTmpBase } from "./helpers/hermetic-env.mjs";
 
 // PJAN-188 canary: a suite that isolates itself through tests/helpers/
 // hermetic-env.mjs passes identically standalone, under scripts/run-tests.mjs,
@@ -29,6 +29,10 @@ import { HERMETIC_TMP_BASE, hermeticChildEnv, hermeticScratch, pickHermeticTmpBa
 //     checkout mapping, a gitconfig) that would change behavior if inherited;
 //   - PLANE_*/TRELLO_* carry junk credentials; SKILLEX_* and PJ_G33_ADAPTER_*
 //     point at nonexistent paths.
+//
+// Since PJAN-193 the hostile values are planted in THIS process's env, the
+// place an operator's shell puts them, and the child env is built by the
+// allowlist helper hermeticEnv(), which must keep every one of them out.
 //
 // Then the canary runs exactly what PJAN-167 runs — a 33god-enrolled project
 // and `recipe run bmad --dry-run` — through the helper's scratch and env, and
@@ -95,12 +99,16 @@ try {
     assert.equal(existsSync(join(current, ".git")), false, `scratch ancestor ${current} must not carry .git`);
     if (dirname(current) === current) break;
   }
-  const pins = hermeticChildEnv(scratch);
+  // The hostile operator env goes where an operator's shell puts it: into this
+  // process. hermeticEnv() must keep every one of these values out.
+  Object.assign(process.env, hostileEnv);
+  const pins = hermeticEnv();
   assert.equal(pins.TMPDIR, HERMETIC_TMP_BASE, "child TMPDIR must be pinned to the hermetic base");
-  assert.equal(pins.PJ_G33_ADAPTER_MODULE, "", "child PJ_G33_ADAPTER_MODULE must be blanked");
-  assert.equal(pins.PLANE_33GOD_API_KEY, "", "child PLANE_33GOD_API_KEY must be blanked");
-  assert.equal(pins.HERMES_FLEET_ENV, join(scratch, "no-such-fleet.env"), "child HERMES_FLEET_ENV must point at nothing");
-  checkpoint("hermetic base and child-env pins hold under a poisoned TMPDIR");
+  assert.notEqual(pins.HOME, hostileHome, "the operator HOME must never reach a child");
+  for (const name of Object.keys(hostileEnv)) {
+    if (name !== "HOME") assert.equal(Object.hasOwn(pins, name), false, `${name} must not reach a child`);
+  }
+  checkpoint("hermetic base and child-env allowlist hold under a poisoned TMPDIR and env");
 
   // 4. The PJAN-167 fixture pattern, built entirely through the helper.
   const isolatedHome = join(scratch, "home");
@@ -138,17 +146,17 @@ export async function companion(request) {
   put(join(target, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
   put(join(target, ".agents", "skills", "bmad-fixture", "SKILL.md"), "Native BMAD CLI fixture\n");
 
-  // 5. The hostile operator env, the helper's isolation, then the suite's own
-  // fixture values — exactly the layering a hermetic suite uses.
-  const env = {
-    ...process.env, ...hostileEnv, ...hermeticChildEnv(scratch),
+  // 5. The helper's allowlist plus the suite's own fixture values — exactly
+  // how a hermetic suite builds a child env. The hostile values sit in
+  // process.env (step 3) and must not survive it.
+  const env = hermeticEnv({
     HOME: isolatedHome,
     XDG_CONFIG_HOME: join(isolatedHome, ".config"), XDG_CACHE_HOME: join(isolatedHome, ".cache"),
     XDG_STATE_HOME: join(isolatedHome, ".local", "state"), XDG_DATA_HOME: join(isolatedHome, ".local", "share"),
     PJ_PROJECT_REGISTRY: join(scratch, "registry.yaml"), PJ_SKILLS_REGISTRY_ROOT: catalog,
     PJ_BMAD_INSTALLER: upstream,
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
-  };
+  });
 
   // 6. The exact command that failed standalone in PJAN-167.
   const run = spawnSync(process.execPath, [cli, "recipe", "run", "bmad", "--dry-run", "--json"], {

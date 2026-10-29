@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createBmadInstallerFixture } from "./helpers/pack-fixture.mjs";
-import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 // This fixture proves PJangler's callable/CLI behavior ONLY. It is deliberately
 // not an owner installer, owner API guess, or evidence of real g33 integration.
@@ -74,14 +74,14 @@ export async function companion(request) {
 }
 `);
 
-const env = {
-  ...process.env, ...hermeticChildEnv(scratch), HOME: isolatedHome,
+const env = hermeticEnv({
+  HOME: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, ".config"), XDG_CACHE_HOME: join(isolatedHome, ".cache"),
   XDG_STATE_HOME: join(isolatedHome, ".local", "state"), XDG_DATA_HOME: join(isolatedHome, ".local", "share"),
   PJ_PROJECT_REGISTRY: join(scratch, "registry.yaml"), PJ_SKILLS_REGISTRY_ROOT: catalog,
   PJ_BMAD_INSTALLER: upstream,
   GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
-};
+});
 put(join(isolatedHome, ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.12.0", next: "6.12.0" } }));
 
 function project(name, companion, enrolled = true) {
