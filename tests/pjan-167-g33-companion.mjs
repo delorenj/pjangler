@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createBmadInstallerFixture } from "./helpers/pack-fixture.mjs";
+import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 // This fixture proves PJangler's callable/CLI behavior ONLY. It is deliberately
 // not an owner installer, owner API guess, or evidence of real g33 integration.
 const root = resolve(import.meta.dirname, "..");
-const scratch = mkdtempSync(join(tmpdir(), "pjan-167-companion-"));
+// PJAN-188: the scratch (and with it the isolated home and XDG_STATE_HOME, the
+// Skillex receipt directory) must never land inside a git work tree: with the
+// operator's TMPDIR pointing into ~/.claude this suite failed standalone
+// (E_RECEIPT_UNSAFE_PATH) while passing under run-tests.mjs.
+const scratch = hermeticScratch("pjan-167-companion-");
 const cli = join(root, "dist", "index.js");
 const isolatedHome = join(scratch, "home");
 const catalog = join(scratch, "catalog");
@@ -71,13 +75,11 @@ export async function companion(request) {
 `);
 
 const env = {
-  ...process.env, HOME: isolatedHome,
+  ...process.env, ...hermeticChildEnv(scratch), HOME: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, ".config"), XDG_CACHE_HOME: join(isolatedHome, ".cache"),
   XDG_STATE_HOME: join(isolatedHome, ".local", "state"), XDG_DATA_HOME: join(isolatedHome, ".local", "share"),
   PJ_PROJECT_REGISTRY: join(scratch, "registry.yaml"), PJ_SKILLS_REGISTRY_ROOT: catalog,
-  PJ_BMAD_INSTALLER: upstream, PJ_G33_ADAPTER_MODULE: "", PJ_G33_ADAPTER_EXPORT: "",
-  PLANE_API_KEY: "", PLANE_DEFAULT_API_KEY: "", PLANE_33GOD_API_KEY: "", PLANE_AUTOMATICAI_API_KEY: "", PLANE_INTELLIFORIA_API_KEY: "", PLANE_LASERTOAST_API_KEY: "",
-  TRELLO_KEY: "", TRELLO_API_KEY: "", TRELLO_TOKEN: "", HERMES_FLEET_ENV: join(scratch, "no-fleet.env"),
+  PJ_BMAD_INSTALLER: upstream,
   GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
 };
 put(join(isolatedHome, ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.12.0", next: "6.12.0" } }));

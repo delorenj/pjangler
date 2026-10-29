@@ -22,6 +22,7 @@
 
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
+import { hermeticChildEnv } from "../tests/helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -89,6 +90,7 @@ const SUITES = [
   "tests/pjan-147-env-materialization-opt-out-regressions.mjs",
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",
   "tests/pjan-167-g33-companion.mjs",
+  "tests/pjan-188-hermetic-canary-regressions.mjs",
   "tests/pjan-167-enrollment.mjs",
   "tests/pjan-177-g33-enrollment.mjs",
   "tests/pjan-178-g33-scoped-contract.mjs",
@@ -227,8 +229,22 @@ if (!skipBuild) {
  * here makes the whole suite hermetic by construction — the adapter is
  * unreachable, so `pj init` takes its no-credential path.
  *
- * Suites that WANT a provider (tests/pjan-30-regressions.mjs) inject their own
- * stub adapter and fake key, which override these.
+ * PJAN-188: this overlay is now a BACKSTOP, not the isolation. Suites that
+ * spawn pjangler isolate themselves with tests/helpers/hermetic-env.mjs
+ * (`hermeticScratch` + `hermeticChildEnv`), so a suite passes the same way
+ * standalone and under this runner; this table (imported from the same helper,
+ * so there is exactly one definition) only catches a suite that forgot, and a
+ * canary suite (pjan-188-hermetic-canary) fails when that self-isolation
+ * regresses. The historical intent is preserved below:
+ *
+ * - TMPDIR: the operator's TMPDIR can sit inside a git work tree (it does on
+ *   this machine), and a fixture under it makes the Skillex core refuse every
+ *   activation receipt (E_RECEIPT_UNSAFE_PATH).
+ * - PLANE_ and TRELLO- keys: see above. Suites that WANT a provider
+ *   (tests/pjan-30-regressions.mjs) inject their own stub adapter and fake
+ *   key, which override these.
+ * - HERMES_FLEET_ENV: a fleet env that never exists.
+ * - PJ_G33_ADAPTER_*: the operator's real g33 adapter must not leak in.
  *
  * This is the second line of defence, not the first: the legacy
  * `~/.config/zshyzsh/secrets.zsh` fallback is a FILE, and redirecting
@@ -236,22 +252,7 @@ if (!skipBuild) {
  * first line is `--skip-board` on every fixture bootstrap, which states the
  * intent where the intent lives.
  */
-const HERMETIC_ENV = {
-  PYTHONDONTWRITEBYTECODE: "1",
-  TMPDIR: "/tmp",
-  PLANE_API_KEY: "",
-  PLANE_DEFAULT_API_KEY: "",
-  PLANE_33GOD_API_KEY: "",
-  PLANE_AUTOMATICAI_API_KEY: "",
-  PLANE_INTELLIFORIA_API_KEY: "",
-  PLANE_LASERTOAST_API_KEY: "",
-  TRELLO_KEY: "",
-  TRELLO_API_KEY: "",
-  TRELLO_TOKEN: "",
-  HERMES_FLEET_ENV: join(root, "scripts", "no-such-fleet.env"),
-  PJ_G33_ADAPTER_MODULE: "",
-  PJ_G33_ADAPTER_EXPORT: "",
-};
+const HERMETIC_ENV = hermeticChildEnv(join(root, "scripts"));
 
 const results = [];
 for (const [index, step] of steps.entries()) {
