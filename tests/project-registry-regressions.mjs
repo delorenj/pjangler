@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -16,7 +16,7 @@ function spawnCli(args, env, cwd = root) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...portableLifecycleEnv, ...env },
+    env: { ...process.env, ...hermeticChildEnv(tmp), ...portableLifecycleEnv, ...env },
     maxBuffer: 10 * 1024 * 1024,
   });
 }
@@ -67,7 +67,7 @@ function git(args, cwd) {
   return result.stdout;
 }
 
-const tmp = mkdtempSync(join(tmpdir(), "pjangler-project-registry-"));
+const tmp = hermeticScratch("pjangler-project-registry-");
 try {
   // PJAN-66: exercise planProjectInit as a direct API, independently of the
   // CLI/MCP parsers. Invalid explicit path segments must fail before a caller

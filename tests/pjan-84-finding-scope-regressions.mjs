@@ -23,6 +23,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -43,13 +44,13 @@ function cli(args, env = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: ROOT,
     encoding: "utf8",
-    env: { ...process.env, GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...env },
+    env: { ...process.env, ...hermeticChildEnv(temporary[0] ?? ROOT), GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...env },
   });
 }
 
 console.log("pjan-84 finding scope");
 try {
-  const root = mkdtempSync(join(tmpdir(), "pjan-84-scope-"));
+  const root = hermeticScratch("pjan-84-scope-");
   temporary.push(root);
   const registry = join(root, "registry.yaml");
   const target = join(root, "scoped");

@@ -3,7 +3,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -11,7 +10,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -20,9 +18,10 @@ import {
   createSkillPackFixture,
   createSkillexMiseFixture,
 } from "./helpers/pack-fixture.mjs";
+import { hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const temporary = mkdtempSync(join(tmpdir(), "pjan-57-packed-lifecycle-"));
+const temporary = hermeticScratch("pjan-57-packed-lifecycle-");
 const packDir = join(temporary, "pack");
 const installDir = join(temporary, "install");
 const isolatedHome = join(temporary, "home");

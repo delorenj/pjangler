@@ -22,13 +22,13 @@
 // standing in for Plane's REST API for `pj project link`.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -58,7 +58,7 @@ async function checkAsync(label, body) {
 }
 
 function makeDir(name) {
-  const dir = mkdtempSync(join(tmpdir(), `pj-init-board-${name}-`));
+  const dir = hermeticScratch(`pj-init-board-${name}-`);
   temporary.push(dir);
   return dir;
 }
@@ -101,7 +101,7 @@ function cli(args, env = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd: workspace,
     encoding: "utf8",
-    env: { ...process.env, ...NO_CREDENTIALS, GIT_CEILING_DIRECTORIES: workspace, ...env },
+    env: { ...process.env, ...hermeticChildEnv(workspace), ...NO_CREDENTIALS, GIT_CEILING_DIRECTORIES: workspace, ...env },
     maxBuffer: 32 * 1024 * 1024,
   });
 }

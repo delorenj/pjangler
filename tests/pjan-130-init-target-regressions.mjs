@@ -29,6 +29,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CLI = join(ROOT, "dist", "index.js");
@@ -53,7 +54,7 @@ function cli(args, cwd) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv },
+    env: { ...process.env, ...hermeticChildEnv(temporary[0] ?? ROOT), GIT_CEILING_DIRECTORIES: temporary[0] ?? tmpdir(), ...lifecycleEnv },
     maxBuffer: 32 * 1024 * 1024,
   });
 }
@@ -99,7 +100,7 @@ function digest(dir, skip = []) {
 
 console.log("pjan-130 init target resolution");
 try {
-  const root = mkdtempSync(join(tmpdir(), "pjan-130-init-target-"));
+  const root = hermeticScratch("pjan-130-init-target-");
   temporary.push(root);
   mkdirSync(join(root, "home", ".cache", "pjangler"), { recursive: true });
   writeFileSync(

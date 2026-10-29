@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import { hermeticChildEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 // PJAN-31a: the CommonProject template shipped no .github at all, so no project
 // pjangler created ever got PR review. These guards render a REAL project with
@@ -29,7 +29,7 @@ function run(args, env = {}, cwd = root) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...lifecycleEnv, ...env },
+    env: { ...process.env, ...hermeticChildEnv(tmp), ...lifecycleEnv, ...env },
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.status !== 0) {
@@ -38,7 +38,7 @@ function run(args, env = {}, cwd = root) {
   return result.stdout;
 }
 
-const tmp = mkdtempSync(join(tmpdir(), "pjan-31a-"));
+const tmp = hermeticScratch("pjan-31a-");
 try {
   const homeDir = join(tmp, "home");
   mkdirSync(homeDir);

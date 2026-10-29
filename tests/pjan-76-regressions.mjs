@@ -21,13 +21,13 @@ import { createSkillPackFixture, createBmadInstallerFixture, createSkillexMiseFi
 // in the create test below, which does run the real installer.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const workspace = mkdtempSync(join(tmpdir(), "pjan-76-"));
+const workspace = hermeticScratch("pjan-76-");
 createSkillPackFixture(join(workspace, "catalog"));
 const skillexBin = createSkillexMiseFixture(workspace);
 const bmadInstaller = createBmadInstallerFixture(workspace);
