@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import {
   chmodSync, existsSync, lstatSync, lutimesSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
@@ -72,7 +73,7 @@ try {
     put(join(dir, "plain.db"), "db");
     put(join(dir, "daemon.pid"), "1");
     mkdirSync(join(dir, ".git")); put(join(dir, ".git", "HEAD"), "ref");
-    assert.equal(spawnSync("mkfifo", [join(dir, "pipe")]).status, 0, "mkfifo");
+    assert.equal(spawnSync("mkfifo", [join(dir, "pipe")], { env: hermeticEnv() }).status, 0, "mkfifo");
     symlinkSync("kept.txt", join(dir, "link"));
     put(join(dir, "file-ancestor"), "i am a file");
     symlinkSync(join(dir, "kept.txt"), join(dir, "link-ancestor"));
@@ -236,7 +237,7 @@ try {
       assert.ok(!existsSync(join(dir, "ro", "extra.txt")));
 
       // fifos are invisible: never captured, never deleted
-      assert.equal(spawnSync("mkfifo", [join(dir, "pipe")]).status, 0);
+      assert.equal(spawnSync("mkfifo", [join(dir, "pipe")], { env: hermeticEnv() }).status, 0);
       restoreTreeBackup(dir, backup);
       assert.ok(existsSync(join(dir, "pipe")), "a fifo created after the backup survives the restore");
       assert.ok(!backup.has("pipe"));

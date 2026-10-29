@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -235,7 +236,7 @@ export function companion(req){ if(req.operation==='plan'&&${mutate})chmodSync(j
     const counter = join(dir, "experiments", "meter-llm-ab", "score.py");
     const writer = spawn(process.execPath, ["-e",
       `const {renameSync,writeFileSync}=require('node:fs');let i=0;const tick=()=>{writeFileSync(${JSON.stringify(`${counter}.next`)},String(++i));renameSync(${JSON.stringify(`${counter}.next`)},${JSON.stringify(counter)});setImmediate(tick);};tick();`],
-    { stdio: "ignore" });
+    { stdio: "ignore", env: hermeticEnv() });
     try {
       const read = () => Number(readFileSync(counter, "utf8")) || 0;
       for (let tries = 0; read() === 0 && tries < 200; tries++) await new Promise((done) => setTimeout(done, 10));

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import YAML from "yaml";
 
 // This is a network/cache-backed release contract, intentionally separate from
@@ -33,14 +34,16 @@ function diagnostics(result) {
 function runRequired(command, args, purpose, timeout = 180_000) {
   const result = spawnSync(command, args, {
     cwd: root,
-    env: {
-      ...process.env,
+    // A clean npm (the private hermetic HOME, so an empty cache and the public
+    // registry, as on a CI runner) plus the GitHub token the real installer
+    // reads to resolve module tags (publish.yml passes the job token).
+    env: hermeticEnv({
       CI: "true",
       FORCE_COLOR: "0",
       NO_COLOR: "1",
       npm_config_fund: "false",
       npm_config_update_notifier: "false",
-    },
+    }, { pass: ["GITHUB_TOKEN"] }),
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
     timeout,

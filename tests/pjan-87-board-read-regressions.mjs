@@ -27,6 +27,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-87-"));
@@ -46,7 +47,7 @@ function bundle(entrySources, outName) {
   const built = spawnSync(
     esbuild,
     [entry, "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${out}`],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: hermeticEnv() },
   );
   if (built.status !== 0) {
     console.error(`failed to bundle ${outName}:\n${built.stderr}`);
@@ -71,7 +72,7 @@ function bundleCli() {
       "--format=esm",
       `--outfile=${out}`,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: hermeticEnv() },
   );
   if (built.status !== 0) {
     console.error(`failed to bundle the CLI:\n${built.stderr}`);
@@ -397,7 +398,7 @@ server.listen(0, "127.0.0.1", () => process.stdout.write("port=" + server.addres
 const stubPath = join(workspace, "plane-stub.mjs");
 writeFileSync(stubPath, stubSource, "utf8");
 
-const stub = spawn(process.execPath, [stubPath], { stdio: ["ignore", "pipe", "inherit"] });
+const stub = spawn(process.execPath, [stubPath], { stdio: ["ignore", "pipe", "inherit"], env: hermeticEnv() });
 const port = await new Promise((done, fail) => {
   const timer = setTimeout(() => fail(new Error("the Plane stub never reported a port")), 10_000);
   stub.stdout.on("data", (chunk) => {
@@ -616,8 +617,7 @@ function run(args, cwd = planeRepo, extraEnv = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: {
-      PATH: process.env.PATH,
+    env: hermeticEnv({
       HOME: workspace,
       GIT_CEILING_DIRECTORIES: workspace,
       PLANE_BASE: base,
@@ -625,7 +625,7 @@ function run(args, cwd = planeRepo, extraEnv = {}) {
       HERMES_FLEET_ENV: join(workspace, "absent.env"),
       HERMES_TEMPLATE_CONFIG: join(workspace, "absent.toml"),
       ...extraEnv,
-    },
+    }),
   });
 }
 

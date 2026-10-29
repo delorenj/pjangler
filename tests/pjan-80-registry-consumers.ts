@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +37,7 @@ const server = spawn(process.execPath, ["--input-type=module", "-e", `
     res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(registry));
   });
   server.listen(0,'127.0.0.1',()=>console.log(server.address().port));
-`], { stdio: ["pipe", "pipe", "inherit"] });
+`], { stdio: ["pipe", "pipe", "inherit"], env: hermeticEnv() });
 server.stdin.end(JSON.stringify(registry));
 try {
   const [output] = await once(server.stdout, "data");

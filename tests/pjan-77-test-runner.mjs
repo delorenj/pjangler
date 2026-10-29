@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 export function runTypescriptRegression(sourceName) {
   const root = resolve(import.meta.dirname, "..");
@@ -14,10 +15,15 @@ export function runTypescriptRegression(sourceName) {
     const build = spawnSync("npm", ["exec", "--", "esbuild", join(root, "tests", sourceName), "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${output}`], {
       cwd: root,
       encoding: "utf8",
+      env: hermeticEnv(),
       maxBuffer: 20 * 1024 * 1024,
     });
     assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-    const run = spawnSync(process.execPath, [output], { cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
+    // The bundled suite is a child like any other. The Postgres-backed ones
+    // (pjan-80-*, pjan-129) reach the operator's or CI's database through the
+    // PG* connection settings, passed by name.
+    const run = spawnSync(process.execPath, [output], { cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024,
+      env: hermeticEnv({}, { pass: ["PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PJ_TEST_ADMIN_DATABASE", "PJANGLER_REQUIRE_DISPOSABLE_POSTGRES"] }) });
     assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
     process.stdout.write(run.stdout);
   } finally {

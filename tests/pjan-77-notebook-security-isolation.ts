@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -12,7 +13,7 @@ import { OpenNotebookClient } from "../src/notebook/open-notebook-client";
 import { DEFAULT_NOTEBOOK_LIMITS, NOTEBOOK_POLICY_VERSION, NotebookError, type EffectiveNotebookConfigV1, type PjanglerNoteEnvelopeV1 } from "../src/notebook/types";
 
 function git(repo: string, args: string[]): void {
-  const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd: repo, encoding: "utf8", env: hermeticEnv() });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
 }
 

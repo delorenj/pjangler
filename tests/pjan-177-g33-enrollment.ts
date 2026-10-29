@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { ProjectRecipe, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
@@ -453,7 +454,7 @@ try {
     // configured, and g33 enrollment configures it, so one `migrate --all` must enroll FIRST.
     const { dir, ctx } = migrateProject("converge");
     // A real (fixture) install, then rolled back to an old version so bmad.version has work to do.
-    execFileSync(process.env.PJ_BMAD_INSTALLER!, ["install", "--directory", dir, "--modules", "core", "--yes"], { stdio: "pipe" });
+    execFileSync(process.env.PJ_BMAD_INSTALLER!, ["install", "--directory", dir, "--modules", "core", "--yes"], { stdio: "pipe", env: hermeticEnv() });
     const installedManifest = join(dir, "_bmad", "_config", "manifest.yaml");
     writeFileSync(installedManifest, readFileSync(installedManifest, "utf8").replace(/(installation:\s*\n\s*version:)\s*\S+/, "$1 6.0.0"));
     const registry = new RecipeRegistry([noop("mise"), noop("agent-hooks", ["mise"]), new BmadRecipe()]);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,13 +13,9 @@ const workspace = mkdtempSync(join(tmpdir(), "pjan-77-release-"));
 let packageSpace: string | undefined;
 let server: ChildProcessWithoutNullStreams | undefined;
 
+/** No PJ_PROJECT_NOTEBOOK_*, PJ_SKILLS_REGISTRY_ROOT or OPEN_NOTEBOOK_PASSWORD from the operator: the allowlist copies none. */
 function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const env = { ...process.env, ...extra };
-  delete env.PJ_PROJECT_NOTEBOOK_SKILL_SOURCE;
-  delete env.PJ_PROJECT_NOTEBOOK_SKILL_ROOT;
-  delete env.PJ_SKILLS_REGISTRY_ROOT;
-  delete env.OPEN_NOTEBOOK_PASSWORD;
-  return env;
+  return hermeticEnv(extra);
 }
 
 function runCli(entry: string, args: string[], env: NodeJS.ProcessEnv, cwd = root) {
@@ -85,7 +82,7 @@ const server = http.createServer((req, res) => { appendFileSync(log, String(req.
 server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 `);
-  server = spawn(process.execPath, [script, requestLog], { stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, [script, requestLog], { stdio: ["ignore", "pipe", "pipe"], env: hermeticEnv() });
   const port = await new Promise<number>((resolvePort, reject) => {
     let buffer = "";
     const timeout = setTimeout(() => reject(new Error("fixture server did not start")), 5_000);
@@ -168,7 +165,7 @@ try {
   assert.ok(packedResult?.files.some((item) => item.path === "dist/assets/project-notebook-skill/export-manifest.json"));
   const tarball = join(workspace, packedResult!.filename);
   packageSpace = mkdtempSync(join(root, ".pjan-77 npm pack space "));
-  const extracted = spawnSync("tar", ["-xzf", tarball, "-C", packageSpace], { encoding: "utf8" });
+  const extracted = spawnSync("tar", ["-xzf", tarball, "-C", packageSpace], { encoding: "utf8", env: hermeticEnv() });
   assert.equal(extracted.status, 0, `${extracted.stdout}${extracted.stderr}`);
   const packedRoot = join(packageSpace, "package");
   const packedEntry = join(packedRoot, "dist", "index.js");

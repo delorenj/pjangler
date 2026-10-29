@@ -5,6 +5,7 @@
 // PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1 for a release gate that fails instead
 // of skipping when a required disposable Postgres capability is unavailable.
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
@@ -15,14 +16,13 @@ const PROBE_TIMEOUT_MS = 5_000;
 const CHILD_MAX_BUFFER = 1024 * 1024;
 const MAX_PATH_BYTES = 32 * 1024;
 const MAX_PATH_ENTRIES = 256;
-const env = {
-  ...process.env,
+const env = hermeticEnv({
   PGHOST: process.env.PGHOST || "localhost",
   PGPORT: process.env.PGPORT || "5432",
   PGUSER: process.env.PGUSER || "delorenj",
   PGPASSWORD: process.env.PGPASSWORD || "",
   PGDATABASE: DB,
-};
+});
 const requireDisposablePostgres =
   process.env.PJANGLER_REQUIRE_DISPOSABLE_POSTGRES === "1";
 

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { Command, type InvokeResult } from "../src/commands/Command";
 import { Recipe } from "../src/recipes/Recipe";
 import { ProjectRecipe, unsafeToRemove, type ProjectRecipeRuntime } from "../src/recipes/ProjectRecipe";
@@ -284,7 +285,7 @@ function notebookFixtureRecipe(dir: string): NotebookRecipe {
   return new NotebookRecipe(new NotebookModule({
     registryPath: join(dir, "registry.yaml"),
     stateRoot: join(home, ".local", "state", "pjangler", "notebook", "v1"),
-    env: { ...process.env, HOME: home, XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state") },
+    env: hermeticEnv({ HOME: home, XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state") }),
   }));
 }
 
@@ -479,11 +480,10 @@ function notebookFixtureRecipe(dir: string): NotebookRecipe {
 
 {
   const fixture = projectFixture();
-  const isolatedGitEnv = {
-    ...process.env,
+  const isolatedGitEnv = hermeticEnv({
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
-  };
+  });
   const runtime: ProjectRecipeRuntime = {
     async executePlan(plan) { return { ok: true, plan, logs: [], errors: [], changedFiles: [] }; },
     preflightBmad() { return { ok: true }; },

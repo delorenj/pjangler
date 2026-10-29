@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { buildSync } from "esbuild";
@@ -39,7 +40,7 @@ const legacyPath = join(temporary, "legacy.yaml");
 const script = join(root, "scripts/migrate-project-registry.mjs");
 function run(executable, args, cwd = root) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [executable, ...args], { cwd, env: { ...process.env, PJ_PROJECT_REGISTRY: endpoint, PJ_REGISTRY_URL: endpoint }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [executable, ...args], { cwd, env: hermeticEnv({ PJ_PROJECT_REGISTRY: endpoint, PJ_REGISTRY_URL: endpoint }), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => stdout += chunk);
     child.stderr.on("data", chunk => stderr += chunk);

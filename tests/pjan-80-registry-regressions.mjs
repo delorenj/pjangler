@@ -6,11 +6,13 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildSync } from 'esbuild';
 import pg from 'pg';
+import { hermeticEnv } from './helpers/hermetic-env.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const temp = mkdtempSync(join(tmpdir(), 'pjan-80-registry-'));
 const database = `pjan80_${process.pid}_${Date.now()}`;
-const env = { ...process.env, PGHOST: process.env.PGHOST ?? '/var/run/postgresql', PGDATABASE: database, PJ_REGISTRY_PORT: '0' };
+// The registry service reaches the same Postgres this suite does: PG* connection settings are passed by name.
+const env = hermeticEnv({ PGHOST: process.env.PGHOST ?? '/var/run/postgresql', PGDATABASE: database, PJ_REGISTRY_PORT: '0' }, { pass: ['PGPORT', 'PGUSER', 'PGPASSWORD'] });
 const admin = new pg.Client({ host: env.PGHOST, database: process.env.PJ_TEST_ADMIN_DATABASE ?? 'postgres' });
 let child;
 let db;

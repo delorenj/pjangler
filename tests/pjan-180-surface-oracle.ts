@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import {
   appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
@@ -53,6 +54,14 @@ process.env.PJ_G33_ADAPTER_EXPORT = "";
 delete process.env.PJ_BMAD_INSTALLER;
 delete process.env.BMAD_EXTERNAL_MODULES_CACHE;
 for (const dir of [home, process.env.XDG_CONFIG_HOME, process.env.TMPDIR]) mkdirSync(dir!, { recursive: true });
+/**
+ * The real installer's env: the oracle's own isolation above, named key by key
+ * (PJAN-193), plus the npm cache and GitHub token the launcher hands this suite.
+ */
+const installerEnv = () => hermeticEnv({
+  HOME: home, XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  TMPDIR: process.env.TMPDIR, GIT_CEILING_DIRECTORIES: "/tmp", CI: "true", FORCE_COLOR: "0", NO_COLOR: "1",
+}, { pass: ["GITHUB_TOKEN", "npm_config_cache", "npm_config_update_notifier", "npm_config_fund"] });
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 const TOOLS = [...SUPPORTED_BMAD_TOOLS];
 const put = (path: string, text: string) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
@@ -213,7 +222,7 @@ async function scenario(pkg: Pkg, verified: Record<string, string>, label: strin
 function killWhen(pkg: Pkg, dir: string, extra: string[], when: { marker?: string; stdout?: RegExp }): Promise<{ ok: boolean; stdout: string; error?: string }> {
   return new Promise((done) => {
     const child = spawn(process.execPath, [pkg.entry, ...bmadInstallerArgs(dir, ["bmm"], extra)],
-      { env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+      { env: installerEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let killed = false;
     const kill = () => { if (!killed) { killed = true; child.kill("SIGKILL"); } };
@@ -472,7 +481,7 @@ for (const [rel,text] of Object.entries(${JSON.stringify(ops)})) { const p=path.
   fs.mkdirSync(path.dirname(p),{recursive:true}); fs.writeFileSync(p,text); }
 fs.writeFileSync(${JSON.stringify(done)},'1');`;
       return {
-        start: () => { spawn(process.execPath, ["-e", script], { stdio: "ignore" }); },
+        start: () => { spawn(process.execPath, ["-e", script], { stdio: "ignore", env: hermeticEnv() }); },
         wait: () => {
           const until = Date.now() + 30_000;
           while (!existsSync(done) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
@@ -534,7 +543,7 @@ fs.writeFileSync(${JSON.stringify(done)},'1');`;
       rmSync(join(dir, ".zcode"), { recursive: true, force: true });
       rmSync(join(dir, ".opencode"), { recursive: true, force: true });
       const result = await update(dir, deriveFor(dir), () => {
-        const edit = spawnSync(process.execPath, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(join(dir, "_bmad", "_memory", "agent-state.md"))},'agent state v2\\n')`]);
+        const edit = spawnSync(process.execPath, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(join(dir, "_bmad", "_memory", "agent-state.md"))},'agent state v2\\n')`], { env: hermeticEnv() });
         assert.equal(edit.status, 0);
       });
       assert.equal(result.ok, false, JSON.stringify(result));

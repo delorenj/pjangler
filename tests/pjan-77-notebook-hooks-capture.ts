@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +17,7 @@ import { parseNoteEnvelope, sha256Hex, withNoteEnvelope } from "../src/notebook/
 import { DEFAULT_NOTEBOOK_LIMITS, NOTEBOOK_POLICY_VERSION, NotebookError, type EffectiveNotebookConfigV1, type OpenNotebookNoteV1, type PjanglerNoteEnvelopeV1 } from "../src/notebook/types";
 
 function git(repo: string, args: string[]): void {
-  const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  const result = spawnSync("git", args, { cwd: repo, encoding: "utf8", env: hermeticEnv() });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
 }
 

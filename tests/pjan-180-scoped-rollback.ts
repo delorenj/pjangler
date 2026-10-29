@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
@@ -40,7 +41,7 @@ const pass = (label: string) => { checks++; console.log(`PASS ${label}`); };
 
 /** Run `script` (CommonJS) in a SEPARATE node process: the concurrent agent. */
 function writerProcess(script: string): void {
-  const run = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", env: hermeticEnv() });
   assert.equal(run.status, 0, `writer process failed: ${run.stderr}`);
 }
 const writerScript = (ops: Record<string, string | null>, base: string) => `
@@ -132,7 +133,7 @@ fs.mkdirSync(path.join(dir,'_bmad-output'),{recursive:true});
 process.stdout.write('│  Created directories:\\n│    output folder: _bmad-output\\n');
 process.exit(Number(code));`);
 const runFake = (dir: string, code: number) => () => {
-  const run = spawnSync(process.execPath, [fakeInstaller, dir, String(code)], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, [fakeInstaller, dir, String(code)], { encoding: "utf8", env: hermeticEnv() });
   return { ok: run.status === 0, error: run.status === 0 ? undefined : `installer exited ${run.status}`, stdout: run.stdout };
 };
 
@@ -264,7 +265,7 @@ try {
     assert.equal(live.ok, false);
     assert.equal((live as { error: string }).error, `another pj BMAD update is running on this repo (pid ${process.pid})`);
     if (first.ok) first.release();
-    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8", env: hermeticEnv() });
     const lockPath = (acquireBmadUpdateLock(dir) as { ok: true; path: string; release(): void });
     lockPath.release();
     writeFileSync(lockPath.path, dead.stdout);
@@ -339,7 +340,7 @@ try {
       hadManifestG33: false, hadTomlG33: false, ...(scope ? { scope } : {}),
       beforeInstall: () => {
         // A separate process, running WHILE the installer runs.
-        writer = spawn(process.execPath, ["-e", `${writerScript(writes, dir)};require('node:fs').writeFileSync(${JSON.stringify(done)},'1');`], { stdio: "ignore" });
+        writer = spawn(process.execPath, ["-e", `${writerScript(writes, dir)};require('node:fs').writeFileSync(${JSON.stringify(done)},'1');`], { stdio: "ignore", env: hermeticEnv() });
         return { changedFiles: [], details: [] };
       },
       runInstaller: () => {
@@ -542,7 +543,7 @@ wds_folders:
     const churnDir = join(dir, "_bmad", "churn");
     mkdirSync(churnDir, { recursive: true });
     const churn = spawn(process.execPath, ["-e", `const fs=require('node:fs'),path=require('node:path');const d=${JSON.stringify(churnDir)};
-for(;;){for(let i=0;i<600;i++)fs.writeFileSync(path.join(d,'f'+i),'x');for(let i=0;i<600;i++)fs.rmSync(path.join(d,'f'+i),{force:true});}`], { stdio: "ignore" });
+for(;;){for(let i=0;i<600;i++)fs.writeFileSync(path.join(d,'f'+i),'x');for(let i=0;i<600;i++)fs.rmSync(path.join(d,'f'+i),{force:true});}`], { stdio: "ignore", env: hermeticEnv() });
     try {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
       let aborted = 0;
