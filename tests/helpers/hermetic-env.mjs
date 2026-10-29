@@ -113,7 +113,11 @@ const PASSTHROUGH_PATTERN = /^LC_[A-Z]+$/;
  *   (--require/--import) would inject code into every pj child. A suite that
  *   needs a preload sets it as a fixture value.
  * - DISPLAY, WAYLAND_DISPLAY, SSH_*, COLUMNS, LINES, SHELL: interactive-session
- *   state; children are headless and non-interactive.
+ *   state; children are headless and non-interactive. (One caveat outside this
+ *   helper's reach: the MCP SDK's StdioClientTransport merges HOME, LOGNAME,
+ *   PATH, SHELL, TERM and USER from the operator env UNDER the env it is given.
+ *   hermeticEnv's HOME/PATH/USER/LOGNAME win, so only SHELL and TERM, neither a
+ *   credential, reach an MCP server child.)
  * - CI, GITHUB_*, RUNNER_*, npm_config_* / npm_package_* (npm run injects
  *   them), PG*, PJ_TICKET_PROVIDER_ADAPTERS: harness configuration. The suite
  *   process still sees them (the runner gives a suite the operator env, see
@@ -176,14 +180,4 @@ export function hermeticEnv(fixture = {}, { pass = [] } = {}) {
     else env[name] = String(value);
   }
   return env;
-}
-
-/** TEMPORARY during the PJAN-193 migration; removed once nothing imports it. */
-export function hermeticChildEnv(scratch) {
-  return {
-    TMPDIR: HERMETIC_TMP_BASE, PYTHONDONTWRITEBYTECODE: "1",
-    PLANE_API_KEY: "", PLANE_DEFAULT_API_KEY: "", PLANE_33GOD_API_KEY: "", PLANE_AUTOMATICAI_API_KEY: "",
-    PLANE_INTELLIFORIA_API_KEY: "", PLANE_LASERTOAST_API_KEY: "", TRELLO_KEY: "", TRELLO_API_KEY: "", TRELLO_TOKEN: "",
-    HERMES_FLEET_ENV: join(scratch, "no-such-fleet.env"), PJ_G33_ADAPTER_MODULE: "", PJ_G33_ADAPTER_EXPORT: "",
-  };
 }

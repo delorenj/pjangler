@@ -21,8 +21,7 @@
 //   node scripts/run-tests.mjs --no-build      # skip the rebuild (debugging only)
 
 import { spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
-import { hermeticChildEnv } from "../tests/helpers/hermetic-env.mjs";
+import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -47,6 +46,8 @@ const GATES = [
   ["check:lock", "scripts/check-package-lock-parity.mjs"],
   ["check:submodules", "scripts/check-submodule-contract.mjs"],
   ["check:tracked-secrets", "scripts/check-tracked-secrets.mjs"],
+  // PJAN-193: no test file hands a child the operator env (see SUITE_ENV below).
+  ["check:hermetic-test-env", "scripts/check-hermetic-test-env.mjs"],
 ];
 
 /**
@@ -91,6 +92,7 @@ const SUITES = [
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",
   "tests/pjan-167-g33-companion.mjs",
   "tests/pjan-188-hermetic-canary-regressions.mjs",
+  "tests/pjan-193-env-allowlist-regressions.mjs",
   "tests/pjan-167-enrollment.mjs",
   "tests/pjan-177-g33-enrollment.mjs",
   "tests/pjan-178-g33-scoped-contract.mjs",
@@ -221,39 +223,37 @@ if (!skipBuild) {
 }
 
 /**
- * A regression suite must never carry the operator's production credentials.
+ * What a suite process gets: the operator env, unchanged (PJAN-193).
  *
- * Board provisioning stopped being gated on `--live` (a plain `pj init` is the
- * designated ingress and has to deliver a board), which made the suite's
- * inherited `PLANE_33GOD_API_KEY` live ammunition: one run created seven real
- * boards in the 33god workspace before anyone noticed. Blanking the credentials
- * here makes the whole suite hermetic by construction — the adapter is
- * unreachable, so `pj init` takes its no-credential path.
+ * Isolation lives one level down. Every child a suite starts (pj, git, mise,
+ * copier, python, redis, the PTY driver, the bundled TypeScript suites) gets a
+ * COMPLETE env from `hermeticEnv()` in tests/helpers/hermetic-env.mjs: an
+ * explicit passthrough allowlist plus the suite's fixture values, inheriting
+ * nothing else, so no operator credential or config override can reach one.
+ * The `check:hermetic-test-env` gate above fails a test file that builds a
+ * child env any other way, and tests/pjan-193-env-allowlist-regressions.mjs
+ * proves from inside a real pj child that novel secret-shaped variables never
+ * arrive.
  *
- * PJAN-188: this overlay is now a BACKSTOP, not the isolation. Suites that
- * spawn pjangler isolate themselves with tests/helpers/hermetic-env.mjs
- * (`hermeticScratch` + `hermeticChildEnv`), so a suite passes the same way
- * standalone and under this runner; this table (imported from the same helper,
- * so there is exactly one definition) only catches a suite that forgot, and a
- * canary suite (pjan-188-hermetic-canary) fails when that self-isolation
- * regresses. The historical intent is preserved below:
+ * This runner used to overlay pins on the suite env (TMPDIR=/tmp, blanked
+ * PLANE_/TRELLO_/PJ_G33_ keys, a missing HERMES_FLEET_ENV). That was the
+ * PJAN-188 backstop for a suite that forgot to isolate its children, and it is
+ * gone on purpose:
  *
- * - TMPDIR: the operator's TMPDIR can sit inside a git work tree (it does on
- *   this machine), and a fixture under it makes the Skillex core refuse every
- *   activation receipt (E_RECEIPT_UNSAFE_PATH).
- * - PLANE_ and TRELLO- keys: see above. Suites that WANT a provider
- *   (tests/pjan-30-regressions.mjs) inject their own stub adapter and fake
- *   key, which override these.
- * - HERMES_FLEET_ENV: a fleet env that never exists.
- * - PJ_G33_ADAPTER_*: the operator's real g33 adapter must not leak in.
- *
- * This is the second line of defence, not the first: the legacy
- * `~/.config/zshyzsh/secrets.zsh` fallback is a FILE, and redirecting
- * XDG_CONFIG_HOME here would change what the Hermes template suites read. The
- * first line is `--skip-board` on every fixture bootstrap, which states the
- * intent where the intent lives.
+ * - It no longer protected anything. Children never see the suite env, and a
+ *   suite that forgets is now a red gate, not a silently masked run.
+ * - It was the masking. A pin that holds only under the runner is how
+ *   pjan-167-g33-companion passed here while failing standalone (PJAN-188).
+ *   With no overlay, `node tests/<suite>.mjs` from the operator shell and this
+ *   runner start the suite in the same env, so they are equivalent by
+ *   construction rather than by a backstop.
+ * - The suite process itself legitimately needs harness configuration that an
+ *   allowlist here would have to duplicate: PGHOST/PGPORT/PGUSER and
+ *   PJANGLER_REQUIRE_DISPOSABLE_POSTGRES (publish.yml's Postgres service),
+ *   PJ_TICKET_PROVIDER_ADAPTERS (the Krebs adapters CI fetches),
+ *   NODE_V8_COVERAGE (c8). Suites pass what a child needs by name.
  */
-const HERMETIC_ENV = hermeticChildEnv(join(root, "scripts"));
+const SUITE_ENV = process.env;
 
 const results = [];
 for (const [index, step] of steps.entries()) {
@@ -263,7 +263,7 @@ for (const [index, step] of steps.entries()) {
   const run = spawnSync(process.execPath, [step.script], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, ...HERMETIC_ENV },
+    env: SUITE_ENV,
     timeout: SUITE_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024,
   });
