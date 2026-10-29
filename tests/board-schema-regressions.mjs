@@ -17,6 +17,7 @@
 //      tickets), and --dry-run never runs px for a write.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -80,7 +81,7 @@ process.exit(reply.status ?? 0);
 function repoWith(name, ticketProvider) {
   const repo = join(work, name, "repo");
   mkdirSync(repo, { recursive: true });
-  assert.equal(spawnSync("git", ["init", "-q", repo], { encoding: "utf8" }).status, 0);
+  assert.equal(spawnSync("git", ["init", "-q", repo], { encoding: "utf8", env: hermeticEnv({ GIT_CEILING_DIRECTORIES: work }) }).status, 0);
   writeFileSync(join(repo, ".project.json"), `${JSON.stringify({ project_id: name, name, ticket_provider: ticketProvider }, null, 2)}\n`);
   return repo;
 }
@@ -98,13 +99,13 @@ function pj(name, bin, args, replies = {}) {
   writeFileSync(repliesFile, JSON.stringify(replies));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
-  const env = {
-    ...process.env,
+  const env = hermeticEnv({
     PATH: [bin, "/usr/bin", "/bin"].join(":"),
     HOME: home,
+    GIT_CEILING_DIRECTORIES: work,
     PX_LOG: log,
     PX_REPLIES: repliesFile,
-  };
+  });
   const result = spawnSync(process.execPath, [cli, ...args, "--json", "--registry", join(dir, "registry.yaml")], {
     cwd: dir,
     env,

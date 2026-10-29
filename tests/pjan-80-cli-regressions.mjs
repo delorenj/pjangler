@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import YAML from "yaml";
@@ -7,7 +8,7 @@ import YAML from "yaml";
 const root = resolve(import.meta.dirname, "..");
 const temporary = mkdtempSync(join(root, ".pjan-80-cli-"));
 try {
-  const build = spawnSync("npm", ["exec", "--", "esbuild", "src/index.ts", "src/prompt.ts", "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outdir=${temporary}/bin`], { cwd: root, encoding: "utf8" });
+  const build = spawnSync("npm", ["exec", "--", "esbuild", "src/index.ts", "src/prompt.ts", "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outdir=${temporary}/bin`], { cwd: root, encoding: "utf8", env: hermeticEnv() });
   assert.equal(build.status, 0, build.stderr);
   const repo = join(temporary, "different-directory-name");
   const nested = join(repo, "src");
@@ -20,7 +21,7 @@ try {
   const registry = { schema_version: 1, projects: { px: { project_id: "px", slug: "px", name: "Old indexed name", description: "Old indexed description", repo_path: repo, status: "active", source_artifacts: [], template: { commonproject: { enabled: true, primary_language: "typescript" } }, ticket_provider: manifest.ticket_provider, agents: {}, created_at: "2026-09-15T00:00:00Z", updated_at: "2026-09-15T00:00:00Z" } } };
   writeFileSync(registryPath, YAML.stringify(registry));
   function run(args, location = registryPath, cwd = nested) {
-    return spawnSync(process.execPath, [join(temporary, "bin/index.js"), ...args], { cwd, encoding: "utf8", env: { ...process.env, PJ_PROJECT_REGISTRY: location, NO_COLOR: "1" }, timeout: 15000 });
+    return spawnSync(process.execPath, [join(temporary, "bin/index.js"), ...args], { cwd, encoding: "utf8", env: hermeticEnv({ PJ_PROJECT_REGISTRY: location, NO_COLOR: "1" }), timeout: 15000 });
   }
   function json(args, location = registryPath) {
     const result = run([...args, "--json"], location);
@@ -79,7 +80,7 @@ try {
   assert.doesNotMatch(initHelp.stdout, /--slug/);
   assert.equal(json(["remove", "PX"]).body.slug, "px");
   assert.equal(run(["board", "slug"]).stdout.trim(), "px");
-  const prompt = spawnSync(process.execPath, [join(temporary, "bin/prompt.js")], { cwd: nested, encoding: "utf8" });
+  const prompt = spawnSync(process.execPath, [join(temporary, "bin/prompt.js")], { cwd: nested, encoding: "utf8", env: hermeticEnv() });
   // The manifest spells the id `Px` and the legacy field `PX`, so an exact head
   // still proves what PJAN-80 came for: the prompt reports the canonical
   // lowercase id and never the legacy spelling. The badge beside it is the

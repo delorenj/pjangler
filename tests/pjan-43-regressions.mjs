@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -48,15 +49,14 @@ function command(args, { cwd = root, home = makeHome("default"), extraEnv = {} }
   return spawnSync("node", [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: hermeticEnv({
       HOME: home,
       XDG_CACHE_HOME: join(home, ".cache"),
       PJ_SKILLS_REGISTRY_ROOT: bmadFixtureRoot,
       SKILLEX_REGISTRY_ROOT: bmadFixtureRoot,
       XDG_STATE_HOME: join(home, ".local", "state"),
       ...extraEnv,
-    },
+    }),
   });
 }
 

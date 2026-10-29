@@ -24,6 +24,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -55,7 +56,7 @@ const entry = process.env.PJAN75_CLI_SRC || join(root, "src", "index.ts");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
   [entry, "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${cli}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (built.status !== 0) {
   console.error(`failed to bundle the CLI:\n${built.stderr}`);
@@ -163,13 +164,12 @@ function runCli(args, { home, expectOk }) {
   const result = spawnSync("node", [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: hermeticEnv({
       HOME: home,
       GIT_CEILING_DIRECTORIES: workspace,
       NO_COLOR: "1",
       PJ_SKILLS_REGISTRY_ROOT: join(workspace, "packfix"),
-    },
+    }),
   });
   if (expectOk !== undefined) {
     assert.equal(

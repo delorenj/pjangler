@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "pjan-72-"));
@@ -55,7 +56,7 @@ function bundle(entrySources, outName, { external = true, entryIsSource = false 
       "--format=esm",
       `--outfile=${out}`,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: hermeticEnv() },
   );
   if (built.status !== 0) {
     console.error(`failed to bundle ${outName}:\n${built.stderr}`);
@@ -364,7 +365,7 @@ function run(bin, args, cwd, env = {}) {
   return spawnSync(process.execPath, [bin, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...BASE_ENV, ...env },
+    env: hermeticEnv({ ...BASE_ENV, ...env }),
   });
 }
 

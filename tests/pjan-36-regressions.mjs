@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -68,7 +69,7 @@ function buildProbe() {
   const build = spawnSync(
     "npm",
     ["exec", "--", "esbuild", join(root, "src", "parity", "index.ts"), "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${bundle}`],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", env: hermeticEnv() },
   );
   assert.equal(build.status, 0, `esbuild must bundle the parity module\n${build.stdout ?? ""}${build.stderr ?? ""}`);
 
@@ -84,7 +85,7 @@ function buildProbe() {
 function probePicker(probe, rules, env) {
   const result = spawnSync(process.execPath, [probe, JSON.stringify(rules)], {
     encoding: "utf8",
-    env: { ...process.env, FORCE_COLOR: "", NO_COLOR: "", ...env },
+    env: hermeticEnv({ FORCE_COLOR: "", NO_COLOR: "", ...env }),
   });
   assert.equal(result.status, 0, `probe must succeed\n${result.stderr}`);
   return JSON.parse(result.stdout);
@@ -94,7 +95,7 @@ function runCli(args, env) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, FORCE_COLOR: "", NO_COLOR: "", ...env },
+    env: hermeticEnv({ FORCE_COLOR: "", NO_COLOR: "", ...env }),
     maxBuffer: 10 * 1024 * 1024,
   });
 }

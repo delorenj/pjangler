@@ -14,6 +14,7 @@
 // package.json, read-only, to pin the c8 side of the contract.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -57,7 +58,7 @@ function ratchet(summary, floor, ...args) {
   writeFileSync(FLOOR, JSON.stringify(floor));
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: "utf8",
-    env: { ...process.env, COVERAGE_ROOT: ROOT, COVERAGE_FLOOR: FLOOR, COVERAGE_SUMMARY: SUMMARY },
+    env: hermeticEnv({ COVERAGE_ROOT: ROOT, COVERAGE_FLOOR: FLOOR, COVERAGE_SUMMARY: SUMMARY }),
   });
 }
 

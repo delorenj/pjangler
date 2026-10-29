@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
@@ -34,7 +35,7 @@ function cliJson(args) {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
-    env: { ...process.env, PJ_AGENT_HOOKS_LAYER: "0" },
+    env: hermeticEnv({ PJ_AGENT_HOOKS_LAYER: "0" }),
   });
   assert.ok(result.stdout.trim(), `${args.join(" ")} produced no JSON\n${result.stderr}`);
   return { result, payload: JSON.parse(result.stdout) };
@@ -100,7 +101,7 @@ try {
     const materializer = installMaterializer(repo);
     writeFileSync(join(repo, ".env"), POPULATED_ENV);
     if (envOp !== undefined) writeFileSync(join(repo, ".env.op"), envOp);
-    const result = spawnSync(materializer, [], { cwd: repo, encoding: "utf8" });
+    const result = spawnSync(materializer, [], { cwd: repo, encoding: "utf8", env: hermeticEnv() });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(repo, ".env"), "utf8"), POPULATED_ENV, `${name} must be a no-op`);
     assert.deepEqual(readdirSync(repo).filter((entry) => entry.startsWith(".env.inject.")), [], `${name} must not stage a temp file`);
@@ -123,7 +124,7 @@ exit 42`);
     const result = spawnSync(materializer, [], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}` }),
     });
     assert.equal(result.status, 42, "an op failure must remain visible to mise");
     assert.equal(readFileSync(join(repo, ".env"), "utf8"), POPULATED_ENV, "a failed injection must preserve .env byte-for-byte");
@@ -150,7 +151,7 @@ printf 'API_KEY=resolved\\n' > "$out"`);
     const result = spawnSync(materializer, [], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}` }),
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(repo, ".env"), "utf8"), "API_KEY=resolved\n");

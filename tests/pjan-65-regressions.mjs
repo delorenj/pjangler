@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -23,7 +24,7 @@ function runCli(args, cwd = root) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: hermeticEnv({ NO_COLOR: "1" }),
     maxBuffer: 20 * 1024 * 1024,
   });
 }
@@ -43,7 +44,7 @@ function subsystem(payload, id) {
 function makeRepo(name) {
   const repo = join(workspace, name);
   mkdirSync(repo, { recursive: true });
-  const init = spawnSync("git", ["-C", repo, "init", "-q"], { encoding: "utf8" });
+  const init = spawnSync("git", ["-C", repo, "init", "-q"], { encoding: "utf8", env: hermeticEnv() });
   assert.equal(init.status, 0, `git init failed for ${name}: ${init.stderr}`);
   return repo;
 }
@@ -246,7 +247,7 @@ try {
     command: "node",
     args: [serverPath],
     cwd: root,
-    env: { ...process.env, PJ_PROJECT_REGISTRY: registryPath },
+    env: hermeticEnv({ PJ_PROJECT_REGISTRY: registryPath }),
   });
   const client = new Client({ name: "pjan-65-regression", version: "1.0.0" });
   await client.connect(transport);

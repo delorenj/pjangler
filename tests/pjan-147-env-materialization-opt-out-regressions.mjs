@@ -16,6 +16,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rm
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { test } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
@@ -28,7 +29,7 @@ const HAND_KEPT_ENV = "GEMINI_API_KEY=keep-me\nSENDGRID_API_KEY=keep-me-too\n";
 function cliJson(args) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024,
-    env: { ...process.env, PJ_AGENT_HOOKS_LAYER: "0" },
+    env: hermeticEnv({ PJ_AGENT_HOOKS_LAYER: "0" }),
   });
   assert.ok(result.stdout.trim(), `${args.join(" ")} produced no JSON\n${result.stderr}`);
   return JSON.parse(result.stdout);

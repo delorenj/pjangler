@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { PassThrough } from "node:stream";
 
 // Every commit stamp below is a timezone-NAIVE ISO string, which git resolves
@@ -42,7 +43,7 @@ const kitPath = join(workspace, "kit.mjs");
 const bundled = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
   [kitEntry, "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${kitPath}`],
-  { encoding: "utf8" },
+  { encoding: "utf8", env: hermeticEnv() },
 );
 if (bundled.status !== 0) {
   console.error(`failed to bundle the test kit:\n${bundled.stderr}`);
@@ -77,7 +78,7 @@ function run(bin, args, cwd = root, env = {}) {
   return spawnSync(process.execPath, [bin, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, NO_COLOR: "1", ...env },
+    env: hermeticEnv({ NO_COLOR: "1", ...env }),
     maxBuffer: 20 * 1024 * 1024,
   });
 }
@@ -85,7 +86,7 @@ function run(bin, args, cwd = root, env = {}) {
 function git(repo, args, env = {}) {
   const result = spawnSync("git", ["-C", repo, ...args], {
     encoding: "utf8",
-    env: { ...process.env, GIT_GUARD_OFF: "1", ...env },
+    env: hermeticEnv({ GIT_GUARD_OFF: "1", ...env }),
   });
   return result;
 }

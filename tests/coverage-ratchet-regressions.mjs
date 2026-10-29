@@ -11,6 +11,7 @@
 // overrides. Nothing here reads or writes the repo's real floor.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -47,7 +48,7 @@ function floor(value) {
 function ratchet(...args) {
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: "utf8",
-    env: { ...process.env, COVERAGE_FLOOR: FLOOR, COVERAGE_SUMMARY: SUMMARY },
+    env: hermeticEnv({ COVERAGE_FLOOR: FLOOR, COVERAGE_SUMMARY: SUMMARY }),
   });
 }
 
