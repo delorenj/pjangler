@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -77,8 +78,8 @@ async function fixture({ select = ["alpha", "beta"], git = true } = {}) {
   // The task wiring is a separate concern; establish it so it never decides fixability here.
   await mise.migrate(ctx, await mise.audit(ctx));
   // Hermetic git: no global config, hooks or excludes from the operator's machine.
-  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(base, "xdg"),
-    GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" };
+  const gitEnv = hermeticEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(base, "xdg"), GIT_CEILING_DIRECTORIES: "/tmp",
+    GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" });
   const gitRun = (...args) => {
     const result = spawnSync("git", args, { cwd: project, env: gitEnv, encoding: "utf8" });
     assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);

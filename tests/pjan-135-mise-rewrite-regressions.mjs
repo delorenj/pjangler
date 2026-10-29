@@ -21,6 +21,7 @@
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -91,10 +92,9 @@ const withoutHooks = (text) => { const { hooks: _hooks, ...rest } = parseToml(te
 
 /** The real mise, with no state, config, trust or session leaking in either direction. */
 function miseEnv(state, trusted) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("MISE_") && !key.startsWith("__MISE")));
   mkdirSync(join(state, "home"), { recursive: true });
-  return {
-    ...env,
+  // hermeticEnv copies no MISE_*/__MISE* (session state) from the operator.
+  return hermeticEnv({
     HOME: join(state, "home"),
     XDG_CONFIG_HOME: join(state, "xdg-config"),
     XDG_STATE_HOME: join(state, "xdg-state"),
@@ -104,7 +104,7 @@ function miseEnv(state, trusted) {
     MISE_CACHE_DIR: join(state, "cache"),
     MISE_CONFIG_DIR: join(state, "config"),
     MISE_TRUSTED_CONFIG_PATHS: trusted,
-  };
+  });
 }
 let stateCounter = 0;
 const freshState = () => join(work, `mise-state-${stateCounter++}`);

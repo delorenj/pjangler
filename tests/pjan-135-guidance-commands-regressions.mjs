@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawn, spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
@@ -43,13 +44,12 @@ const lib = await import(pathToFileURL(join(work, "lib.mjs")).href);
 
 const home = join(work, "home");
 mkdirSync(home);
-const env = {
-  ...process.env,
+const env = hermeticEnv({
   HOME: home,
   XDG_CONFIG_HOME: join(home, ".config"),
   XDG_STATE_HOME: join(work, "state"),
   XDG_CACHE_HOME: join(work, "cache"),
-};
+});
 function pj(args, options = {}) {
   return spawnSync(process.execPath, [join(work, "pj.mjs"), ...args], { encoding: "utf8", env, cwd: work, ...options });
 }

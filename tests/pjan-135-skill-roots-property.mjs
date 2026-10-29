@@ -17,6 +17,7 @@
 // PJ_PROPERTY_ITERATIONS (default 400) and PJ_PROPERTY_SEED reproduce a run.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -83,12 +84,12 @@ function generate(f, rng) {
       if (earlier.length && rng.chance(0.45)) {
         const source = rng.pick(earlier);
         const variant = rng.pick(["exact", "exact", "subset", "superset", "mode"]);
-        spawnSync("cp", ["-a", source.path, entry]);
+        spawnSync("cp", ["-a", source.path, entry], { env: hermeticEnv() });
         if (lstatSync(entry).isDirectory()) {
           const files = readdirSync(entry).filter((file) => lstatSync(join(entry, file)).isFile());
           if (variant === "subset" && files.length > 1) rmSync(join(entry, rng.pick(files)));
           if (variant === "superset") put(join(entry, "extra.md"), "extra\n");
-          if (variant === "mode" && files.length) spawnSync("chmod", ["a+x", join(entry, rng.pick(files))]);
+          if (variant === "mode" && files.length) spawnSync("chmod", ["a+x", join(entry, rng.pick(files))], { env: hermeticEnv() });
         }
         made.push({ name, path: entry });
         log.push(`${location}/${name}: ${variant} copy of ${relative(f.project, source.path)}`);

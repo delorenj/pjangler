@@ -8,6 +8,7 @@
 // plan and agree; the result is re-derived from disk.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { buildSync } from "esbuild";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -143,7 +144,7 @@ test("F2 through the rule: skills.project-manifest never deletes before skillex 
   const f = await skillFixture(sources, { tag: "f2r" }); try {
     // Keep the manifest reachable through the symlinked .agents.
     renameSync(join(f.project, ".agents", "skills.json"), join(f.base, "skills.json"));
-    readdirSync(join(f.project, ".agents")).length || spawnSync("rmdir", [join(f.project, ".agents")]);
+    readdirSync(join(f.project, ".agents")).length || spawnSync("rmdir", [join(f.project, ".agents")], { env: hermeticEnv() });
     for (const name of ["alpha", "beta"]) put(join(f.alias(".claude"), name, "SKILL.md"), `${name} hand authored\n`);
     renameSync(join(f.base, "skills.json"), join(f.project, ".claude", "skills.json"));
     symlinkSync(".claude", join(f.project, ".agents"));
@@ -187,7 +188,7 @@ test("F10/B2: a submodule at a CLI skills root is never relocated and the parent
     const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.deepEqual(repoState(f.project), before);
-    const status = spawnSync("git", ["status", "--porcelain"], { cwd: f.project, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+    const status = spawnSync("git", ["status", "--porcelain"], { cwd: f.project, encoding: "utf8", env: hermeticEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CEILING_DIRECTORIES: "/tmp" }) });
     assert.equal(status.status, 0, status.stderr);
   } finally { f.close(); }
 });
@@ -461,8 +462,8 @@ test("F15 end to end through the real pj CLI: skillex migrate --apply, then pj m
     const f = await skillFixture(sources, { tag: "f15cli", select: ["alpha"] }); try {
       mkdirSync(f.R, { recursive: true });
       put(join(f.alias(".claude"), "localthing", "SKILL.md"), skill("localthing"));
-      const env = { ...process.env, HOME: f.home, XDG_STATE_HOME: join(f.base, "state"), PJ_SKILLS_REGISTRY_ROOT: f.catalog,
-        PJ_AGENT_HOOKS_LAYER: "0", PLANE_API_KEY: "", PLANE_33GOD_API_KEY: "", TRELLO_TOKEN: "" };
+      const env = hermeticEnv({ HOME: f.home, XDG_STATE_HOME: join(f.base, "state"), PJ_SKILLS_REGISTRY_ROOT: f.catalog,
+        PJ_AGENT_HOOKS_LAYER: "0", GIT_CEILING_DIRECTORIES: "/tmp" });
       const pj = (...args) => {
         const result = spawnSync(process.execPath, [join(work, "dist", "index.js"), ...args, "--json"], { cwd: f.base, env, encoding: "utf8", timeout: 120000 });
         assert.ok(result.stdout.trim().startsWith("{"), result.stderr + result.stdout);
@@ -534,7 +535,7 @@ test("an interrupted run blocks the next plan with its restore instructions, and
     const before = repoState(f.project);
     const crashed = spawnSync(process.execPath, ["--input-type=module", "-e",
       `const m = await import(${JSON.stringify(`file://${sources.bundle}`)}); m.applySkillRoots(${JSON.stringify(f.project)}, { dryRun: false });`],
-    { env: { ...process.env, PJ_SKILL_ROOTS_CRASH_AFTER: "2" }, encoding: "utf8" });
+    { env: hermeticEnv({ PJ_SKILL_ROOTS_CRASH_AFTER: "2", GIT_CEILING_DIRECTORIES: "/tmp" }), encoding: "utf8" });
     assert.equal(crashed.signal, "SIGKILL", crashed.stderr);
     const plan = planSkillRoots(f.project);
     assert.equal(plan.clean, false);
@@ -544,10 +545,10 @@ test("an interrupted run blocks the next plan with its restore instructions, and
     const [run] = readdirSync(quarantine);
     const restore = reason.match(/sh '([^']+restore\.sh)'/)?.[1];
     assert.equal(restore, join(quarantine, run, "restore.sh"), reason);
-    const restored = spawnSync("sh", [restore], { encoding: "utf8" });
+    const restored = spawnSync("sh", [restore], { encoding: "utf8", env: hermeticEnv() });
     assert.equal(restored.status, 0, restored.stderr);
-    spawnSync("rm", ["-rf", join(quarantine, run)]);
-    spawnSync("rmdir", [quarantine]);
+    spawnSync("rm", ["-rf", join(quarantine, run)], { env: hermeticEnv() });
+    spawnSync("rmdir", [quarantine], { env: hermeticEnv() });
     assert.deepEqual(repoState(f.project), before);
     const converged = applySkillRoots(f.project, { dryRun: false });
     assert.equal(converged.ok, true, JSON.stringify(converged));
@@ -586,7 +587,7 @@ test("a crash after ANY step is reversed byte for byte by the restore command th
         const before = repoState(f.project);
         const child = spawnSync(process.execPath, ["--input-type=module", "-e",
           `const m = await import(${JSON.stringify(`file://${sources.bundle}`)}); m.applySkillRoots(${JSON.stringify(f.project)}, { dryRun: false });`],
-        { env: { ...process.env, PJ_SKILL_ROOTS_CRASH_AFTER: String(after) }, encoding: "utf8" });
+        { env: hermeticEnv({ PJ_SKILL_ROOTS_CRASH_AFTER: String(after), GIT_CEILING_DIRECTORIES: "/tmp" }), encoding: "utf8" });
         if (child.signal !== "SIGKILL") {
           assert.equal(child.status, 0, child.stderr);
           break;
@@ -596,7 +597,7 @@ test("a crash after ANY step is reversed byte for byte by the restore command th
         assert.equal(plan.operations.length, 0, `${name}@${after}: a leftover quarantine blocks every operation`);
         const restore = plan.blocks.join("\n").match(/sh '([^']+restore\.sh)'/)?.[1];
         assert.ok(restore, `${name}@${after}: ${plan.blocks.join("\n")}`);
-        const restored = spawnSync("sh", [restore], { encoding: "utf8" });
+        const restored = spawnSync("sh", [restore], { encoding: "utf8", env: hermeticEnv() });
         assert.equal(restored.status, 0, `${name}@${after}: ${restored.stderr}`);
         assert.deepEqual(repoState(f.project), before, `${name}@${after}: the restore is exact`);
         assert.equal(applySkillRoots(f.project, { dryRun: false }).ok, true, `${name}@${after}: converges after the restore`);

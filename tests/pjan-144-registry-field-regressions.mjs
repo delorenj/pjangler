@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -43,8 +44,8 @@ async function fixture({ projectSkills, cacheOnly = [] }) {
   delete process.env.PJ_SKILLS_REGISTRY_ROOT;
   process.env.XDG_STATE_HOME = join(base, "state");
   process.env.GIT_CEILING_DIRECTORIES = "/tmp";
-  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(base, "xdg"),
-    GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" };
+  const gitEnv = hermeticEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(base, "xdg"), GIT_CEILING_DIRECTORIES: "/tmp",
+    GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" });
   const git = (cwd, ...args) => {
     const result = spawnSync("git", args, { cwd, env: gitEnv, encoding: "utf8" });
     assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);

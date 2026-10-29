@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./hermetic-env.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -43,15 +44,15 @@ export async function loadSources() {
 export function put(path, content, mode) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
-  if (mode !== undefined) spawnSync("chmod", [mode.toString(8), path]);
+  if (mode !== undefined) spawnSync("chmod", [mode.toString(8), path], { env: hermeticEnv() });
 }
 export function skill(name, body = "") { return `---\nname: ${name}\ndescription: Fixture ${name}\n---\n# ${name}\n${body}`; }
 export function lstatSafe(path) { try { return lstatSync(path); } catch { return undefined; } }
 export function readSafe(path) { try { return readFileSync(path, "utf8"); } catch (error) { return `<${error.code}>`; } }
 
 export function hermeticGit(base) {
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(base, "xdg"),
-    GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" };
+  const env = hermeticEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: join(base, "xdg"), GIT_CEILING_DIRECTORIES: "/tmp",
+    GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" });
   return (cwd, ...args) => {
     const result = spawnSync("git", ["-c", "protocol.file.allow=always", ...args], { cwd, env, encoding: "utf8" });
     assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
@@ -70,7 +71,7 @@ export function repoState(project) {
     return [name, stat.ino, stat.mode, stat.isSymbolicLink() ? `-> ${readlinkSync(path)}` : stat.isDirectory() ? walk(path) : createHash("sha256").update(readFileSync(path)).digest("hex")];
   });
   const index = existsSync(join(project, ".git"))
-    ? spawnSync("git", ["ls-files", "-s"], { cwd: project, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }).stdout
+    ? spawnSync("git", ["ls-files", "-s"], { cwd: project, encoding: "utf8", env: hermeticEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CEILING_DIRECTORIES: "/tmp" }) }).stdout
     : null;
   return { tree: walk(project), index };
 }
@@ -86,7 +87,7 @@ export function rawRepo(tag = "raw", { git = true } = {}) {
   return {
     base, project, R, git: (...args) => gitRun(project, ...args), gitIn: gitRun,
     alias: (name = ".claude") => join(project, name, "skills"),
-    close: () => { spawnSync("chmod", ["-R", "u+rwX", base]); rmSync(base, { recursive: true, force: true }); },
+    close: () => { spawnSync("chmod", ["-R", "u+rwX", base], { env: hermeticEnv() }); rmSync(base, { recursive: true, force: true }); },
   };
 }
 
@@ -111,7 +112,7 @@ export async function skillFixture(sources, { select = ["alpha", "beta"], git = 
   const skills = sources.createAgentHooksChecks().find((check) => check.id === "skills.project-manifest");
   const cliRoots = sources.createBmadChecks().find((check) => check.id === "bmad.cli-roots");
   await mise.migrate(ctx, await mise.audit(ctx));
-  const skillexEnv = { ...process.env, HOME: home, XDG_STATE_HOME: join(f.base, "state"), PJ_SKILLS_REGISTRY_ROOT: catalog };
+  const skillexEnv = hermeticEnv({ HOME: home, XDG_STATE_HOME: join(f.base, "state"), PJ_SKILLS_REGISTRY_ROOT: catalog, GIT_CEILING_DIRECTORIES: "/tmp" });
   const skillex = (...args) => {
     const result = spawnSync(process.execPath, [skillexCli, ...args], { cwd: f.base, env: skillexEnv, encoding: "utf8", timeout: 60000 });
     return { exit: result.status, stdout: result.stdout, stderr: result.stderr };
