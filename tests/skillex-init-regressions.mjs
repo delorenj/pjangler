@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
@@ -12,12 +13,12 @@ createSkillPackFixture(catalog);
 const installer = createBmadInstallerFixture(tmp);
 const bin = createSkillexMiseFixture(tmp);
 put(join(home, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
-const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
+const env = hermeticEnv({ HOME: home, PATH: `${bin}:${process.env.PATH}`,
   XDG_CACHE_HOME: join(tmp, "cache"), XDG_STATE_HOME: join(tmp, "state"),
   XDG_DATA_HOME: join(tmp, "data"), XDG_CONFIG_HOME: join(home, ".config"),
   PJ_SKILLS_REGISTRY_ROOT: catalog, PJ_BMAD_INSTALLER: installer,
-  PJ_AGENT_HOOKS_LAYER: "0", PYTHONDONTWRITEBYTECODE: "1", GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_CONFIG_NOSYSTEM: "1", PLANE_API_KEY: "", PLANE_33GOD_API_KEY: "", TRELLO_TOKEN: "" };
+  PJ_AGENT_HOOKS_LAYER: "0", GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1" });
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: options.cwd ?? tmp, env: options.env ?? env, encoding: "utf8", timeout: 120000, maxBuffer: 20 * 1024 * 1024 });
   assert.equal(result.error, undefined, String(result.error));

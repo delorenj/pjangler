@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import YAML from "yaml";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
@@ -39,7 +40,7 @@ function invoke(args, cwd) {
   return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...lifecycleEnv },
+    env: hermeticEnv(lifecycleEnv),
     maxBuffer: 32 * 1024 * 1024,
   });
 }
@@ -53,7 +54,7 @@ function run(args, cwd) {
 }
 
 function git(cwd, ...args) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, ...lifecycleEnv } });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: hermeticEnv(lifecycleEnv) });
   assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
   return result.stdout;
 }
@@ -200,7 +201,7 @@ try {
   git(pluginDir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "anchor");
   const bumped = spawnSync(versioning, ["bump", "patch"], {
     cwd: pluginDir, encoding: "utf8",
-    env: { ...process.env, ...lifecycleEnv, MISE_TRUSTED_CONFIG_PATHS: pluginDir, GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t" },
+    env: hermeticEnv({ ...lifecycleEnv, MISE_TRUSTED_CONFIG_PATHS: pluginDir, GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t" }),
   });
   assert.equal(bumped.status, 0, bumped.stderr);
   assert.equal(JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8")).version, "1.0.1");

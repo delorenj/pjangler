@@ -15,6 +15,7 @@
 // what a provider said.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -29,20 +30,13 @@ function makeDir(prefix) {
   return dir;
 }
 
-/** No credential may resolve, so nothing here can reach Plane or Trello. */
-const NO_CREDENTIALS = {
-  PLANE_API_KEY: "",
-  PLANE_33GOD_API_KEY: "",
-  TRELLO_KEY: "",
-  TRELLO_TOKEN: "",
-  OP_SERVICE_ACCOUNT_TOKEN: "",
-};
-
 function cli(args, cwd, env = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...NO_CREDENTIALS, ...env },
+    // No credential may resolve, so nothing here can reach Plane or Trello:
+    // hermeticEnv() copies none of the operator's (PJAN-193).
+    env: hermeticEnv(env),
     maxBuffer: 32 * 1024 * 1024,
   });
 }

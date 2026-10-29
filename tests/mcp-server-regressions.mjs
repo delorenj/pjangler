@@ -5,6 +5,7 @@ import { resolve, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import YAML from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
@@ -22,11 +23,10 @@ const transport = new StdioClientTransport({
   command: "node",
   args: [serverPath],
   cwd: root,
-  env: {
-    ...process.env,
+  env: hermeticEnv({
     PATH: `${fakeBin}:${process.env.PATH}`,
     PJ_PROJECT_REGISTRY: join(mcpTmp, "projects.yaml"),
-  },
+  }),
 });
 const client = new Client({ name: "pjangler-mcp-regression", version: "1.0.0" });
 
@@ -278,7 +278,7 @@ try {
   // unrelated parity drift stay untouched.
   const existingRepo = join(mcpTmp, "existing-sync");
   mkdirSync(existingRepo);
-  assert.equal(spawnSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: existingRepo }).status, 0);
+  assert.equal(spawnSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: existingRepo, env: hermeticEnv() }).status, 0);
   writeFileSync(join(existingRepo, "package.json"), '{"name":"existing-sync","description":"MCP sync fixture"}\n');
   writeFileSync(join(existingRepo, "mise.toml"), "# user-owned sentinel\n[env]\nVALUE = \"keep\"\n");
   const existingSync = await client.callTool({

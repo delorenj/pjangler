@@ -13,6 +13,7 @@ import {
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
@@ -62,7 +63,7 @@ const serverPath = join(fixturePjanglerRoot, "dist", "mcp-server.js");
 const enclosingProjectManifest = join(temporary, ".project.json");
 const enclosingProjectManifestBefore = '{"project_name":"PJAN-67 enclosing sentinel","agents":{}}\n';
 writeFileSync(enclosingProjectManifest, enclosingProjectManifestBefore, "utf8");
-const enclosingGit = spawnSync("git", ["init", "--quiet"], { cwd: temporary, encoding: "utf8" });
+const enclosingGit = spawnSync("git", ["init", "--quiet"], { cwd: temporary, encoding: "utf8", env: hermeticEnv() });
 assert.equal(enclosingGit.status, 0, enclosingGit.stderr);
 const isolatedHome = join(temporary, "home");
 const fakeBin = join(temporary, "bin");
@@ -129,8 +130,7 @@ base = "https://plane.example.invalid"
 workspace = "test"
 `, "utf8");
 
-const serverEnv = {
-  ...process.env,
+const serverEnv = hermeticEnv({
   HOME: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, ".config"),
   // Provenance is anchored to the OS account, not ambient HOME. Execute the
@@ -150,7 +150,7 @@ const serverEnv = {
   TRELLO_KEY: "trusted-positive-test-key",
   TRELLO_TOKEN: "trusted-positive-test-token",
   PJAN67_PROVIDER_LOG: providerLog,
-};
+});
 
 function assertEnclosingProjectUntouched(label) {
   assert.equal(

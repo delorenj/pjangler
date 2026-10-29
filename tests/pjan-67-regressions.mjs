@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const serverPath = join(root, "dist", "mcp-server.js");
@@ -49,8 +50,7 @@ printf '%s\n' '{"board_id":"must-not-be-created","identifier":"MUST"}'
 
 const lifecycleBootstrapTarget = join(temporary, "pjan67-lifecycle-bootstrap");
 
-const serverEnv = {
-  ...process.env,
+const serverEnv = hermeticEnv({
   PATH: `${fakeBin}:${process.env.PATH}`,
   PJ_PROJECT_REGISTRY: registryPath,
   PJ_TICKET_PROVIDER_ADAPTERS: adapters,
@@ -61,7 +61,7 @@ const serverEnv = {
   LINEAR_API_KEY: "pjan67-linear-test-key",
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
-};
+});
 
 function payload(result) {
   const text = result.content?.find((entry) => entry.type === "text")?.text;

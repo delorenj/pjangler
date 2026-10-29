@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -14,8 +15,8 @@ function fixture() {
   for (const name of ["alpha", "beta", "gamma"]) put(join(registry, "all-skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Fixture ${name}\n---\n# ${name}\n`);
   put(join(home, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, skills: ["alpha"] }) + "\n");
   put(join(project, "mise.toml"), '[env]\n_.path = [".mise/scripts"]\n');
-  const env = { ...process.env, HOME: home, XDG_STATE_HOME: join(base, "state"), PJ_SKILLS_REGISTRY_ROOT: registry,
-    PJ_AGENT_HOOKS_LAYER: "0", PLANE_API_KEY: "", PLANE_33GOD_API_KEY: "", TRELLO_TOKEN: "", PYTHONDONTWRITEBYTECODE: "1" };
+  const env = hermeticEnv({ HOME: home, XDG_STATE_HOME: join(base, "state"), PJ_SKILLS_REGISTRY_ROOT: registry,
+    PJ_AGENT_HOOKS_LAYER: "0" });
   const run = (args, cwd = root) => {
     const result = spawnSync(process.execPath, [cli, ...args, "--json"], { cwd, env, encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
     assert.equal(result.error, undefined);

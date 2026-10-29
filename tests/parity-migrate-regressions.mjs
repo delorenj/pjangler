@@ -1,28 +1,28 @@
 import assert from "node:assert/strict";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
 const cli = join(root, "dist", "index.js");
-const bmadFixtureRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-bmad-fixture-"));
-const parityHome = mkdtempSync(join(tmpdir(), "pjangler-parity-home-"));
+const bmadFixtureRoot = hermeticScratch("pjangler-parity-bmad-fixture-");
+const parityHome = hermeticScratch("pjangler-parity-home-");
 process.on("exit", () => rmSync(parityHome, { recursive: true, force: true }));
 const selectedBmadPack = createSkillPackFixture(bmadFixtureRoot);
 
 function childEnv(env = {}) {
-  const merged = {
-    ...process.env,
+  const merged = hermeticEnv({
     HOME: parityHome,
     XDG_STATE_HOME: join(parityHome, ".local", "state"),
     PJ_SKILLS_REGISTRY_ROOT: bmadFixtureRoot,
     SKILLEX_REGISTRY_ROOT: bmadFixtureRoot,
     PJ_PACK_ROOT_PJTEST: selectedBmadPack,
     ...env,
-  };
+  });
   if (env.PJ_PACK_ROOT_PJTEST && !env.PJ_PACK_ROOT_PJTEST) {
     merged.PJ_PACK_ROOT_PJTEST = env.PJ_PACK_ROOT_PJTEST;
   }
@@ -70,21 +70,20 @@ function runExpectError(args, cwd = root) {
 // fatal -- once the trust store is redirected. MISE_TRUSTED_CONFIG_PATHS
 // declares trust without writing anything at all, so isolation survives even if
 // a future mise moves the trust store out from under the *_DIR variables.
-const miseStateRoot = mkdtempSync(join(tmpdir(), "pjangler-parity-mise-state-"));
+const miseStateRoot = hermeticScratch("pjangler-parity-mise-state-");
 
 /** Every fixture handed to the real mise binary, for the pollution guard. */
 const miseTouchedRepos = new Set();
 
 function miseEnv(repo) {
-  return {
-    ...process.env,
+  return hermeticEnv({
     MISE_DATA_DIR: join(miseStateRoot, "data"),
     MISE_STATE_DIR: join(miseStateRoot, "state"),
     MISE_CACHE_DIR: join(miseStateRoot, "cache"),
     MISE_CONFIG_DIR: join(miseStateRoot, "config"),
     MISE_TRUSTED_CONFIG_PATHS: repo,
     MISE_YES: "1",
-  };
+  });
 }
 
 /**
@@ -171,14 +170,14 @@ function assertMiseParses(repo, label) {
 }
 
 function makeRepo(name) {
-  const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
+  const repo = hermeticScratch(`pjangler-${name}-`);
   writeFileSync(join(repo, "mise.toml"), "[env]\n_.path = [\".mise/scripts\"]\n");
   writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
   return repo;
 }
 
 function makeRepoWithoutMiseToml(name) {
-  const repo = mkdtempSync(join(tmpdir(), `pjangler-${name}-`));
+  const repo = hermeticScratch(`pjangler-${name}-`);
   writeFileSync(join(repo, "AGENTS.md"), "# Agent rules\n");
   return repo;
 }
@@ -290,17 +289,17 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
     const precious = join(repo, "CLAUDE.md");
     rmSync(precious, { force: true });
     writeFileSync(precious, "HAND-WRITTEN, MUST SURVIVE\n");
-    const clobber = spawnSync(script, [repo], { cwd: repo, encoding: "utf8" });
+    const clobber = spawnSync(script, [repo], { cwd: repo, encoding: "utf8", env: hermeticEnv() });
     assert.notEqual(clobber.status, 0, "a real CLAUDE.md must make the script refuse");
     assert.equal(readFileSync(precious, "utf8"), "HAND-WRITTEN, MUST SURVIVE\n", "the file must be untouched");
     rmSync(precious, { force: true });
 
     // And that a foreign root is refused, which is what stops a parent mise
     // config's enter hook from relinking whichever child you cd'd into.
-    const foreign = mkdtempSync(join(tmpdir(), "pjangler-foreign-root-"));
+    const foreign = hermeticScratch("pjangler-foreign-root-");
     repos.push(foreign);
     writeFileSync(join(foreign, "AGENTS.md"), "other\n");
-    const crossRepo = spawnSync(script, [foreign], { cwd: foreign, encoding: "utf8" });
+    const crossRepo = spawnSync(script, [foreign], { cwd: foreign, encoding: "utf8", env: hermeticEnv() });
     assert.notEqual(crossRepo.status, 0, "a foreign root must be refused");
     assert.equal(existsSync(join(foreign, "CLAUDE.md")), false, "nothing may be written into the foreign root");
   }
@@ -562,7 +561,7 @@ run = "echo still here"
     // bmad.version: detect drift against the target npm channel and offer an
     // upgrade. Seed the dist-tags cache (via XDG_CACHE_HOME) so the rule is
     // deterministic and offline — no live npm lookup in the test.
-    const cacheHome = mkdtempSync(join(tmpdir(), "pjangler-bmadcache-"));
+    const cacheHome = hermeticScratch("pjangler-bmadcache-");
     repos.push(cacheHome);
     mkdirSync(join(cacheHome, "pjangler"), { recursive: true });
     writeFileSync(
@@ -633,7 +632,7 @@ run = "echo still here"
     // `next` left behind by a stable release (6.12.1-next.1 < 6.12.1): the
     // upgrade targets the release, never the older prerelease, whose installer
     // pulls external modules from main HEAD and failed on cis's moved layout.
-    const laggingCache = mkdtempSync(join(tmpdir(), "pjangler-bmadcache-lag-"));
+    const laggingCache = hermeticScratch("pjangler-bmadcache-lag-");
     repos.push(laggingCache);
     mkdirSync(join(laggingCache, "pjangler"), { recursive: true });
     writeFileSync(

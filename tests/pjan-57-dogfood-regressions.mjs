@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "dist", "index.js");
 const neutralTemplate = readFileSync(join(root, "templates", "commonproject", "template", ".env.op"), "utf8");
 const supportedRoots = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
-const temporary = mkdtempSync(join(tmpdir(), "pjan-57-dogfood-"));
+const temporary = hermeticScratch("pjan-57-dogfood-");
 
 function runCli(args, env = {}, cwd = root) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: hermeticEnv(env),
     maxBuffer: 20 * 1024 * 1024,
   });
   return result;
@@ -214,13 +214,12 @@ run = "echo untouched"
     assert.ok(written.includes(foreignSupported.trim()), "a supported foreign enter record survives byte-for-byte");
     assert.equal((written.match(/materialize-env\.sh/g) ?? []).length, 1, "canonical materializer hook must be unique");
     const parseState = join(temporary, "mise-parse-state");
-    const parseEnv = {
-      ...process.env,
+    const parseEnv = hermeticEnv({
       MISE_DATA_DIR: join(parseState, "data"),
       MISE_CONFIG_DIR: join(parseState, "config"),
       MISE_CACHE_DIR: join(parseState, "cache"),
       MISE_STATE_DIR: join(parseState, "state"),
-    };
+    });
     const trusted = spawnSync("mise", ["trust", join(repo, "mise.toml")], { env: parseEnv, encoding: "utf8" });
     assert.equal(trusted.status, 0, spawnDiagnostics("mise trust", trusted));
     const parsed = spawnSync("mise", ["config", "ls"], { cwd: repo, env: parseEnv, encoding: "utf8" });
@@ -250,7 +249,7 @@ done
 printf 'API_KEY=resolved\\n' > "$out"
 `);
     chmodSync(fakeOp, 0o755);
-    const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
+    const env = hermeticEnv({ PATH: `${fakeBin}:${process.env.PATH}` });
     const success = spawnSync(join(scriptDir, "materialize-env.sh"), [], { cwd: repo, env, encoding: "utf8" });
     assert.equal(success.status, 0, success.stderr);
     assert.equal(readFileSync(join(repo, ".env"), "utf8"), "API_KEY=resolved\n");

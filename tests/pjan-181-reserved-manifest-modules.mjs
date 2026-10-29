@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { createBmadInstallerFixture } from "./helpers/pack-fixture.mjs";
 
 // PJAN-181: a legacy manifest "module" named like a BMAD-owned directory
@@ -72,16 +73,14 @@ export async function companion(request) {
 }
 `);
 
-const env = {
-  ...process.env, HOME: isolatedHome,
+const env = hermeticEnv({
+  HOME: isolatedHome,
   XDG_CONFIG_HOME: join(isolatedHome, ".config"), XDG_CACHE_HOME: join(isolatedHome, ".cache"),
   XDG_STATE_HOME: join(isolatedHome, ".local", "state"), XDG_DATA_HOME: join(isolatedHome, ".local", "share"),
   PJ_PROJECT_REGISTRY: join(scratch, "registry.yaml"), PJ_SKILLS_REGISTRY_ROOT: catalog,
-  PJ_BMAD_INSTALLER: upstream, PJ_G33_ADAPTER_MODULE: "", PJ_G33_ADAPTER_EXPORT: "",
-  PLANE_API_KEY: "", PLANE_DEFAULT_API_KEY: "", PLANE_33GOD_API_KEY: "", PLANE_AUTOMATICAI_API_KEY: "", PLANE_INTELLIFORIA_API_KEY: "", PLANE_LASERTOAST_API_KEY: "",
-  TRELLO_KEY: "", TRELLO_API_KEY: "", TRELLO_TOKEN: "", HERMES_FLEET_ENV: join(scratch, "no-fleet.env"),
+  PJ_BMAD_INSTALLER: upstream, HERMES_FLEET_ENV: join(scratch, "no-fleet.env"),
   GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CEILING_DIRECTORIES: "/tmp",
-};
+});
 put(join(isolatedHome, ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.12.0", next: "6.12.0" } }));
 
 function run(target, args, expected, overrides = {}) {
