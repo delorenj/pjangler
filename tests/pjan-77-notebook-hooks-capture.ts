@@ -164,30 +164,43 @@ try {
   // ambiguous retry/restart above, and a verification/adapter failure below.
   registry.notebook = { ...registry.notebook, limits: { ...(registry.notebook?.limits ?? {}), note_max_bytes: 4_096 } };
   saveProjectRegistry(registry, registryPath);
-  // PJAN-194: each hook call is measured twice. Wall clock (performance.now) is
-  // what the operator waits for, but it also includes every moment the kernel
-  // spent running someone else; CPU time (process.cpuUsage, user+system of this
-  // process) is the work the hook itself did, and a busy neighbour cannot add
-  // to it. See the budget assertions below for how each is used.
-  const startDurations: number[] = [];
-  const endDurations: number[] = [];
-  const startCpuMs: number[] = [];
-  const endCpuMs: number[] = [];
-  const cpuSpentMs = (since: NodeJS.CpuUsage): number => { const used = process.cpuUsage(since); return (used.user + used.system) / 1_000; };
+  // PJAN-194: each hook call is measured against the clock and against the
+  // scheduler. Wall clock (performance.now) is what the operator waits for, but
+  // it also includes every moment the kernel spent running someone else. The
+  // kernel says which part that was: /proc/self/schedstat holds, for this
+  // thread, the time spent on a CPU and the time spent RUNNABLE BUT WAITING for
+  // one (run_delay). So wall = on-CPU + queued behind other work + blocked
+  // (sleeping, fsync, lock or child-process waits). A busy neighbour only adds
+  // to the queued part; the hook's own work is the other two. process.cpuUsage
+  // (user+system of this process) is the on-CPU part for the whole process. See
+  // the budget assertions below for how each is used.
+  interface Mark { at: number; cpu: NodeJS.CpuUsage; sched: { onCpuMs: number; queuedMs: number } | null }
+  interface Span { wallMs: number; cpuMs: number; blockedMs: number | null }
+  const readSched = (): Mark["sched"] => {
+    try {
+      const [onCpuNs, queuedNs] = readFileSync("/proc/self/schedstat", "utf8").trim().split(/\s+/u).map(Number);
+      return Number.isFinite(onCpuNs) && Number.isFinite(queuedNs) ? { onCpuMs: onCpuNs! / 1e6, queuedMs: queuedNs! / 1e6 } : null;
+    } catch { return null; } // not Linux, or no CONFIG_SCHED_INFO: the blocked-time checks are skipped, loudly
+  };
+  const mark = (): Mark => ({ at: performance.now(), cpu: process.cpuUsage(), sched: readSched() });
+  const spanBetween = (from: Mark, to: Mark): Span => {
+    const wallMs = to.at - from.at;
+    const used = process.cpuUsage(from.cpu);
+    const blockedMs = from.sched && to.sched ? Math.max(0, wallMs - (to.sched.onCpuMs - from.sched.onCpuMs) - (to.sched.queuedMs - from.sched.queuedMs)) : null;
+    return { wallMs, cpuMs: (used.user + used.system) / 1_000, blockedMs };
+  };
+  const startSpans: Span[] = [];
+  const endSpans: Span[] = [];
   for (let index = 0; index < 19; index++) {
     const canaryPayload = { session_id: `canary-${String(index).padStart(2, "0")}`, cwd: repo, client_name: "claude-code", hook_event_name: "SessionStart" };
-    const startAt = performance.now();
-    const startCpuAt = process.cpuUsage();
+    const startFrom = mark();
     const canaryStart = await runSessionStartHook(module, canaryPayload, { now: () => new Date(`2026-08-19T13:${String(index).padStart(2, "0")}:00.000Z`), spawnWorker() {} });
-    startDurations.push(performance.now() - startAt);
-    startCpuMs.push(cpuSpentMs(startCpuAt));
+    startSpans.push(spanBetween(startFrom, mark()));
     assert.equal(canaryStart.outcome, "primed");
     if (index % 3 !== 0) writeFileSync(join(repo, "README.md"), `# Alpha\n\nCanary change ${index}.\n`);
-    const endAt = performance.now();
-    const endCpuAt = process.cpuUsage();
+    const endFrom = mark();
     const canaryClose = runSessionCloseHook(module, { ...canaryPayload, hook_event_name: "SessionEnd" }, { now: () => new Date(`2026-08-19T13:${String(index).padStart(2, "0")}:01.000Z`), spawnWorker() {} });
-    endDurations.push(performance.now() - endAt);
-    endCpuMs.push(cpuSpentMs(endCpuAt));
+    endSpans.push(spanBetween(endFrom, mark()));
     assert.equal(canaryClose.outcome, "captured");
     assert.ok(canaryClose.receiptId);
     const canaryWorker = await runCaptureWorker(module, "alpha", canaryClose.receiptId!);
@@ -236,25 +249,37 @@ try {
   assert.ok(traceableClaims / factualClaims >= 0.95, `expected >=95% traceable fallback claims, got ${traceableClaims}/${factualClaims}`);
   const percentile95 = (values: number[]): number => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1] ?? Infinity;
   const fastest = (values: number[]): number => Math.min(...values);
-  // PJAN-194: the foreground budgets (SessionStart 2000ms, SessionEnd 250ms =
-  // hook_session_end_timeout_ms) promise that the hook's WORK is small. A p95 of
-  // wall-clock readings cannot test that on a machine that is also doing other
+  // The budgets are the product's promises, not regression-sensitivity gauges:
+  // 2000ms and 250ms (hook_session_end_timeout_ms) are what the hook may take,
+  // so a change that stays inside them is not a violation, and none is made here.
+  const SLOW_CALL_ALLOWANCE = 3; // of 19: a stalled disk may hit a few calls; a regression hits many
+  // PJAN-194: the foreground budgets promise that the hook's WORK is small. A p95
+  // of wall-clock readings cannot test that on a machine that is also doing other
   // things: the reading is work plus whatever the scheduler took away, and the
   // tail of 19 samples is exactly where the scheduler shows up (PJAN-132 widened
-  // it on CI; a heavy local run then broke it at 538.9ms). Two measures that
+  // it on CI; a heavy local run then broke it at 538.9ms). Three measures that
   // load cannot inflate replace it, with the budgets themselves unchanged and no
-  // CI-dependent slack:
+  // CI-dependent slack. Each covers what the others cannot:
   //  - CPU time p95: the work the hook did, tail included. A regression that
   //    burns CPU, in every call or only in some, is over budget however idle or
   //    busy the machine is.
   //  - Wall-clock FASTEST sample: load only ever adds waiting, so the best of 19
-  //    is an upper bound on the hook's unloaded latency. It catches the work CPU
-  //    time cannot see (a blocking sleep, a stalled fsync or lock wait, a spawned
-  //    child: git runs in a child process whose CPU is not this process's).
-  assert.ok(percentile95(startCpuMs) < 2_000, `SessionStart CPU p95 ${percentile95(startCpuMs)}ms exceeded 2000ms`);
-  assert.ok(fastest(startDurations) < 2_000, `SessionStart fastest of ${startDurations.length} calls took ${fastest(startDurations)}ms, over the 2000ms budget: every call is slow, not just a loaded one`);
-  assert.ok(percentile95(endCpuMs) < 250, `SessionEnd CPU p95 ${percentile95(endCpuMs)}ms exceeded 250ms`);
-  assert.ok(fastest(endDurations) < 250, `SessionEnd fastest of ${endDurations.length} calls took ${fastest(endDurations)}ms, over the 250ms budget: every call is slow, not just a loaded one`);
+  //    is an upper bound on the hook's unloaded latency. It catches work that
+  //    every call does but CPU time cannot see or a starved process undercounts
+  //    (a spin on the wall clock gets a fraction of a core when contended).
+  //  - BLOCKED time (wall minus on-CPU minus queued-for-a-CPU, from the kernel's
+  //    scheduler accounting): sleeping, fsync, lock and child-process waits,
+  //    which contention does not create. More than SLOW_CALL_ALLOWANCE of 19
+  //    calls blocked past the budget is a regression that hits SOME calls, which
+  //    neither of the above sees (the fastest sample is clean, CPU is idle).
+  for (const [name, spans, budgetMs] of [["SessionStart", startSpans, 2_000], ["SessionEnd", endSpans, 250]] as const) {
+    assert.ok(percentile95(spans.map((span) => span.cpuMs)) < budgetMs, `${name} CPU p95 ${percentile95(spans.map((span) => span.cpuMs))}ms exceeded ${budgetMs}ms`);
+    assert.ok(fastest(spans.map((span) => span.wallMs)) < budgetMs, `${name} fastest of ${spans.length} calls took ${fastest(spans.map((span) => span.wallMs))}ms, over the ${budgetMs}ms budget: every call is slow, not just a loaded one`);
+    if (spans.some((span) => span.blockedMs === null)) { console.log(`pjan-77 notebook hooks/capture: ${name} blocked-time check skipped (no /proc/self/schedstat)`); continue; }
+    const blocked = spans.map((span) => span.blockedMs!);
+    const overBudget = blocked.filter((value) => value > budgetMs);
+    assert.ok(overBudget.length <= SLOW_CALL_ALLOWANCE, `${name}: ${overBudget.length} of ${spans.length} calls spent more than ${budgetMs}ms blocked (sleeping, fsync, lock or child waits: ${overBudget.map((value) => Math.round(value)).join(",")}ms), allowed ${SLOW_CALL_ALLOWANCE}; the CPU was idle and a neighbour cannot cause this`);
+  }
 
   // A shared monotonic SessionStart deadline covers Git snapshotting and the
   // remote Overview request. The fetch observes the abort signal; no dangling
@@ -284,10 +309,17 @@ try {
   //     deadline (the 5000ms default) cannot.
   //  4. The abort reaches the fetch as an AbortSignal, the request is torn down
   //     (no Timeout resource left behind by the call) and the hook returns.
+  //  5. The hook RETURNS promptly once the abort lands (the old p95 < 500 also
+  //     guarded this: a hook that slept or spun 300ms in its failure path
+  //     returned at 775ms). From the abort to the return is microtasks, about
+  //     0.2ms idle, and is measured from the abort ITSELF, not from the start of
+  //     the call, so lateness of the abort cannot count against it. Same three
+  //     measures as the canary: CPU, fastest sample, blocked time.
   const SLOW_BUDGET_MS = 500;
   const MAX_SAFETY_MARGIN_MS = 50; // hooks.ts: Math.min(50, ...)
   const CONTROL_LEAD_MS = 10;
   const TIMER_ROUNDING_MS = 3; // libuv timers are whole milliseconds and may fire 1ms early
+  const RETURN_AFTER_ABORT_MS = 100; // idle is ~0.2ms; this is a "returns promptly" bound, not a latency target
   const WATCHDOG_MS = 4_000; // only a hung hook (abort never delivered) gets here; not a latency assertion
   registry.notebook = { ...registry.notebook, limits: { ...(registry.notebook?.limits ?? {}), hook_session_start_timeout_ms: SLOW_BUDGET_MS } };
   saveProjectRegistry(registry, registryPath);
@@ -301,6 +333,8 @@ try {
     fetchAt: number | null;
     signal: AbortSignal | null;
     abortAt: number | null;
+    abortMark?: Mark;
+    returnMark?: Mark;
     controlAt: number | null;
     abortedWhenControlRan: boolean | null;
     controlTimer?: NodeJS.Timeout;
@@ -327,7 +361,8 @@ try {
       });
       return await new Promise<Response>((_resolve, reject) => {
         signal.addEventListener("abort", () => {
-          current.abortAt = performance.now();
+          current.abortMark = mark();
+          current.abortAt = current.abortMark.at;
           reject(new DOMException("aborted", "AbortError"));
         }, { once: true });
       });
@@ -349,6 +384,7 @@ try {
   }) as typeof childProcess.spawnSync;
   syncBuiltinESMExports();
   let dispatched = 0;
+  const afterAbort: Span[] = [];
   try {
     for (let index = 0; index < 5; index++) {
       const timersBefore = process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
@@ -361,7 +397,8 @@ try {
         runSessionStartHook(slowModule, { session_id: `slow-${index}`, cwd: repo, client_name: "claude-code", hook_event_name: "SessionStart" }),
         new Promise<never>((_resolve, reject) => { watchdog = setTimeout(() => reject(new Error(`slow-${index}: the SessionStart hook was still running ${WATCHDOG_MS}ms after it started: its ${SLOW_BUDGET_MS}ms deadline never aborted the Overview request (not armed, not delivered to the fetch, or armed for a much later time)`)), WATCHDOG_MS); }),
       ]).finally(() => { clearTimeout(watchdog); });
-      const returnedAt = performance.now();
+      current.returnMark = mark();
+      const returnedAt = current.returnMark.at;
       // The control timer is the test's, not the hook's: once the hook is back,
       // let it run (if it has not) and clear it before counting what is left.
       await current.controlRan;
@@ -381,6 +418,7 @@ try {
       assert.ok(current.signal && current.abortAt !== null, `slow-${index}: the Overview request never received an abort`);
       assert.ok(gitTimeouts.length > 0, `slow-${index}: no Git snapshot ran under the hook deadline`);
       assert.ok(current.abortAt - current.testStart >= SLOW_BUDGET_MS - MAX_SAFETY_MARGIN_MS - TIMER_ROUNDING_MS, `slow-${index}: the abort was delivered ${current.abortAt - current.testStart}ms after the hook started, before its deadline`);
+      afterAbort.push(spanBetween(current.abortMark!, current.returnMark));
       assert.equal(current.abortedWhenControlRan, true, `slow-${index}: the abort was not delivered before a timer due at ${SLOW_BUDGET_MS - CONTROL_LEAD_MS}ms: it is armed later than the hook's shared deadline`);
     }
   } finally {
@@ -391,6 +429,13 @@ try {
   // the hook then (correctly) fails open without dispatching. If that happened
   // five times in a row nothing here was exercised: say so instead of passing.
   assert.ok(dispatched > 0, "inconclusive: the machine was too slow for any slow SessionStart to reach its Overview request inside the budget");
+  // The hook fails open promptly after its abort (property 5 above).
+  assert.ok(Math.max(...afterAbort.map((span) => span.cpuMs)) < RETURN_AFTER_ABORT_MS, `after the abort the hook burned ${Math.max(...afterAbort.map((span) => span.cpuMs))}ms of CPU before returning (limit ${RETURN_AFTER_ABORT_MS}ms): its failure path does real work`);
+  assert.ok(fastest(afterAbort.map((span) => span.wallMs)) < RETURN_AFTER_ABORT_MS, `after the abort even the fastest of ${afterAbort.length} calls took ${fastest(afterAbort.map((span) => span.wallMs))}ms to return (limit ${RETURN_AFTER_ABORT_MS}ms): the hook does not fail open promptly`);
+  if (afterAbort.every((span) => span.blockedMs !== null)) {
+    const slowToReturn = afterAbort.filter((span) => span.blockedMs! > RETURN_AFTER_ABORT_MS);
+    assert.ok(slowToReturn.length <= 1, `after the abort ${slowToReturn.length} of ${afterAbort.length} calls spent more than ${RETURN_AFTER_ABORT_MS}ms blocked before returning (${slowToReturn.map((span) => Math.round(span.blockedMs!)).join(",")}ms), allowed 1`);
+  } else console.log("pjan-77 notebook hooks/capture: post-abort blocked-time check skipped (no /proc/self/schedstat)");
   console.log("pjan-77 notebook hooks/capture: ok");
 } finally {
   rmSync(workspace, { recursive: true, force: true });
