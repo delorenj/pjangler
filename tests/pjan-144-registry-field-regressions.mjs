@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-144: dropping the legacy "registry" field from a project manifest.
 //
 // With the field, skillex resolves the project from the never-fetched

@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-186 — a Redis error reply must throw, never pose as a value or a successful write.
 //
 // `redis-cli --raw` prints a server error reply (WRONGTYPE, ERR no such key, ...) on STDOUT

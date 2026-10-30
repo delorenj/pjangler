@@ -1,3 +1,4 @@
+import { operatorHome } from "./helpers/hermetic-suite.mjs";
 // PJAN-182 — crank intervals, the rename migration, and the first Ink screens.
 //
 // What can silently go wrong, and so what is pinned here:
@@ -396,7 +397,10 @@ try {
   }
 
   console.log("engine parity: zcrank.py schedule()/crank_enabled() agree with snapshotCrank on the same redis (exact key + drift included)");
-  const engine = join(process.env.HOME ?? "", ".agents", "tools", "jev-clairic", "bin", "zcrank.py");
+  // The operator's installed engine, read-only. HOME is the isolated suite home
+  // (PJAN-196), so the real one comes from operatorHome(), which allows only the
+  // suites listed with a reason in OPERATOR_HOME_READERS (hermetic-env.mjs).
+  const engine = join(operatorHome(), ".agents", "tools", "jev-clairic", "bin", "zcrank.py");
   if (!existsSync(engine)) {
     console.log("  (engine not on this machine, skipped)");
   } else {

@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // `pj init` is the designated ingress, and an ingress that under-delivers in
 // silence is the defect this suite holds shut.
 //

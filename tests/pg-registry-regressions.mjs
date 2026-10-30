@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PG-backed RegistryStore regression. Bootstraps an ISOLATED scratch database
 // (base schema + the pjangler migration), runs the bun round-trip harness, and
 // tears the scratch db down. SKIPS cleanly when Postgres or bun is unavailable

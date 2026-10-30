@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-30 — ticket-board provisioning belongs to the project plan executor.
 // These tests inject only the provider adapter and exercise a `scaffold:false`
 // plan directly. They intentionally do not claim ProjectRecipe lifecycle

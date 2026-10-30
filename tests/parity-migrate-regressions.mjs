@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";

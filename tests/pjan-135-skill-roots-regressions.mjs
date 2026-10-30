@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-135: every CLI skills root becomes the alias skillex requires, losslessly.
 //
 // Everything here is real: real temp repositories (git init, real directories

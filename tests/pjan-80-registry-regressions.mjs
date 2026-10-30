@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, renameSync, chmodSync } from 'node:fs';

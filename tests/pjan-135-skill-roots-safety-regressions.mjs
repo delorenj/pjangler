@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-135: data-safety regressions for the CLI skills-root conversion.
 //
 // Each test is the reproduction of one confirmed review finding, run against

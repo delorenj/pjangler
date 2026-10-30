@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-176: skills the BMAD installer provides satisfy the inherited Skillex selection.
 //
 // The global selection inherits the Skillex `bmad` pack; bmad-method writes the

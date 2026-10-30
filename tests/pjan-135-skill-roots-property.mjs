@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-135: property test for the CLI skills-root conversion.
 //
 // Generates random small layouts on the real filesystem (real dirs, relative /

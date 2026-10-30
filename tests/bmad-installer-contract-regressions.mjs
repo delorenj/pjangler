@@ -1,3 +1,4 @@
+import { SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,15 +36,16 @@ function runRequired(command, args, purpose, timeout = 180_000) {
   const result = spawnSync(command, args, {
     cwd: root,
     // A clean npm (the private hermetic HOME, so an empty cache and the public
-    // registry, as on a CI runner) plus the GitHub token the real installer
-    // reads to resolve module tags (publish.yml passes the job token).
+    // registry, as on a CI runner) plus what SUITE_PASSTHROUGH grants this
+    // suite: the GitHub token the real installer reads to resolve module tags
+    // (publish.yml passes the job token) and the TLS trust anchors (PJAN-196).
     env: hermeticEnv({
       CI: "true",
       FORCE_COLOR: "0",
       NO_COLOR: "1",
       npm_config_fund: "false",
       npm_config_update_notifier: "false",
-    }, { pass: ["GITHUB_TOKEN"] }),
+    }, { pass: SUITE_GRANTS }),
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
     timeout,

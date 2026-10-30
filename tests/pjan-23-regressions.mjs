@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-23 — the `tp` ticket-provider contract must expose a `create_issue` op so
 // an orchestrator can FILE a ticket, not only read and update the board.
 //

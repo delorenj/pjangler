@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-141 / PJAN-142: skills.project-manifest must not report drift that is not there.
 //
 // PJAN-141: the activation receipt records the catalog commit it was written

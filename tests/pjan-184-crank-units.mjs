@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-184 — the small contracts the crank command leans on that no other suite pins:
 //   - src/tui/load.ts: the TTY test and the lazy screen loader's three outcomes (a module,
 //     "not built" as a TuiUnavailableError, any other import failure passed through);

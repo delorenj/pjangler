@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PID-2/3/4 — board identity is READ from the provider, never invented.
 //
 // Four code paths used to mint a board identifier from `slug.slice(0, 4)` and

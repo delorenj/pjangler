@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-135 review (F2): a mise.toml rewrite may change only what it means to.
 //
 // The adversarial review reproduced ten defects in the hook/task rewrite that

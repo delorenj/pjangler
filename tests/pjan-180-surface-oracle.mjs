@@ -1,3 +1,4 @@
+import { SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -18,10 +19,12 @@ try {
   const result = spawnSync(process.execPath, [output, ...process.argv.slice(2)], { cwd: root, encoding: "utf8", timeout: 30 * 60_000,
     env: hermeticEnv({
       NO_COLOR: "1", GIT_CEILING_DIRECTORIES: "/tmp",
-      // npx keeps the operator's package cache; everything else is scratch.
+      // An npm cache the operator configured explicitly is kept (granted in
+      // SUITE_PASSTHROUGH); otherwise npx caches under the isolated suite home,
+      // cold like a CI runner, and the real ~/.npm is never written (PJAN-196).
       npm_config_cache: process.env.npm_config_cache || join(homedir(), ".npm"),
       npm_config_update_notifier: "false", npm_config_fund: "false",
-    }, { pass: ["GITHUB_TOKEN"] }),
+    }, { pass: SUITE_GRANTS }),
     maxBuffer: 64 * 1024 * 1024 });
   process.stdout.write(result.stdout);
   assert.equal(result.status, 0, `${result.stdout.slice(-4000)}\n${result.stderr.slice(-12000)}`);

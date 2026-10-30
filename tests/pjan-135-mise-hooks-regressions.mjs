@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-135: the mise.toml pjangler writes must keep working on the mise it runs
 // under, and the retired skills:sync task must stay retired everywhere.
 //

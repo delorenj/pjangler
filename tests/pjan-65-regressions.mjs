@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-65 — `pjangler describe` must actually describe a repo.
 //
 // Everything here runs the real built CLI and the real MCP server against real

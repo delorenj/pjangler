@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-87 — `pj board` read subcommands.
 //
 // Five subcommands that resolve their project implicitly from the working

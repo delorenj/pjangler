@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // Exercise the real --all dispatcher with only the two owners involved in the
 // incident. Other lifecycle owners must not install BMAD or provision a board.
 import assert from "node:assert/strict";
