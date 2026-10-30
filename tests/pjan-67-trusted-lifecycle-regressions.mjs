@@ -1,4 +1,4 @@
-import "./helpers/hermetic-suite.mjs";
+import { operatorHome } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import {
   chmodSync,
@@ -11,7 +11,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
@@ -34,7 +33,9 @@ const root = resolve(import.meta.dirname, "..");
 // `which copier`. The first `copier` on an operator's PATH is frequently an
 // inactive mise shim (PJAN-150), and an ambient PATH must not decide whether
 // this suite can reach the real, metadata-bound Copier.
-const uvCopierLauncher = join(userInfo().homedir, ".local", "share", "uv", "tools", "copier", "bin", "copier");
+// operatorHome() is the passwd home, the anchor preflight uses (userInfo()), and
+// is allowed only for suites listed in OPERATOR_HOME_READERS (PJAN-196).
+const uvCopierLauncher = join(operatorHome(), ".local", "share", "uv", "tools", "copier", "bin", "copier");
 if (!existsSync(uvCopierLauncher)) {
   console.log(`PJAN-67 trusted lifecycle integration: SKIP (no UV-tool Copier at ${uvCopierLauncher}; install with: uv tool install copier)`);
   process.exit(0);

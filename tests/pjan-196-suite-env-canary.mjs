@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { PASSTHROUGH, SUITE_PASSTHROUGH, OPERATOR_HOME_READERS, hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import {
-  PREAMBLE, PREAMBLE_EXCEPTIONS, REQUIRED_REGISTRATIONS, checkSuitePreambles, firstModuleRequest, readRunnerRegistry, registeredSuites,
+  PREAMBLE, PREAMBLE_EXCEPTIONS, REQUIRED_REGISTRATIONS, checkSuitePreambles, firstModuleRequest, readRunnerRegistry, registeredSuites, userInfoSites,
 } from "../scripts/check-hermetic-test-env.mjs";
 
 // PJAN-196 canary: the SUITE PROCESS itself is hermetic, standalone and under
@@ -162,9 +162,18 @@ try {
     writeTree({ suites: required.filter((name) => name !== suite) });
     assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), new RegExp(`${suite.replaceAll(".", "\\.")} is not registered in SUITES`));
   }
+  // The real home only through operatorHome(): a direct os.userInfo() is a finding.
+  assert.deepEqual(userInfoSites('import { userInfo } from "node:os";\nconst h = userInfo().homedir;'), [1]);
+  assert.deepEqual(userInfoSites('import os from "os";\nconst h = os.userInfo().homedir;'), [2]);
+  assert.deepEqual(userInfoSites('import { userInfo as who } from "node:os";'), [1]);
+  assert.deepEqual(userInfoSites('const { userInfo } = require("node:os");'), [1]);
+  assert.deepEqual(userInfoSites('import { operatorHome } from "./helpers/hermetic-suite.mjs";\nconst h = operatorHome();'), []);
+  writeTree();
+  put(join(tree, "tests", "plain.mjs"), `import "${PREAMBLE}";\nimport { userInfo } from "node:os";\n`);
+  assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /tests\/plain\.mjs:2 {2}os\.userInfo\(\) reads the operator's real home/);
   writeTree({ suites: [...required, "tests/missing.mjs"] });
   assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /tests\/missing\.mjs {2}registered but missing/);
-  checkpoint("checkSuitePreambles: first import, exceptions both ways, package.json suites and guard registration");
+  checkpoint("checkSuitePreambles: first import, exceptions both ways, package.json suites, guard registration, no direct os.userInfo()");
 
   const real = checkSuitePreambles(root);
   assert.deepEqual(real.violations, [], `the real tree must be clean:\n${real.violations.join("\n")}`);

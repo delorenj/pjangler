@@ -217,10 +217,14 @@ export function suiteGrants(suite) {
  * Suites allowed to resolve the operator's REAL home (the passwd entry, which
  * HOME isolation cannot hide) through `operatorHome()` in hermetic-suite.mjs,
  * each with the reason. Read-only uses only. Empty is the steady state.
+ * scripts/check-hermetic-test-env.mjs fails a test file that calls
+ * os.userInfo() itself instead of going through operatorHome().
  */
 export const OPERATOR_HOME_READERS = new Map([
   ["tests/pjan-182-crank-interval-regressions.mjs",
     "engine parity: runs the operator's installed zcrank engine (~/.agents/tools/jev-clairic/bin/zcrank.py, read-only) against the same throwaway redis; skipped when it is not installed (CI)"],
+  ["tests/pjan-67-trusted-lifecycle-regressions.mjs",
+    "locates the UV-tool Copier under the OS account home (~/.local/share/uv/tools/copier, read-only), the same anchor src/lifecycle/preflight.ts trusts via userInfo(); a PATH or HOME lookup would find a different, untrusted copier"],
 ]);
 
 /** Never passable: the suite must supply isolated values, not the operator's. */

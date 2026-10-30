@@ -237,7 +237,49 @@ export function checkSuitePreambles(root, exceptions = PREAMBLE_EXCEPTIONS) {
   for (const suite of exceptions.keys()) {
     if (!suites.includes(suite)) violations.push(`${suite}  stale preamble exception: not a registered suite`);
   }
+  violations.push(...checkOperatorHomeReads(root));
   return { violations, suites };
+}
+
+/**
+ * Files allowed to call os.userInfo() directly: the preamble (operatorHome()
+ * lives there, gated by OPERATOR_HOME_READERS) and the PJAN-196 probe (which
+ * compares against it to prove the real home is NOT what in-process code sees).
+ */
+const USER_INFO_FILES = new Set(["tests/helpers/hermetic-suite.mjs", "tests/pjan-196-suite-env-probe.mjs"]);
+
+/** Lines of `text` that reach os.userInfo: an import of it from os/node:os, or a `.userInfo` member. */
+export function userInfoSites(text, fileName = "suite.mjs") {
+  const kind = fileName.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
+  const lines = [];
+  const visit = (node) => {
+    if (ts.isImportSpecifier(node) && (node.propertyName ?? node.name).text === "userInfo"
+      && ["os", "node:os"].includes(node.parent.parent.parent.moduleSpecifier?.text)) lines.push(node);
+    else if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && memberName(node) === "userInfo") lines.push(node);
+    else if (ts.isBindingElement(node) && (node.propertyName ?? node.name)?.text === "userInfo") lines.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...new Set(lines.map((node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1))];
+}
+
+/**
+ * PJAN-196: a test reads the operator's REAL home only through operatorHome()
+ * (hermetic-suite.mjs), which refuses any suite not listed in
+ * OPERATOR_HOME_READERS. os.userInfo() reads the passwd entry, which HOME
+ * isolation cannot hide, so calling it directly would bypass that list.
+ */
+export function checkOperatorHomeReads(root) {
+  const violations = [];
+  for (const path of listTestFiles(join(root, "tests")).sort()) {
+    const rel = relative(root, path).split(sep).join("/");
+    if (USER_INFO_FILES.has(rel)) continue;
+    for (const line of userInfoSites(readFileSync(path, "utf8"), path)) {
+      violations.push(`${rel}:${line}  os.userInfo() reads the operator's real home: use operatorHome() from tests/helpers/hermetic-suite.mjs and list the suite in OPERATOR_HOME_READERS`);
+    }
+  }
+  return violations;
 }
 
 /** Strip parentheses and `as`/non-null/await wrappers so `(process.env as X)` still reads as process.env. */
