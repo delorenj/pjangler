@@ -47,6 +47,7 @@ const GATES = [
   ["check:submodules", "scripts/check-submodule-contract.mjs"],
   ["check:tracked-secrets", "scripts/check-tracked-secrets.mjs"],
   // PJAN-193: no test file hands a child the operator env (see SUITE_ENV below).
+  // PJAN-196: and every registered suite starts from the hermetic-suite preamble.
   ["check:hermetic-test-env", "scripts/check-hermetic-test-env.mjs"],
 ];
 
@@ -93,6 +94,8 @@ const SUITES = [
   "tests/pjan-167-g33-companion.mjs",
   "tests/pjan-188-hermetic-canary-regressions.mjs",
   "tests/pjan-193-env-allowlist-regressions.mjs",
+  "tests/pjan-196-suite-env-probe.mjs",
+  "tests/pjan-196-suite-env-canary.mjs",
   "tests/pjan-167-enrollment.mjs",
   "tests/pjan-177-g33-enrollment.mjs",
   "tests/pjan-178-g33-scoped-contract.mjs",
@@ -223,50 +226,53 @@ if (!skipBuild) {
 }
 
 /**
- * What a suite process gets: the operator env, unchanged (PJAN-193).
+ * What a suite process is STARTED with: the operator env, unchanged. What it
+ * RUNS with: the allowlist (PJAN-196).
  *
- * Isolation lives one level down. Every child a suite starts (pj, git, mise,
- * copier, python, redis, the PTY driver, the bundled TypeScript suites) gets a
- * COMPLETE env from `hermeticEnv()` in tests/helpers/hermetic-env.mjs: an
- * explicit passthrough allowlist plus the suite's fixture values, inheriting
- * nothing else, so no operator credential or config override can reach one.
- * The `check:hermetic-test-env` gate above fails a test file that builds a
- * child env any other way, and tests/pjan-193-env-allowlist-regressions.mjs
- * proves from inside a real pj child that novel secret-shaped variables never
- * arrive.
+ * Every registered suite's first import is tests/helpers/hermetic-suite.mjs.
+ * Before any pjangler code loads, it rebuilds the suite's own process.env as
+ * `hermeticEnv({ HOME: <scratch home> }, { pass: suiteGrants(suite) })` from
+ * tests/helpers/hermetic-env.mjs: the PASSTHROUGH allowlist (PATH, locale, TZ,
+ * USER, LOGNAME, NODE_V8_COVERAGE), the pins (TMPDIR at the git-free base,
+ * PYTHONDONTWRITEBYTECODE), an isolated HOME, and the operator variables the
+ * central SUITE_PASSTHROUGH registry grants that suite by name, each with its
+ * reason: the Postgres settings (PGHOST/PGPORT/PGUSER/PGPASSWORD,
+ * PJANGLER_REQUIRE_DISPOSABLE_POSTGRES) for the Postgres suites,
+ * PJ_TICKET_PROVIDER_ADAPTERS (the Krebs adapters CI fetches) for the adapter
+ * suites, GITHUB_TOKEN for the network-backed installer contracts, and a few
+ * operator knobs. Everything else (every credential, every tool override,
+ * XDG_*, CI, GITHUB_*, RUNNER_*, npm_*) is deleted from the live env. So
+ * pjangler code a suite calls IN-PROCESS (inspectStatus, syncOptions, the
+ * notebook module, Recipe.ts's homedir() default, ...) and anything that code
+ * spawns see what a child sees, and os.homedir() is scratch, never the real ~.
  *
- * This runner used to overlay pins on the suite env (TMPDIR=/tmp, blanked
- * PLANE_/TRELLO_/PJ_G33_ keys, a missing HERMES_FLEET_ENV). That was the
- * PJAN-188 backstop for a suite that forgot to isolate its children, and it is
- * gone on purpose:
+ * Why the runner does not build that env itself: the preamble makes
+ * `node tests/<suite>.mjs` from the operator shell and this runner
+ * EQUIVALENT BY CONSTRUCTION. An env built here would hold only under the
+ * runner, which is the masking that hid PJAN-188 (pjan-167-g33-companion passed
+ * here and failed standalone). Passing the env through unchanged keeps one
+ * mechanism, applied the same way in both.
  *
- * - It no longer protected anything. Children never see the suite env, and a
- *   suite that forgets is now a red gate, not a silently masked run.
- * - It was the masking. A pin that holds only under the runner is how
- *   pjan-167-g33-companion passed here while failing standalone (PJAN-188).
- *   With no overlay, `node tests/<suite>.mjs` from the operator shell and this
- *   runner start the suite in the same env, so they are equivalent by
- *   construction rather than by a backstop.
- * - The suite process itself legitimately needs harness configuration that an
- *   allowlist here would have to duplicate: PGHOST/PGPORT/PGUSER and
- *   PJANGLER_REQUIRE_DISPOSABLE_POSTGRES (publish.yml's Postgres service),
- *   PJ_TICKET_PROVIDER_ADAPTERS (the Krebs adapters CI fetches),
- *   NODE_V8_COVERAGE (c8). Suites pass what a child needs by name.
+ * Children are isolated as before (PJAN-193): every child a suite starts gets
+ * a COMPLETE env from hermeticEnv(), never an overlay.
  *
- * Known residual surface, accepted: a suite that calls pjangler library code
- * IN-PROCESS (inspectStatus, syncOptions, ...) hands that code this process's
- * env, and a child that code spawns inherits it. That is the suite's subject,
- * not a test-harness child, and the code path under test is what gets
- * exercised; the suites that do it pass an explicit `env` option (see
- * pjan-135-skill-roots, pjan-176) or blank what they read (pjan-30). The
- * static guard cannot see through a library call.
+ * Guards: the `check:hermetic-test-env` gate above fails a test file that
+ * builds a child env any other way, a registered suite whose first import is
+ * not the preamble, and a run-tests.mjs that drops the gate or the canaries.
+ * tests/pjan-193-env-allowlist-regressions.mjs proves the child boundary from
+ * inside a real pj child; tests/pjan-196-suite-env-canary.mjs proves the
+ * suite-process boundary from inside real src code running in a suite,
+ * standalone and under this runner, against planted credentials and a decoy
+ * HOME.
+ *
+ * c8: NODE_V8_COVERAGE stays in the suite env (PASSTHROUGH) and node reads it
+ * at startup anyway, so the suite process and its children keep reporting.
  *
  * CI parity: a hosted runner sets CI, GITHUB_*, RUNNER_* and UV_PYTHON_INSTALL_DIR
- * (publish.yml). None is a credential a child needs, with one exception that is
- * passed by name: CI for the bundled notebook-hooks suite's latency slack
- * (tests/pjan-77-test-runner.mjs, PJAN-132). pjangler never reads
- * UV_PYTHON_INSTALL_DIR (src/lifecycle/preflight.ts trusts the default under
- * the account home), so nothing downstream of an allowlisted env needs it.
+ * (publish.yml). The preamble drops all of them: nothing in a suite reads CI
+ * since PJAN-194 (the notebook hooks-capture budgets are CPU time and event
+ * order, not wall clock), and pjangler never reads UV_PYTHON_INSTALL_DIR
+ * (src/lifecycle/preflight.ts trusts the default under the account home).
  */
 const SUITE_ENV = process.env;
 

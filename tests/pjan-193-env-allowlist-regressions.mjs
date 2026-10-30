@@ -1,11 +1,13 @@
+import "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { HERMETIC_TMP_BASE, PASSTHROUGH, hermeticDefaultHome, hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { HERMETIC_TMP_BASE, PASSTHROUGH, SUITE_PASSTHROUGH, hermeticDefaultHome, hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
 import { checkTree, scanSource } from "../scripts/check-hermetic-test-env.mjs";
-import { BUNDLED_SUITE_PASSTHROUGH, runTypescriptRegression } from "./pjan-77-test-runner.mjs";
+import { runTypescriptRegression } from "./pjan-77-test-runner.mjs";
 
 // PJAN-193: a child env is an ALLOWLIST. Two guards, both proven here.
 //
@@ -101,39 +103,41 @@ process.on("exit", () => writeFileSync(${JSON.stringify(dump)}, JSON.stringify({
     checkpoint("`pass` copies only named variables and refuses HOME and XDG_*");
 
     // ---- the launcher of the bundled TypeScript suites ----------------------
-    // A bundled suite is a child too. It sees the Postgres names it is listed
-    // for and none of the planted credentials. CI is NOT passed (PJAN-194):
-    // tests/pjan-77-notebook-hooks-capture.ts was its only reader, to widen a
-    // latency budget on a shared runner (PJAN-132), and now measures CPU time
-    // and event order instead. A suite that behaves differently on a hosted
-    // runner than on a workstation is the flake this removes, so a bundled
-    // suite that READS process.env.CI (assigning it, as the pjan-180 suites do
-    // for their own children, is not reading it) must fail here and either
-    // drop the dependency or list CI in BUNDLED_SUITE_PASSTHROUGH on purpose.
+    // A bundled suite is a child too. It sees exactly the names its launcher
+    // suite is granted in SUITE_PASSTHROUGH (PJAN-196; the Postgres settings
+    // for pjan-80-*) and none of the planted credentials. CI is granted to
+    // nobody (PJAN-194): tests/pjan-77-notebook-hooks-capture.ts was its only
+    // reader, to widen a latency budget on a shared runner (PJAN-132), and now
+    // measures CPU time and event order instead. A suite that behaves
+    // differently on a hosted runner than on a workstation is the flake this
+    // removes, so a bundled suite that READS process.env.CI (assigning it, as
+    // the pjan-180 suites do for their own children, is not reading it) must
+    // fail here and either drop the dependency or be granted CI on purpose.
     const readsCi = readdirSync(join(root, "tests")).filter((name) => name.endsWith(".ts"))
       .filter((name) => /process\.env\.CI\b(?!\s*=[^=])|process\.env\[["']CI["']\](?!\s*=[^=])/.test(readFileSync(join(root, "tests", name), "utf8")));
-    assert.equal(BUNDLED_SUITE_PASSTHROUGH.includes("CI"), readsCi.length > 0, `CI passthrough and CI readers disagree: passed=${BUNDLED_SUITE_PASSTHROUGH.includes("CI")}, read by ${JSON.stringify(readsCi)}`);
+    assert.equal(Object.hasOwn(SUITE_PASSTHROUGH, "CI"), readsCi.length > 0, `CI grant and CI readers disagree: granted=${Object.hasOwn(SUITE_PASSTHROUGH, "CI")}, read by ${JSON.stringify(readsCi)}`);
+    assert.deepEqual([...SUITE_GRANTS], [], "this suite is granted nothing, so its bundled probe may see nothing extra");
     const probe = join(scratch, "bundled-probe.ts");
     put(probe, 'process.stdout.write(JSON.stringify({ ci: process.env.CI ?? null, keys: Object.keys(process.env) }));\n');
-    const bundledSees = (ci) => {
+    const bundledSees = (ci, options) => {
       const savedCi = process.env.CI;
       if (ci === undefined) delete process.env.CI; else process.env.CI = ci;
       const realWrite = process.stdout.write;
       let captured = "";
       process.stdout.write = (chunk) => { captured += chunk; return true; };
-      try { runTypescriptRegression(relative(join(root, "tests"), probe)); } finally {
+      try { runTypescriptRegression(relative(join(root, "tests"), probe), options); } finally {
         process.stdout.write = realWrite;
         if (savedCi === undefined) delete process.env.CI; else process.env.CI = savedCi;
       }
       return JSON.parse(captured);
     };
-    const withCi = bundledSees("true");
-    assert.equal(withCi.ci, readsCi.length > 0 ? "true" : null, "CI reaches a bundled suite exactly when a bundled suite reads it");
-    assert.equal(bundledSees(undefined).ci, null, "CI is passed through, never invented");
-    for (const name of Object.keys(planted)) assert.equal(withCi.keys.includes(name), false, `${name} reached the bundled suite`);
-    const bundledAllowed = new Set([...allowed, ...BUNDLED_SUITE_PASSTHROUGH]);
-    assert.deepEqual(withCi.keys.filter((name) => !bundledAllowed.has(name) && !/^LC_[A-Z]+$/.test(name)), [], "nothing off the allowlist reached the bundled suite");
-    checkpoint("a bundled TypeScript suite sees CI only if one reads it, and none of the planted credentials");
+    const granted = bundledSees("true");
+    assert.equal(granted.ci, null, "a name the launcher suite is not granted never reaches the bundled suite");
+    assert.equal(bundledSees("true", { pass: ["CI"] }).ci, "true", "a granted name is forwarded");
+    assert.equal(bundledSees(undefined, { pass: ["CI"] }).ci, null, "a granted name is passed through, never invented");
+    for (const name of Object.keys(planted)) assert.equal(granted.keys.includes(name), false, `${name} reached the bundled suite`);
+    assert.deepEqual(granted.keys.filter((name) => !allowed.has(name) && !/^LC_[A-Z]+$/.test(name)), [], "nothing off the allowlist reached the bundled suite");
+    checkpoint("a bundled TypeScript suite sees only its launcher's grants (CI is granted to nobody) and none of the planted credentials");
   } finally {
     for (const [name, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;

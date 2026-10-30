@@ -54,6 +54,17 @@
 // Usage:
 //   node scripts/check-hermetic-test-env.mjs            # scan tests/
 //   node scripts/check-hermetic-test-env.mjs --list     # print every site it judged
+//
+// PJAN-196 adds a second check, for the SUITE PROCESS itself rather than its
+// children. Every registered suite (scripts/run-tests.mjs SUITES plus every
+// `node tests/<x>.mjs` in a package.json script) must make
+// tests/helpers/hermetic-suite.mjs its FIRST module request, so the preamble
+// rebuilds process.env and HOME before any pjangler code loads in-process. A
+// suite that must see the operator env in-process is listed in
+// PREAMBLE_EXCEPTIONS with its reason (empty). The check also fails when
+// run-tests.mjs stops registering this gate or the canaries that prove the
+// guards dynamically (REQUIRED_REGISTRATIONS); the PJAN-196 canary suite
+// checks the same registrations from the other side.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
@@ -64,7 +75,7 @@ import ts from "typescript";
  * Files allowed to let a child inherit the operator env, each at marked sites
  * only, keyed by path relative to the repo root, valued by the reason.
  *
- * Empty is the steady state, and it is empty: every child in tests/ is built
+ * Empty is the steady state for children: every child in tests/ is built
  * by hermeticEnv(), including the esbuild/npm build steps (npm resolves the
  * local esbuild with an isolated HOME just as well) and the launchers of the
  * bundled TypeScript suites (which pass the Postgres connection settings by
@@ -77,6 +88,9 @@ import ts from "typescript";
  */
 export const EXCEPTIONS = new Map([
   // ["tests/some-suite.mjs", "why this file's marked sites must inherit"],
+  // Not a child: the PJAN-196 probe lists the variable NAMES its in-process
+  // code sees, so the canary can compare them with what it planted.
+  ["tests/pjan-196-suite-env-probe.mjs", "reports the env's variable names (never values) for the PJAN-196 canary; builds no child env"],
 ]);
 
 const MARKER = /hermetic-env:\s*inherits\b/;
@@ -91,7 +105,140 @@ const PROCESS_MODULES = new Set(["process", "node:process"]);
 const CP_MODULES = new Set(["child_process", "node:child_process"]);
 const SPAWNER_PACKAGES = new Set(["cross-spawn", "execa"]);
 const GLOBAL_OBJECTS = new Set(["globalThis", "global"]);
-const ALLOWED_FILES = new Set(["tests/helpers/hermetic-env.mjs"]);
+// hermetic-env.mjs holds the allowlist; hermetic-suite.mjs rebuilds the suite
+// process's own env from it (PJAN-196). Both read process.env wholesale by design.
+const ALLOWED_FILES = new Set(["tests/helpers/hermetic-env.mjs", "tests/helpers/hermetic-suite.mjs"]);
+
+/** The suite-process preamble every registered suite imports first (PJAN-196). */
+export const PREAMBLE = "./helpers/hermetic-suite.mjs";
+
+/**
+ * Registered suites allowed to run WITHOUT the preamble, i.e. with the
+ * operator's whole env in-process, each with the reason. Empty is the steady
+ * state, and it is empty. An entry needs a subject that is the operator env
+ * itself; a suite that merely needs one more variable gets a SUITE_PASSTHROUGH
+ * grant in tests/helpers/hermetic-env.mjs instead.
+ */
+export const PREAMBLE_EXCEPTIONS = new Map([
+  // ["tests/some-suite.mjs", "why this suite must see the operator env in-process"],
+]);
+
+/**
+ * What scripts/run-tests.mjs must keep registered for these guards to mean
+ * anything: a gate that is not in GATES never runs, and a canary that is not
+ * in SUITES proves nothing. tests/pjan-196-suite-env-canary.mjs checks the
+ * same list, so dropping the gate is caught by a suite and dropping the suites
+ * is caught by the gate.
+ */
+export const REQUIRED_REGISTRATIONS = Object.freeze({
+  gates: Object.freeze([["check:hermetic-test-env", "scripts/check-hermetic-test-env.mjs"]]),
+  suites: Object.freeze([
+    "tests/pjan-188-hermetic-canary-regressions.mjs",
+    "tests/pjan-193-env-allowlist-regressions.mjs",
+    "tests/pjan-196-suite-env-probe.mjs",
+    "tests/pjan-196-suite-env-canary.mjs",
+  ]),
+});
+
+/** Every string-literal element of `const <name> = [...]` in `text` (nested arrays flattened per entry). */
+function arrayLiteral(source, name) {
+  let found;
+  const visit = (node) => {
+    if (found) return;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name && node.initializer) {
+      let init = unwrap(node.initializer);
+      if (init && ts.isNewExpression(init)) init = init.arguments?.[0];
+      if (init && ts.isArrayLiteralExpression(init)) {
+        found = init.elements.map((element) => (ts.isArrayLiteralExpression(element)
+          ? element.elements.filter(ts.isStringLiteralLike).map((item) => item.text)
+          : ts.isStringLiteralLike(element) ? element.text : undefined)).filter(Boolean);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found ?? [];
+}
+
+/**
+ * The registry of scripts/run-tests.mjs, read from its source (importing it
+ * would run the suites): { gates: [[name, script]], suites: [path] }.
+ */
+export function readRunnerRegistry(root) {
+  const text = readFileSync(join(root, "scripts", "run-tests.mjs"), "utf8");
+  const source = ts.createSourceFile("run-tests.mjs", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  return { gates: arrayLiteral(source, "GATES"), suites: arrayLiteral(source, "SUITES") };
+}
+
+/**
+ * Every file that runs as a SUITE PROCESS: the runner's SUITES plus every
+ * `node tests/<x>.mjs` in a package.json script (the network-backed installer
+ * contracts run only from there, in publish.yml).
+ */
+export function registeredSuites(root) {
+  const suites = new Set(readRunnerRegistry(root).suites);
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  for (const command of Object.values(pkg.scripts ?? {})) {
+    for (const match of String(command).matchAll(/\bnode\s+(tests\/[\w./-]+\.mjs)\b/g)) suites.add(match[1]);
+  }
+  return [...suites].sort();
+}
+
+/**
+ * The first module request of a suite (an import, or an `export ... from`):
+ * ESM evaluates them in this order, so the preamble must be first for it to
+ * run before any pjangler code loads. Returns the specifier or undefined.
+ */
+export function firstModuleRequest(text, fileName = "suite.mjs") {
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+      // `import type` is erased and requests nothing.
+      if (statement.importClause?.isTypeOnly) continue;
+      return statement.moduleSpecifier.text;
+    }
+    if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+      return statement.moduleSpecifier.text;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * PJAN-196: every registered suite applies the preamble (its FIRST module
+ * request is ./helpers/hermetic-suite.mjs) unless PREAMBLE_EXCEPTIONS lists it,
+ * and the guards above stay registered in scripts/run-tests.mjs.
+ */
+export function checkSuitePreambles(root, exceptions = PREAMBLE_EXCEPTIONS) {
+  const violations = [];
+  const registry = readRunnerRegistry(root);
+  for (const [name, script] of REQUIRED_REGISTRATIONS.gates) {
+    if (!registry.gates.some(([gate, path]) => gate === name && path === script)) {
+      violations.push(`scripts/run-tests.mjs  gate ${name} (${script}) is not registered in GATES: the guard would never run`);
+    }
+  }
+  for (const suite of REQUIRED_REGISTRATIONS.suites) {
+    if (!registry.suites.includes(suite)) violations.push(`scripts/run-tests.mjs  ${suite} is not registered in SUITES: the guard it carries would never run`);
+  }
+  const suites = registeredSuites(root);
+  for (const suite of suites) {
+    let text;
+    try { text = readFileSync(join(root, suite), "utf8"); } catch {
+      violations.push(`${suite}  registered but missing`);
+      continue;
+    }
+    const first = firstModuleRequest(text, suite);
+    if (exceptions.has(suite)) {
+      if (first === PREAMBLE) violations.push(`${suite}  stale preamble exception: it imports the preamble; delete its PREAMBLE_EXCEPTIONS entry`);
+    } else if (first !== PREAMBLE) {
+      violations.push(`${suite}  first import is ${first ? JSON.stringify(first) : "missing"}, not "${PREAMBLE}": in-process code would see the operator env and real HOME`);
+    }
+  }
+  for (const suite of exceptions.keys()) {
+    if (!suites.includes(suite)) violations.push(`${suite}  stale preamble exception: not a registered suite`);
+  }
+  return { violations, suites };
+}
 
 /** Strip parentheses and `as`/non-null/await wrappers so `(process.env as X)` still reads as process.env. */
 function unwrap(node) {
@@ -465,6 +612,7 @@ export function checkTree(root, exceptions = EXCEPTIONS) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const root = resolve(import.meta.dirname, "..");
   const { violations, sites } = checkTree(root);
+  const preambles = checkSuitePreambles(root);
   if (process.argv.includes("--list")) {
     for (const site of sites) console.log(`${site.marked ? "waived " : "FLAGGED"}  ${site.file}:${site.line}  ${site.kind}  ${site.text}`);
   }
@@ -472,7 +620,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     console.error(`hermetic test env: ${violations.length} finding(s). A child env must be built by hermeticEnv() from tests/helpers/hermetic-env.mjs:\n`);
     for (const violation of violations) console.error(`  ${violation}`);
     console.error("\nA site that genuinely must inherit gets a `// hermetic-env: inherits -- <why>` comment and an EXCEPTIONS entry.");
-    process.exit(1);
   }
-  console.log(`hermetic test env: ok (${sites.length} marked inheriting site(s) across ${EXCEPTIONS.size} excepted file(s))`);
+  if (preambles.violations.length) {
+    console.error(`hermetic suite env: ${preambles.violations.length} finding(s). Every registered suite's first import is "${PREAMBLE}" (PJAN-196):\n`);
+    for (const violation of preambles.violations) console.error(`  ${violation}`);
+    console.error("\nA suite that must see the operator env in-process gets a PREAMBLE_EXCEPTIONS entry with the reason.");
+  }
+  if (violations.length || preambles.violations.length) process.exit(1);
+  console.log(`hermetic test env: ok (${sites.length} marked inheriting site(s) across ${EXCEPTIONS.size} excepted file(s); `
+    + `${preambles.suites.length} registered suite(s) start from the preamble, ${PREAMBLE_EXCEPTIONS.size} excepted)`);
 }

@@ -29,6 +29,14 @@ import { tmpdir } from "node:os";
  *
  * No overlay helper is kept. Everything that used one has migrated, and an
  * overlay is exactly the shape that lets an unlisted variable through.
+ *
+ * PJAN-196 (suite process): PJAN-193 isolated children only; the suite process
+ * kept the operator's whole env, so pjangler code a suite called IN-PROCESS
+ * read the operator's credentials and resolved os.homedir() to the real ~.
+ * tests/helpers/hermetic-suite.mjs, every registered suite's first import,
+ * rebuilds the suite's own env with hermeticEnv() and an isolated HOME, plus
+ * the names SUITE_PASSTHROUGH below grants that suite. One allowlist, applied
+ * at both boundaries.
  */
 
 /**
@@ -119,11 +127,101 @@ const PASSTHROUGH_PATTERN = /^LC_[A-Z]+$/;
  *   hermeticEnv's HOME/PATH/USER/LOGNAME win, so only SHELL and TERM, neither a
  *   credential, reach an MCP server child.)
  * - CI, GITHUB_*, RUNNER_*, npm_config_* / npm_package_* (npm run injects
- *   them), PG*, PJ_TICKET_PROVIDER_ADAPTERS: harness configuration. The suite
- *   process still sees them (the runner gives a suite the operator env, see
- *   scripts/run-tests.mjs) and a suite whose child needs one names it with
- *   `pass` or sets it as a fixture value.
+ *   them), PG*, PJ_TICKET_PROVIDER_ADAPTERS: harness configuration. Since
+ *   PJAN-196 the suite process does not see them either, unless the central
+ *   SUITE_PASSTHROUGH registry below grants one to that suite by name; a suite
+ *   forwards a granted name to its child with `pass` (or sets a fixture value).
  */
+
+/*
+ * PJAN-196 TLS / proxy decision. SSL_CERT_FILE, NODE_EXTRA_CA_CERTS and
+ * HTTPS_PROXY / HTTP_PROXY / NO_PROXY (either case) are NOT in PASSTHROUGH:
+ * - The hermetic suites never leave the machine. Their network peers are
+ *   loopback fakes (the Plane/Trello adapter servers), throwaway redis and the
+ *   disposable Postgres. A proxy variable would route curl/git/python traffic
+ *   to those fakes through the operator's proxy (NO_PROXY decides, and an
+ *   operator's NO_PROXY is not ours to trust), and a CA override changes which
+ *   TLS peers a child accepts. Neither may differ between a workstation and CI.
+ * - A proxy URL can carry credentials (`http://user:pass@proxy:3128`), and the
+ *   rule since PJAN-193 is that no credential reaches a hermetic child.
+ * - Only the network-backed release contracts (the real BMAD installer and the
+ *   PJAN-180 surface oracle) talk to the internet. They get the two TLS trust
+ *   anchors through SUITE_PASSTHROUGH below: public certificates, not secrets,
+ *   and what a host behind a TLS-inspecting gateway needs to reach npm and
+ *   GitHub at all. They do not get the proxy variables, for the credential
+ *   reason above. Neither CI (ubuntu-latest) nor this fleet's hosts set any of
+ *   the five today; a host that ever needs a proxy adds a SUITE_PASSTHROUGH
+ *   entry scoped to those two contracts, with its reason.
+ */
+
+/**
+ * PJAN-196: the ONE central registry of operator variables a SUITE PROCESS
+ * keeps, beyond PASSTHROUGH, and which suites keep them.
+ *
+ * A suite process starts from tests/helpers/hermetic-suite.mjs (its first
+ * import), which rebuilds process.env as `hermeticEnv({ HOME: <scratch> },
+ * { pass: suiteGrants(<suite>) })`. Everything outside PASSTHROUGH, the pins
+ * and these grants is deleted from the suite's own env before any pjangler
+ * code is loaded, so in-process library calls and whatever they spawn see the
+ * same allowlist a child does. A suite forwards a granted name to a child with
+ * `hermeticEnv(fixture, { pass: SUITE_GRANTS })`; a name not granted here is
+ * already gone from process.env and cannot be forwarded by anyone.
+ *
+ * Keyed by variable, valued by the reason and the suites (paths relative to
+ * the repo root) that receive it. The only credentials in here are
+ * GITHUB_TOKEN (the network-backed installer contracts, for the GitHub API
+ * rate limit) and PGPASSWORD (the disposable test database); the PJAN-196
+ * suite fails if any other credential-shaped name appears.
+ */
+const POSTGRES_SUITES = Object.freeze([
+  "tests/pjan-80-cli-regressions.mjs",
+  "tests/pjan-80-bootstrap-regressions.mjs",
+  "tests/pjan-80-registry-consumers.mjs",
+  "tests/pjan-80-consumer-concurrency.mjs",
+  "tests/pjan-80-migration-regressions.mjs",
+  "tests/pjan-80-registry-regressions.mjs",
+  "tests/pg-registry-regressions.mjs",
+  "tests/project-registry-regressions.mjs",
+]);
+const NETWORK_CONTRACTS = Object.freeze([
+  "tests/bmad-installer-contract-regressions.mjs",
+  "tests/pjan-180-surface-oracle.mjs",
+]);
+const grant = (reason, suites) => Object.freeze({ reason, suites: Object.freeze([...suites]) });
+const POSTGRES = "Postgres connection settings: publish.yml's service container (PGHOST=localhost, PGUSER=postgres, trust auth) or the operator's local server. The Postgres-backed suites and the bundled suites they launch connect with them";
+export const SUITE_PASSTHROUGH = Object.freeze({
+  PGHOST: grant(POSTGRES, POSTGRES_SUITES),
+  PGPORT: grant(POSTGRES, POSTGRES_SUITES),
+  PGUSER: grant(POSTGRES, POSTGRES_SUITES),
+  PGDATABASE: grant(POSTGRES, POSTGRES_SUITES),
+  PGPASSWORD: grant(`${POSTGRES}. A credential, but only for a disposable test database the suites create and drop; CI uses trust auth and sets none`, POSTGRES_SUITES),
+  PJ_TEST_ADMIN_DATABASE: grant("the database the Postgres suites connect to in order to CREATE/DROP their disposable databases", POSTGRES_SUITES),
+  PJANGLER_REQUIRE_DISPOSABLE_POSTGRES: grant("publish.yml sets it so a missing postgres/psql/bun fails the job instead of skipping (pg-registry also sets it for its own strict-mode self-test child)", POSTGRES_SUITES),
+  PJAN21_PG_HARNESS_SELF_TEST: grant("operator switch for pg-registry's harness self-test mode; the suite re-runs itself with it", ["tests/pg-registry-regressions.mjs"]),
+  PJ_TICKET_PROVIDER_ADAPTERS: grant("publish.yml fetches the Krebs tp adapters and points here; on a workstation the suites find them as a sibling checkout instead", ["tests/pjan-23-regressions.mjs", "tests/pjan-50-regressions.mjs"]),
+  PJ_PROPERTY_ITERATIONS: grant("operator knob: a longer property run", ["tests/pjan-135-skill-roots-property.mjs"]),
+  PJ_PROPERTY_SEED: grant("operator knob: reproduce a property-run failure", ["tests/pjan-135-skill-roots-property.mjs"]),
+  PJ_SKILLEX_TEST_TARBALL: grant("operator knob: test a local @delorenj/skillex tarball", ["tests/skillex-init-regressions.mjs"]),
+  GITHUB_TOKEN: grant("the real BMAD installer resolves module tags through the GitHub API; publish.yml passes the job's read-only token so a shared runner IP does not exhaust the anonymous 60 requests/hour. The ONE deliberate credential passthrough", NETWORK_CONTRACTS),
+  SSL_CERT_FILE: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", NETWORK_CONTRACTS),
+  NODE_EXTRA_CA_CERTS: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", NETWORK_CONTRACTS),
+  npm_config_cache: grant("the surface oracle's npx keeps the operator's chosen npm cache when one is configured", ["tests/pjan-180-surface-oracle.mjs"]),
+});
+
+/** The SUITE_PASSTHROUGH names granted to `suite` (a repo-relative path). */
+export function suiteGrants(suite) {
+  return Object.keys(SUITE_PASSTHROUGH).filter((name) => SUITE_PASSTHROUGH[name].suites.includes(suite));
+}
+
+/**
+ * Suites allowed to resolve the operator's REAL home (the passwd entry, which
+ * HOME isolation cannot hide) through `operatorHome()` in hermetic-suite.mjs,
+ * each with the reason. Read-only uses only. Empty is the steady state.
+ */
+export const OPERATOR_HOME_READERS = new Map([
+  ["tests/pjan-182-crank-interval-regressions.mjs",
+    "engine parity: runs the operator's installed zcrank engine (~/.agents/tools/jev-clairic/bin/zcrank.py, read-only) against the same throwaway redis; skipped when it is not installed (CI)"],
+]);
 
 /** Never passable: the suite must supply isolated values, not the operator's. */
 const NEVER_PASSED = (name) => name === "HOME" || name.startsWith("XDG_");
