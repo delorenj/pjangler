@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-36 — the interactive `migrate` rule picker must be human-readable: the
 // rule TITLE leads, the rule id stays visible but subordinate, failing rules
 // are visually distinct, and detail is available without turning the list into

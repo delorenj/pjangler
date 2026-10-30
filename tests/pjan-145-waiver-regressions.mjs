@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-145: a repository can waive a parity rule in .project.json.
 //
 // cal.diy is a fork of cal.com, whose upstream ships `.claude/skills ->

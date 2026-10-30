@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-174 — `pj crank`: project-native crank-mode toggles.
 //
 // The mapping under test is the only invented part of this command set: a

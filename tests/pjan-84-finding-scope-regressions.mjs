@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 // PJAN-84: a finding's SCOPE, and what `ok` is allowed to mean.
 //

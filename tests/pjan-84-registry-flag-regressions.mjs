@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-84: audit, migrate and describe agree about which registry they read —
 // and migrate's postcondition is read once, after the whole run.
 //

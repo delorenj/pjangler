@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-84: a half-built target is adopted, not re-created forever.
 //
 // `syncMode` meant "this directory is a git root". A failed init over a

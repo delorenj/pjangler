@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-24/PJAN-57 — `.env` materialization is owned by MiseOpInjectRecipe.
 // Shell complexity lives in a managed script so mise never interpolates temp
 // variables. The script must publish atomically and preserve `.env` on failure.

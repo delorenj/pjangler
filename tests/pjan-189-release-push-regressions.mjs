@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-189: every version CI publishes ends up tagged, and pushing main is the
 // only way to publish.
 //

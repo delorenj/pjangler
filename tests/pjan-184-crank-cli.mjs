@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-184 — the `pj crank` command surface, end to end.
 //
 // pjan-174 and pjan-182 pin the pure resolution / interval math and the Ink screens in

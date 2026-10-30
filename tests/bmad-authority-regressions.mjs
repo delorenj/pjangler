@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-27 — pjangler must not ship an "autonomous ticket lifecycle" workflow.
 //
 // That authority belongs to Krebs, Momo, and the Hermes PM. A BMAD workflow

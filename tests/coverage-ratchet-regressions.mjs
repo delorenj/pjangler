@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // The coverage ratchet is a gate that can fail the build and rewrite a tracked
 // file, so it needs to be provably right about both.
 //

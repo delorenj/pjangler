@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // `pj project identity` with no argument means "this project".
 //
 // It used to throw `pass a project slug, an agent id, or --all` from inside a

@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-75 — `migrate` must not report success it has not achieved.
 //
 // The reported failure was a single terminal session: `pjangler migrate`

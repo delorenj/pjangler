@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // The coverage path audit decides whether the ratchet's total is a measurement
 // of src at all, so it has to be right in both directions: a clean report must
 // pass untouched, and each way the file list has actually gone wrong must be

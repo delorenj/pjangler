@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-187 — loadScreen must tell "the screen is not built" apart from "the screen is built
 // but one of ITS imports cannot be resolved". Node raises ERR_MODULE_NOT_FOUND for both, so
 // the old loader sent everyone to `npm run build` — useless advice when what is missing is

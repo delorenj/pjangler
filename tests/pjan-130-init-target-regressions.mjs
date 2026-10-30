@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-130: a positional name means "make a project called that", never
 // "rename the repo I happen to be standing in".
 //

@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";

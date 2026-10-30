@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-147: a repo can declare that it hand-keeps .env, and secrets.env-op
 // then requires the managed materializer to be ABSENT instead of present.
 //

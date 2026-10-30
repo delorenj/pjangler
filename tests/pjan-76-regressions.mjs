@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 import { createSkillPackFixture, createBmadInstallerFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 // PJAN-76 — BMAD is owned by bmad-method, not a frozen Skillex pack.

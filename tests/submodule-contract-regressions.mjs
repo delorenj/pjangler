@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./helpers/hermetic-suite.mjs";
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

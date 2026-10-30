@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-191 — the PTY helper itself (tests/helpers/pty-run.mjs) is pinned with REAL
 // pseudo-terminals and REAL child processes: no fake driver, no stubbed clock.
 //

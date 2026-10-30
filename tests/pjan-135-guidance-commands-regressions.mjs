@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-135: every command pjangler tells an operator to run must exist.
 //
 // `pj migrate --all` on infra blocked with "run `skillex migrate --project …`".

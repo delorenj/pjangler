@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // board.schema: the parity rule that asks Pilot (`px`) what it would change on
 // a project's linked Plane board, and lets it change it (src/parity/rules.ts).
 //

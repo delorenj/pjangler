@@ -1,3 +1,4 @@
+import "./helpers/hermetic-suite.mjs";
 // PJAN-160: the release version must be free on npm AND in git.
 //
 // 'Bump version from the published one' used to ask npm alone. package.json
