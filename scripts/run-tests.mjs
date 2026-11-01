@@ -87,6 +87,7 @@ const SUITES = [
   "tests/pjan-135-mise-rewrite-regressions.mjs",
   "tests/pjan-141-142-skills-parity-regressions.mjs",
   "tests/pjan-176-bmad-installer-skills-regressions.mjs",
+  "tests/pjan-166-bmad-setup-scripts-regressions.mjs",
   "tests/pjan-144-registry-field-regressions.mjs",
   "tests/pjan-145-waiver-regressions.mjs",
   "tests/pjan-147-env-materialization-opt-out-regressions.mjs",
