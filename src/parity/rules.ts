@@ -12,6 +12,7 @@ import {
 } from "../bmad/companion";
 import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
+import { planBmadSetupScripts, applyBmadSetupScripts } from "../bmad/setup-scripts";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
@@ -4092,6 +4093,40 @@ return ([
         details: [...evicted, ...(install.companion ? companionDetails(install.companion) : [])],
         bmadCompanion: install.companion,
       };
+    },
+  },
+  {
+    id: "bmad.setup-scripts",
+    title: "BMAD ignored installer setup scripts",
+    audit: (ctx) => {
+      if (!isInstalledBmadProject(ctx.repoRoot)) return {
+        id: "bmad.setup-scripts", title: "BMAD ignored installer setup scripts", status: "skip",
+        summary: "No installed BMAD project", details: [], fixable: false,
+      };
+      const plan = planBmadSetupScripts(ctx.repoRoot, resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION), BMAD_INSTALLER_VERSION);
+      return {
+        id: "bmad.setup-scripts", title: "BMAD ignored installer setup scripts",
+        status: plan.files.length || plan.error ? "fail" : "pass",
+        summary: plan.error ?? (plan.files.length ? "Ignored BMAD installer scripts are missing" : "Pinned BMAD installer scripts are present"),
+        details: plan.files.map((path) => relative(ctx.repoRoot, path)).concat(plan.error ? [plan.error] : []),
+        fixable: !plan.error && plan.files.length > 0,
+      };
+    },
+    migrate: (ctx, finding) => {
+      const title = finding.title, id = finding.id;
+      if (finding.status === "skip") return { id, title, status: "skipped", summary: finding.summary, details: [], changedFiles: [] };
+      const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+      const plan = planBmadSetupScripts(ctx.repoRoot, pkg, BMAD_INSTALLER_VERSION);
+      if (plan.error) return { id, title, status: "blocked", summary: plan.error, details: [plan.error], changedFiles: [] };
+      if (!plan.files.length) return { id, title, status: "noop", summary: "Pinned BMAD installer scripts already present", details: [], changedFiles: [] };
+      if (ctx.dryRun) return {
+        id, title, status: "applied", summary: "Would restore ignored scripts from verified pinned bmad-method package",
+        details: [`bmad-method@${BMAD_INSTALLER_VERSION} (${pkg.root})`], changedFiles: plan.files,
+      };
+      const applied = applyBmadSetupScripts(ctx.repoRoot, pkg, BMAD_INSTALLER_VERSION);
+      return applied.error
+        ? { id, title, status: "blocked", summary: applied.error, details: [applied.error], changedFiles: [] }
+        : { id, title, status: "applied", summary: "Restored ignored BMAD installer scripts", details: [`bmad-method@${BMAD_INSTALLER_VERSION} (${pkg.root})`], changedFiles: applied.files };
     },
   },
   {
