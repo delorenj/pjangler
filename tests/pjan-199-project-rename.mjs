@@ -46,6 +46,7 @@ const BOARDS = {
   partial: "aaaaaaaa-0000-0000-0000-000000000004",
   taken: "aaaaaaaa-0000-0000-0000-000000000005",
   service: "aaaaaaaa-0000-0000-0000-000000000006",
+  liar: "aaaaaaaa-0000-0000-0000-000000000007",
 };
 
 function stubScript(name, source) {
@@ -75,6 +76,7 @@ const boards = [
   { id: ${JSON.stringify(BOARDS.partial)}, identifier: "PART", name: "Partial" },
   { id: ${JSON.stringify(BOARDS.taken)}, identifier: "TAKE", name: "Taken" },
   { id: ${JSON.stringify(BOARDS.service)}, identifier: "SVCP", name: "Service" },
+  { id: ${JSON.stringify(BOARDS.liar)}, identifier: "LIAR", name: "Liar", noApply: true },
 ];
 const patches = [];
 let requests = 0;
@@ -96,6 +98,7 @@ const server = createServer((request, response) => {
       patches.push({ id, identifier, apiKey });
       if (!board) return send(404, {});
       if (identifier === "TAKEN") return send(400, { identifier: ["Project ID is already taken"] });
+      if (board.noApply) return send(200, board);
       board.identifier = identifier;
       send(200, board);
     });
@@ -212,6 +215,13 @@ makeProject({ id: "archivedproj", name: "Archived Project", identifier: "ARCH", 
 makeProject({ id: "partial", name: "Partial", identifier: "PART", boardId: BOARDS.partial });
 makeProject({ id: "taken", name: "Taken Project", identifier: "TAKE", boardId: BOARDS.taken });
 makeProject({ id: "trellop", name: "Trello Project", identifier: "TRELP", boardId: "abc123", type: "trello", source: "proposed" });
+makeProject({ id: "liar", name: "Liar", identifier: "LIAR", boardId: BOARDS.liar });
+makeProject({ id: "ghostboard", name: "Ghost Board", identifier: "GHOST", boardId: "cccccccc-0000-0000-0000-000000000001" });
+const badDir = makeProject({ id: "badmanifest", name: "Bad Manifest", identifier: "BADM", boardId: "cccccccc-0000-0000-0000-000000000002" });
+writeFileSync(join(badDir, ".project.json"), "{ not json");
+for (const id of ["nomise", "misefail", "agfail", "symin", "symout", "hintsold"]) {
+  makeProject({ id, name: id, identifier: id.toUpperCase().slice(0, 6), boardId: `tr-${id}`, type: "trello", source: "proposed" });
+}
 const serviceDir = makeProject({ id: "svcp", name: "Service Project", identifier: "SVCP", boardId: BOARDS.service, inYaml: false });
 
 // Downstream files for the main project.
@@ -272,6 +282,13 @@ mkdirSync(binDir, { recursive: true });
 const marker = join(workspace, "mise-marker.txt");
 writeFileSync(join(binDir, "mise"), `#!/bin/sh\necho "$PWD :: $*" >> "${marker}"\n`);
 chmodSync(join(binDir, "mise"), 0o755);
+
+const emptyBin = join(workspace, "empty-bin");
+mkdirSync(emptyBin, { recursive: true });
+const failBin = join(workspace, "fail-bin");
+mkdirSync(failBin, { recursive: true });
+writeFileSync(join(failBin, "mise"), "#!/bin/sh\necho 'boom from mise' >&2\nexit 1\n");
+chmodSync(join(failBin, "mise"), 0o755);
 
 const registry = join(workspace, "registry.yaml");
 writeFileSync(registry, YAML.stringify({ schema_version: 1, projects: registryProjects }, { lineWidth: 0 }));
@@ -357,6 +374,26 @@ try {
     assert.equal((await planeState()).patches.length, 0);
   });
 
+  await check("board_not_found, provider_unreachable, manifest_invalid and registry_unavailable are refused with zero PATCHes", async () => {
+    const codeOf = (run) => JSON.parse(run.stdout).code;
+    const regBefore = read(registry);
+    const ghost = rename(["ghostboard", "ghostx", "--json"]);
+    assert.equal(ghost.status, 1);
+    assert.equal(codeOf(ghost), "board_not_found");
+    const bad = rename(["badmanifest", "badx", "--json"]);
+    assert.equal(bad.status, 1);
+    assert.equal(codeOf(bad), "manifest_invalid");
+    const down = rename(["tower-of-lost-things", "tolt", "--json"], { PLANE_BASE: "http://127.0.0.1:1" });
+    assert.equal(down.status, 1);
+    assert.equal(codeOf(down), "provider_unreachable");
+    const noRegistry = cli(["project", "rename", "tower-of-lost-things", "tolt", "--registry", "http://127.0.0.1:1", "--json"]);
+    assert.equal(noRegistry.status, 1);
+    assert.equal(codeOf(noRegistry), "registry_unavailable");
+    assert.equal((await planeState()).patches.length, 0);
+    assert.equal(read(registry), regBefore);
+    assert.equal(manifestOf(towerDir).project_id, "tower-of-lost-things");
+  });
+
   // -------------------------------------------------------------------------
   // Dry run
   // -------------------------------------------------------------------------
@@ -428,6 +465,8 @@ try {
     assert.notEqual(manifest.ticket_provider.identifier_fetched_at, STAMP, "the identifier was fetched again");
     assert.equal(manifest.ticket_provider.board_id, BOARDS.tower, "the board id never changes");
     assert.equal(manifest.ticket_provider.workspace, "33god");
+    assert.equal(manifest.renamed_from.project_id, "tower-of-lost-things", "rename provenance for a later resume");
+    assert.equal(manifest.renamed_from.identifier, "TOWE");
 
     // Registry: re-keyed, repo and name untouched.
     const doc = registryDoc();
@@ -475,6 +514,15 @@ try {
     );
     assert.deepEqual(snapshot(), before);
     assert.equal((await planeState()).patches.length, 1, "no second Plane write");
+  });
+
+  await check("a wrong old id after a finished rename is unknown_project and writes nothing", async () => {
+    const before = snapshot();
+    const run = rename(["not-the-old-id", "tolt", "--apply", "--json"]);
+    assert.equal(run.status, 1, run.stdout);
+    assert.equal(JSON.parse(run.stdout).code, "unknown_project");
+    assert.deepEqual(snapshot(), before);
+    assert.equal((await planeState()).patches.length, 1);
   });
 
   // -------------------------------------------------------------------------
@@ -580,6 +628,94 @@ try {
     const run = spawnSync(process.execPath, [CLI, "rename", "--help"], { encoding: "utf8", env: hermeticEnv({ HOME: home }) });
     assert.equal(run.status, 0);
     assert.match(run.stdout, /<old-id> <new-id>/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Follow-up steps: resume, links, candystore, read-back, hints
+  // -------------------------------------------------------------------------
+  await check("a re-run after an AGENTS.md failure fixes the Board: line via renamed_from", async () => {
+    const dir = projectDirs.agfail;
+    mkdirSync(join(dir, "AGENTS.md")); // a directory: reading it fails the step
+    const first = rename(["agfail", "agfix", "--apply", "--json"]);
+    assert.equal(first.status, 1, first.stdout);
+    const failed = JSON.parse(first.stdout);
+    assert.equal(failed.steps.find((step) => step.step === "AGENTS.md").status, "failed");
+    assert.equal(failed.steps.find((step) => step.step === "registry").status, "done");
+    assert.equal(manifestOf(dir).renamed_from.project_id, "agfail");
+    rmSync(join(dir, "AGENTS.md"), { recursive: true });
+    writeFileSync(join(dir, "AGENTS.md"), "Board:  agfail (AGFAIL)\n");
+    const again = rename(["agfail", "agfix", "--apply", "--json"]);
+    assert.equal(again.status, 0, again.stdout);
+    const result = JSON.parse(again.stdout);
+    assert.equal(result.resumed, true);
+    assert.equal(result.steps.find((step) => step.step === "AGENTS.md").status, "done");
+    assert.equal(read(join(dir, "AGENTS.md")), "Board:  agfail (AGFIX)\n");
+    assert.equal(manifestOf(dir).renamed_from.project_id, "agfail", "a resume keeps the first run's provenance");
+    assert.ok(!result.warnings.some((warning) => /ticket refs/.test(warning)), "no board change this run, no ticket-ref warning");
+  });
+
+  await check("AGENTS.md as a symlink inside the repo keeps the link and updates its target; outside the repo it is left alone", async () => {
+    const inside = projectDirs.symin;
+    mkdirSync(join(inside, "docs"), { recursive: true });
+    writeFileSync(join(inside, "docs", "AGENTS.real.md"), "Board:  symin (SYMIN)\n");
+    symlinkSync(join("docs", "AGENTS.real.md"), join(inside, "AGENTS.md"));
+    const run = rename(["symin", "symnew", "--apply", "--json"]);
+    assert.equal(run.status, 0, run.stdout);
+    assert.equal(readlinkSync(join(inside, "AGENTS.md")), join("docs", "AGENTS.real.md"));
+    assert.equal(read(join(inside, "docs", "AGENTS.real.md")), "Board:  symin (SYMNEW)\n");
+
+    const outside = projectDirs.symout;
+    const shared = join(workspace, "outside", "AGENTS.md");
+    mkdirSync(join(workspace, "outside"), { recursive: true });
+    writeFileSync(shared, "Board:  symout (SYMOUT)\n");
+    symlinkSync(shared, join(outside, "AGENTS.md"));
+    const run2 = rename(["symout", "symoutnew", "--apply", "--json"]);
+    assert.equal(run2.status, 0, run2.stdout);
+    const step = JSON.parse(run2.stdout).steps.find((candidate) => candidate.step === "AGENTS.md");
+    assert.equal(step.status, "skipped");
+    assert.match(step.detail, /outside the repo/);
+    assert.equal(read(shared), "Board:  symout (SYMOUT)\n", "a file outside the repo is never rewritten");
+  });
+
+  await check("mise absent skips the candystore step and exits 0; mise exiting 1 is step_failed", async () => {
+    const quiet = rename(["nomise", "nomisex", "--apply", "--json"], { PATH: emptyBin });
+    assert.equal(quiet.status, 0, quiet.stdout);
+    assert.equal(JSON.parse(quiet.stdout).steps.find((step) => step.step === "candystore").status, "skipped");
+    const loud = rename(["misefail", "misefailx", "--apply", "--json"], { PATH: failBin });
+    assert.equal(loud.status, 1, loud.stdout);
+    const doc = JSON.parse(loud.stdout);
+    assert.equal(doc.code, "step_failed");
+    assert.equal(doc.steps.find((step) => step.step === "candystore").status, "failed");
+    assert.match(doc.steps.find((step) => step.step === "candystore").detail, /boom from mise/);
+    assert.equal(doc.steps.find((step) => step.step === "registry").status, "done", "earlier steps stand");
+  });
+
+  await check("a Plane read-back mismatch fails the plane step and writes nothing local", async () => {
+    const manifestBefore = read(join(projectDirs.liar, ".project.json"));
+    const regBefore = read(registry);
+    const run = rename(["liar", "liarx", "--apply", "--json"]);
+    assert.equal(run.status, 1, run.stdout);
+    const doc = JSON.parse(run.stdout);
+    const byStep = Object.fromEntries(doc.steps.map((step) => [step.step, step.status]));
+    assert.equal(byStep.plane, "failed");
+    assert.equal(byStep.manifest, "blocked");
+    assert.match(doc.steps[0].detail, /reads LIAR/);
+    assert.equal(read(join(projectDirs.liar, ".project.json")), manifestBefore);
+    assert.equal(read(registry), regBefore);
+  });
+
+  await check("a hints collision merges the old entry's aliases into the existing one", async () => {
+    writeFileSync(
+      hintsPath,
+      `${JSON.stringify({ projects: { hintsold: { aliases: ["old a"], about: "old" }, mid: {}, hintsnew: { aliases: ["new b"], about: "keep me" } } }, null, 2)}\n`,
+    );
+    const run = rename(["hintsold", "hintsnew", "--apply", "--json"]);
+    assert.equal(run.status, 0, run.stdout);
+    const hints = JSON.parse(read(hintsPath)).projects;
+    assert.equal(hints.hintsold, undefined);
+    assert.equal(hints.hintsnew.about, "keep me");
+    assert.deepEqual(hints.hintsnew.aliases, ["new b", "old a", "hintsold"]);
+    assert.deepEqual(Object.keys(hints), ["mid", "hintsnew"]);
   });
 } finally {
   for (const child of children) child.kill();

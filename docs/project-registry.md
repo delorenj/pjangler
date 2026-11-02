@@ -80,8 +80,9 @@ pointing at an archived board keeps its binding and says so.
 
 `pj rename <old> <new>` (also `pj project rename`) makes one key the project's
 identity: `project_id = <new>` and the board identifier `= <NEW>` (upper-cased).
-The key must match `^[a-z0-9]{1,12}$` (Plane identifiers are alphanumeric, max
-12). Repo path, project name, board UUID and workspace never change; neither do
+The new key is lowercased, then must match `^[a-z0-9]{1,12}$` (Plane identifiers
+are alphanumeric, max 12), so `TOLT` and `tolt` are the same request. `--registry`
+takes a registry service URL or a YAML fixture path, as on the other commands. Repo path, project name, board UUID and workspace never change; neither do
 Hermes agent ids, Hindsight banks or historical events.
 
 It is a dry run unless `--apply` is passed. Writes happen in a fixed order and
@@ -93,7 +94,12 @@ success, not an error):
    are editable through the API only here; Trello has no provider write.
 2. **manifest**: `.project.json` gets `project_id`, `ticket_provider.identifier`
    and, for a provider-confirmed key, a fresh `identifier_fetched_at`; the legacy
-   `project_slug` is dropped and every unknown field is kept.
+   `project_slug` is dropped and every unknown field is kept. It also records
+   `renamed_from: {project_id, identifier, at}`, which is what lets a re-run
+   recognise a half-finished rename (the old id is already gone from the
+   registry) and still find the old spellings in `AGENTS.md` and the hints file.
+   A re-run naming an old id that is not the one in `renamed_from` is refused as
+   `unknown_project`; a second rename overwrites `renamed_from`.
 3. **registry**: the service re-indexes the manifest (`POST /v1/index`, never
    `PUT /v1/registry`); a YAML `--registry` fixture has its record re-keyed.
 4. **downstream**, each reported on its own line: `agents/hermes/*/role.yaml`
@@ -106,9 +112,18 @@ Refusals happen before any write and exit 1 with a code (`--json` prints one
 `{ok:false,error,code}` document): `invalid_key`, `unknown_project`,
 `identity_collision` (the new id is registered, or another board in the
 workspace already uses the identifier), `board_archived`, `board_not_found`,
-`provider_unreachable`, `manifest_missing`, `manifest_invalid`. A step that fails
+`provider_unreachable`, `registry_unavailable`, `manifest_missing`,
+`manifest_invalid`. A step that fails
 once writing has started is reported, exits 1 (`step_failed`) and later steps
 that depend on it are `blocked`; re-run the same command to resume.
+
+`--json` prints one document: `ok`, `apply`, `noop`, `resumed`, `oldId`, `newId`,
+`oldIdentifier`, `newIdentifier`, `provider`, `workspace`, `boardId`,
+`registryPath`, `steps` (`{step, status, detail}` with status `planned`, `done`,
+`already`, `skipped`, `blocked` or `failed`), `warnings` and `changedFiles`
+(plus `error` and `code` when a step failed). The human output lists the same
+files under the step table. An `AGENTS.md` that is a symlink to a file outside
+the repo is skipped and left untouched.
 
 Things the command can only warn about: notebook state is keyed by the project
 hash and restarts fresh under the new id; old ticket refs (`OLD-n`) stop

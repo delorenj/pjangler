@@ -14,9 +14,10 @@
 // converges: Plane already showing `NEW` is success, not an error.
 
 import { spawnSync } from "node:child_process";
+import type { Dirent } from "node:fs";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import YAML from "yaml";
 import { DEFAULT_PLANE_WORKSPACE } from "./boardUrl";
 import {
@@ -187,6 +188,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
   // ---- identity: who is being renamed ------------------------------------
   let oldId = oldInput;
   let resumed = false;
+  let renamedFromIdentifier = "";
   let project: ProjectRecord | undefined = oldInput ? getOwnRecordValue(registry.projects, oldInput) : undefined;
   if (project) {
     if (oldInput !== newId && getOwnRecordValue(registry.projects, newId)) {
@@ -195,16 +197,23 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
   } else {
     // The index may already have followed an earlier, interrupted run (the
     // service re-reads manifests), leaving only follow-up steps. That is a
-    // resume, and only when the registered record already carries NEW as its
-    // board identifier — so a typo'd old id can never reach a live board.
+    // resume only when the new id's manifest proves it was renamed FROM this
+    // old id (`renamed_from`, written by the manifest step); anything else is a
+    // wrong old id and must not report success.
     const existing = getOwnRecordValue(registry.projects, newId);
-    const recorded = String(existing?.ticket_provider?.identifier ?? "").toUpperCase();
-    if (!existing || recorded !== NEW) {
+    let from: Json | undefined;
+    if (existing && oldInput) {
+      try {
+        const candidate = readJsonObject(join(existing.repo_path, ".project.json")).renamed_from;
+        if (isRecord(candidate)) from = candidate;
+      } catch { /* no readable manifest, no provenance */ }
+    }
+    if (!existing || !from || from.project_id !== oldInput) {
       throw new RenameError("unknown_project", `Project not found in registry: ${options.oldId}`);
     }
     project = existing;
-    oldId = newId;
     resumed = true;
+    renamedFromIdentifier = typeof from.identifier === "string" ? from.identifier : "";
   }
   const record: ProjectRecord = project;
   const provider = record.ticket_provider;
@@ -241,9 +250,6 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     if (owner && owner.id !== boardId) {
       throw new RenameError("identity_collision", `board identifier ${NEW} already belongs to Plane board ${owner.id} ("${owner.name}") in workspace "${workspace}"`);
     }
-    if (resumed && live.identifier.toUpperCase() !== NEW) {
-      throw new RenameError("unknown_project", `Project not found in registry: ${options.oldId}`);
-    }
   } else if (type === "trello" && boardId) {
     try {
       const facts = await (options.fetchTrello ?? ((id: string) => fetchTrelloBoard(id, env, home)))(boardId);
@@ -262,7 +268,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
   const manifestIdentifier = isRecord(manifestProvider) ? String(manifestProvider.identifier ?? "") : "";
   const oldIdentifiers = [
     ...new Set(
-      [String(provider.identifier ?? ""), manifestIdentifier, live?.identifier ?? ""]
+      [String(provider.identifier ?? ""), manifestIdentifier, live?.identifier ?? "", renamedFromIdentifier]
         .map((value) => value.trim())
         .filter((value) => value && value.toUpperCase() !== NEW),
     ),
@@ -295,21 +301,29 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     if (!boardId || !live) return { status: "skipped", detail: "no board bound; nothing to rename at the provider" };
     if (live.identifier.toUpperCase() === NEW) return { status: "already", detail: `board ${boardId} already reads ${live.identifier}` };
     if (!doApply) return { status: "planned", detail: `Plane board ${boardId}: ${live.identifier} -> ${NEW}` };
+    let patchError: string | undefined;
     try {
       await planeCall(workspace, boardId, NEW);
     } catch (error) {
-      return { status: "failed", detail: message(error) };
+      patchError = message(error);
     }
-    // A 2xx is a claim. Read the board back before anything local follows it.
+    // A 2xx is a claim and a thrown PATCH (a timeout, say) may still have
+    // applied. Read the board back before deciding either way.
     try {
       const after = (await fetchBoards(workspace)).get(boardId);
-      if (!after || after.identifier.toUpperCase() !== NEW) {
-        return { status: "failed", detail: `Plane accepted the rename but board ${boardId} reads ${after?.identifier ?? "(missing)"}` };
+      if (after && after.identifier.toUpperCase() === NEW) {
+        return { status: "done", detail: `Plane board ${boardId}: ${live.identifier} -> ${NEW}${patchError ? ` (the PATCH reported: ${patchError})` : ""}` };
       }
+      if (patchError) {
+        return { status: "failed", detail: `${patchError}; the board still reads ${after?.identifier ?? "(missing)"}, but the request may yet land: re-running is safe` };
+      }
+      return { status: "failed", detail: `Plane accepted the rename but board ${boardId} reads ${after?.identifier ?? "(missing)"}` };
     } catch (error) {
-      return { status: "failed", detail: `renamed, but the read-back failed: ${message(error)}` };
+      return {
+        status: "failed",
+        detail: `${patchError ? `${patchError}; ` : ""}the read-back failed (${message(error)}), so the outcome is unknown; re-running is safe`,
+      };
     }
-    return { status: "done", detail: `Plane board ${boardId}: ${live.identifier} -> ${NEW}` };
   };
 
   const manifestStep = async (doApply: boolean): Promise<Outcome> => {
@@ -323,6 +337,16 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     const next: Json = { ...current, project_id: newId };
     delete next.project_slug;
     if (isRecord(current.ticket_provider)) next.ticket_provider = nextProvider(current.ticket_provider);
+    // Rename provenance: what a later resume needs to know the project used to
+    // be. A resumed run keeps what the first run wrote; a repeat of the same
+    // rename keeps its original timestamp; a second rename overwrites.
+    if (!resumed && (oldId !== newId || oldIdentifier !== "")) {
+      const previous = current.renamed_from;
+      const same = isRecord(previous) && previous.project_id === oldId && String(previous.identifier ?? "") === oldIdentifier;
+      next.renamed_from = same
+        ? previous
+        : { project_id: oldId, ...(oldIdentifier ? { identifier: oldIdentifier } : {}), at: now };
+    }
     if (JSON.stringify(next) === JSON.stringify(current)) {
       return { status: "already", detail: `project_id ${newId}, identifier ${NEW}` };
     }
@@ -379,7 +403,13 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     const files: string[] = [];
     let touched = 0;
     let settled = 0;
-    for (const entry of readdirSync(hermesDir, { withFileTypes: true })) {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(hermesDir, { withFileTypes: true });
+    } catch (error) {
+      return { status: "failed", detail: `${hermesDir}: ${message(error)}` };
+    }
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const path = join(hermesDir, entry.name, "role.yaml");
       if (!existsSync(path)) continue;
@@ -431,11 +461,12 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
         ...(options.fetchBoards ? { fetchBoards: options.fetchBoards } : {}),
       });
       if (!report.ok) return { status: "failed", detail: report.errors.join("; ") || "identity reconcile reported errors" };
-      return {
-        status: report.changes.hermes.length ? "done" : "already",
-        detail: `${report.changes.hermes.length} fleet agent(s): plane.identifier -> ${NEW} (${hermesPath})`,
-        files: report.changes.hermes.length ? [hermesPath] : [],
-      };
+      // Trust the file, not the reconcile's change count.
+      const lagging = readHermesAgentBoards(hermesPath).filter((agent) => agent.boardId === boardId && agent.identifier !== NEW);
+      if (lagging.length) {
+        return { status: "failed", detail: `fleet agent(s) still read another identifier: ${lagging.map((agent) => `${agent.agentId} (${agent.identifier || "empty"})`).join(", ")}` };
+      }
+      return { status: "done", detail: `${stale.length} fleet agent(s): plane.identifier -> ${NEW} (${hermesPath})`, files: [hermesPath] };
     } catch (error) {
       return { status: "failed", detail: message(error) };
     }
@@ -446,6 +477,10 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     if (!existsSync(link)) return { status: "skipped", detail: "no AGENTS.md" };
     try {
       const path = realpathSync(link);
+      const inside = relative(realpathSync(repoPath), path);
+      if (inside.startsWith("..") || isAbsolute(inside)) {
+        return { status: "skipped", detail: `AGENTS.md resolves outside the repo (${path}); left untouched` };
+      }
       const original = readFileSync(path, "utf8");
       const lines = original.split("\n");
       let boardLines = 0;
@@ -488,17 +523,20 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
           ? { status: "already", detail: `hints already keyed ${newId}` }
           : { status: "skipped", detail: `no hints entry for ${oldId}` };
       }
-      const detail = `projects.${oldId} -> projects.${newId}, "${oldId}" kept as an alias`;
+      const collides = Object.hasOwn(projects, newId);
+      const detail = collides
+        ? `projects.${oldId} merged into the existing projects.${newId}; "${oldId}" kept as an alias`
+        : `projects.${oldId} -> projects.${newId}, "${oldId}" kept as an alias`;
       if (!doApply) return { status: "planned", detail, files: [path] };
+      const aliasesOf = (value: unknown): string[] => (isRecord(value) && Array.isArray(value.aliases) ? value.aliases.map(String) : []);
       const moved = projects[oldId];
-      const entry: Json = isRecord(moved) ? { ...moved } : {};
-      const aliases = Array.isArray(entry.aliases) ? entry.aliases.map(String) : [];
-      if (!aliases.includes(oldId)) aliases.push(oldId);
-      entry.aliases = aliases;
+      const base: Json = collides ? (isRecord(projects[newId]) ? { ...(projects[newId] as Json) } : {}) : (isRecord(moved) ? { ...moved } : {});
+      base.aliases = [...new Set([...aliasesOf(collides ? projects[newId] : moved), ...(collides ? aliasesOf(moved) : []), oldId])];
       const rekeyed: Json = {};
       for (const [key, value] of Object.entries(projects)) {
-        if (key === oldId) rekeyed[newId] = Object.hasOwn(projects, newId) ? projects[newId] : entry;
-        else if (key !== newId || !Object.hasOwn(projects, oldId)) rekeyed[key] = value;
+        if (key === oldId) { if (!collides) rekeyed[newId] = base; }
+        else if (key === newId) rekeyed[newId] = base;
+        else rekeyed[key] = value;
       }
       atomicWrite(path, `${JSON.stringify({ ...hints, projects: rekeyed }, null, 2)}\n`);
       return { status: "done", detail, files: [path] };
@@ -571,11 +609,18 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     else note(name, await run(apply));
   }
 
-  warnings.push(
-    "notebook state is keyed by the project hash and restarts fresh under the new id",
-    `old ticket refs (${oldIdentifier || "OLD"}-n) stop resolving once the board prefix changes`,
-  );
-  if (changedFiles.some((file) => file.startsWith(repoPath))) {
+  const changed = (name: string) => steps.some((step) => step.step === name && (step.status === "done" || step.status === "planned"));
+  if (oldId !== newId && (changed("manifest") || changed("registry"))) {
+    warnings.push("notebook state is keyed by the project hash and restarts fresh under the new id");
+  }
+  if (isPlane && changed("plane")) {
+    warnings.push(`old ticket refs (${oldIdentifier || "OLD"}-n) stop resolving once the board prefix changes`);
+  }
+  const insideRepo = (file: string) => {
+    const rel = relative(repoPath, file);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  };
+  if (changedFiles.some(insideRepo)) {
     warnings.push(`files changed inside ${repoPath} must be committed and pushed`);
   }
 
@@ -599,7 +644,9 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     changedFiles: [...new Set(changedFiles)],
   };
   if (failed) {
-    result.error = `${failed.step} failed: ${failed.detail}; re-run the same command to resume`;
+    result.error = apply
+      ? `${failed.step} failed: ${failed.detail}; re-run the same command to resume`
+      : `${failed.step} would fail: ${failed.detail}; fix this before running with --apply`;
     result.code = "step_failed";
   }
   return result;

@@ -891,6 +891,11 @@ function formatRenameResult(result: RenameResult): string {
     const colored = step.status === "failed" ? red(label) : step.status === "done" ? green(label) : step.status === "planned" ? yellow(label) : dim(label);
     lines.push(`  ${colored} ${step.step.padEnd(width)}  ${step.status === "failed" ? step.detail : dim(step.detail)}`);
   }
+  if (result.changedFiles.length) {
+    lines.push("");
+    lines.push(`  ${dim(result.apply ? "files changed" : "files that would change")}`);
+    for (const file of result.changedFiles) lines.push(`    ${dim(file)}`);
+  }
   lines.push("");
   for (const warning of result.warnings) lines.push(`  ${yellow(glyph.warn)} ${dim(warning)}`);
   if (result.error) lines.push(`  ${red(glyph.fail)} ${result.error}`);
