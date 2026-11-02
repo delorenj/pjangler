@@ -135,6 +135,7 @@ const SUITES = [
   "tests/project-registry-regressions.mjs",
   "tests/init-board-ingress-regressions.mjs",
   "tests/project-identity-regressions.mjs",
+  "tests/pjan-199-project-rename.mjs",
   "tests/project-identity-implicit-regressions.mjs",
   "tests/pg-registry-regressions.mjs",
   "tests/momo-lifecycle-plane-regressions.mjs",

@@ -204,7 +204,7 @@ export function hermesAgentsRegistryPath(env: NodeJS.ProcessEnv = process.env, h
  * `PLANE_AUTOMATICAI_API_KEY` and never will. Fall back to the default
  * workspace's key rather than reporting every automaticai board unresolvable.
  */
-function planeApiKeyFor(workspace: string, env: NodeJS.ProcessEnv, home: string): string | undefined {
+export function planeApiKeyFor(workspace: string, env: NodeJS.ProcessEnv, home: string): string | undefined {
   return resolvePlaneApiKey(workspace, env, home) ?? resolvePlaneApiKey(DEFAULT_PLANE_WORKSPACE, env, home);
 }
 
@@ -266,6 +266,60 @@ export async function fetchPlaneBoards(
     if (!more || !cursor) return boards;
   }
   return boards;
+}
+
+// ---------------------------------------------------------------------------
+// Plane write (PJAN-199): the ONLY place pjangler changes a board's identity
+// ---------------------------------------------------------------------------
+
+/**
+ * Rename a Plane board's identifier (its issue prefix, `TOWE` in `TOWE-12`).
+ *
+ * Plane exposes this only on the project PATCH. The caller reads the board back
+ * afterwards: a 2xx is a claim, not a proof. The key is sent in a header and no
+ * failure message quotes it.
+ */
+export async function patchPlaneBoardIdentifier(
+  workspace: string,
+  boardId: string,
+  identifier: string,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): Promise<void> {
+  const apiKey = planeApiKeyFor(workspace, env, home);
+  if (!apiKey) {
+    throw new BoardError(
+      `no Plane API key for workspace "${workspace}": set PLANE_API_KEY, or add one to ` +
+        `${env.HERMES_FLEET_ENV?.trim() || join(home, ".hermes", "fleet.env")}`,
+    );
+  }
+  const base = planeBase(env, home);
+  const url = `${base}/api/v1/workspaces/${encodeURIComponent(workspace)}/projects/${encodeURIComponent(boardId)}/`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        "X-API-Key": apiKey,
+        "User-Agent": `pjangler/${PJANGLER_VERSION}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ identifier }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (error) {
+    throw new BoardError(
+      `could not reach Plane at ${base} to rename board ${boardId}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  if (!response.ok) {
+    let detail = "";
+    try { detail = (await response.text()).replace(/\s+/g, " ").trim().slice(0, 200); } catch { /* status is enough */ }
+    throw new BoardError(
+      `Plane refused identifier "${identifier}" for board ${boardId} (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +484,7 @@ function yamlStyleOf(original: string): { indentSeq: boolean; lineWidth: number 
   return { indentSeq: !/\n([ \t]*)[^\s#][^\n]*:[ \t]*\n\1- /.test(original), lineWidth: 0 };
 }
 
-function atomicWrite(path: string, text: string): void {
+export function atomicWrite(path: string, text: string): void {
   const mode = existsSync(path) ? lstatSync(path).mode & 0o777 : 0o600;
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -552,7 +606,7 @@ function candidateBoardIds(
  * for anything, and letting one veto a key means a repo can never reclaim the
  * identifier of a board that was retired years ago.
  */
-function liveKeyIndex(boards: Map<string, PlaneBoardFacts>): Map<string, PlaneBoardFacts> {
+export function liveKeyIndex(boards: Map<string, PlaneBoardFacts>): Map<string, PlaneBoardFacts> {
   const index = new Map<string, PlaneBoardFacts>();
   for (const board of boards.values()) {
     if (board.archived) continue;

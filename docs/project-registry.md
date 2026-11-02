@@ -41,6 +41,7 @@ else. A repo with no employees has an empty map.
 | `pj reindex --receipt <path>` | Rebuild discovery from a migration receipt |
 | `pj init --id px` | Initialize/register a project; use `--apply` to apply |
 | `pj link px <board-id>` | Bind an existing provider board |
+| `pj rename px px2` | Rename a project: one key becomes the project ID and the board identifier (dry run; `--apply` writes) |
 | `pj identity` | Read board identifiers back from the provider and repair the registries |
 | `pj identity --all` | Every registered agent, not just the current project |
 | `pj board [ref]` | Open the bound board, or one work item |
@@ -74,6 +75,45 @@ empty board. `archived_at` on the project record is the only field that tells
 the truth. `pj identity` and `pj link` both check it: a candidate that matches
 only archived boards is refused with the reason named, and a recorded id
 pointing at an archived board keeps its binding and says so.
+
+## Renaming a project
+
+`pj rename <old> <new>` (also `pj project rename`) makes one key the project's
+identity: `project_id = <new>` and the board identifier `= <NEW>` (upper-cased).
+The key must match `^[a-z0-9]{1,12}$` (Plane identifiers are alphanumeric, max
+12). Repo path, project name, board UUID and workspace never change; neither do
+Hermes agent ids, Hindsight banks or historical events.
+
+It is a dry run unless `--apply` is passed. Writes happen in a fixed order and
+every step first checks whether it is already true, so a run interrupted
+anywhere converges when repeated (Plane already showing the new identifier is
+success, not an error):
+
+1. **plane**: PATCH the board identifier, then read it back. Plane identifiers
+   are editable through the API only here; Trello has no provider write.
+2. **manifest**: `.project.json` gets `project_id`, `ticket_provider.identifier`
+   and, for a provider-confirmed key, a fresh `identifier_fetched_at`; the legacy
+   `project_slug` is dropped and every unknown field is kept.
+3. **registry**: the service re-indexes the manifest (`POST /v1/index`, never
+   `PUT /v1/registry`); a YAML `--registry` fixture has its record re-keyed.
+4. **downstream**, each reported on its own line: `agents/hermes/*/role.yaml`
+   `plane.identifier`, the fleet registry (`~/.hermes/agents-registry.yaml`), the
+   `Board:` line of `AGENTS.md`, `~/.config/pilot/harvest/project-hints.json`
+   (the old id is kept as an alias) and the Candystore projection
+   (`mise run project:sync`; skipped when the checkout or `mise` is absent).
+
+Refusals happen before any write and exit 1 with a code (`--json` prints one
+`{ok:false,error,code}` document): `invalid_key`, `unknown_project`,
+`identity_collision` (the new id is registered, or another board in the
+workspace already uses the identifier), `board_archived`, `board_not_found`,
+`provider_unreachable`, `manifest_missing`, `manifest_invalid`. A step that fails
+once writing has started is reported, exits 1 (`step_failed`) and later steps
+that depend on it are `blocked`; re-run the same command to resume.
+
+Things the command can only warn about: notebook state is keyed by the project
+hash and restarts fresh under the new id; old ticket refs (`OLD-n`) stop
+resolving once the prefix changes; and the repo files it edited must be
+committed and pushed.
 
 ## Service and ownership
 

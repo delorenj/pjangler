@@ -34,6 +34,7 @@ import {
 import { readProjectInfo, doctorCurrentProject } from "./project/info";
 import { resolveBoardUrl } from "./project/boardUrl";
 import { formatIdentityReport, linkProjectBoard, reconcileProjectIdentity } from "./project/identity";
+import { RenameError, renameProject, type RenameResult, type RenameStepStatus } from "./project/rename";
 import {
   BoardError,
   fetchModules,
@@ -866,6 +867,38 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
     }
 }
 
+const RENAME_MARK: Record<RenameStepStatus, string> = {
+  planned: "plan",
+  done: "done",
+  already: "ok",
+  skipped: "skip",
+  blocked: "blocked",
+  failed: "FAIL",
+};
+
+function formatRenameResult(result: RenameResult): string {
+  const lines: string[] = [""];
+  const headline = result.noop
+    ? "Nothing to rename"
+    : result.apply ? (result.ok ? "Renamed" : "Rename incomplete") : "Would rename";
+  const mark = !result.ok ? red(glyph.fail) : result.apply && !result.noop ? green(glyph.pass) : yellow(glyph.warn);
+  lines.push(`  ${mark} ${bold(headline)}  ${dim(glyph.dot)}  ${cyan(result.oldId)} ${dim(glyph.pointer)} ${cyan(result.newId)}${result.resumed ? dim("  (resuming an earlier run)") : ""}`);
+  lines.push(`  ${dim("board".padEnd(14))} ${result.oldIdentifier || dim("(none)")} ${dim(glyph.pointer)} ${result.newIdentifier}${result.boardId ? dim(`  ${result.provider}/${result.workspace} ${result.boardId}`) : ""}`);
+  lines.push("");
+  const width = Math.max(...result.steps.map((step) => step.step.length));
+  for (const step of result.steps) {
+    const label = RENAME_MARK[step.status].padEnd(7);
+    const colored = step.status === "failed" ? red(label) : step.status === "done" ? green(label) : step.status === "planned" ? yellow(label) : dim(label);
+    lines.push(`  ${colored} ${step.step.padEnd(width)}  ${step.status === "failed" ? step.detail : dim(step.detail)}`);
+  }
+  lines.push("");
+  for (const warning of result.warnings) lines.push(`  ${yellow(glyph.warn)} ${dim(warning)}`);
+  if (result.error) lines.push(`  ${red(glyph.fail)} ${result.error}`);
+  if (!result.apply) lines.push(`  ${dim("dry run — re-run with --apply to write")}`);
+  lines.push("");
+  return lines.join("\n");
+}
+
 function registerProjectCommands(parent: Command, legacy = false): void {
   parent
     .command("list")
@@ -996,6 +1029,34 @@ function registerProjectCommands(parent: Command, legacy = false): void {
         const message = err instanceof Error ? err.message : String(err);
         if (options.json) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
         else console.error(`${xmark} project link failed: ${message}`);
+        process.exit(1);
+      }
+    });
+
+  parent
+    .command("rename")
+    .argument("<old-id>", "Current project ID")
+    .argument("<new-id>", "New project ID; also becomes the board identifier, upper-cased (1-12 lowercase letters/digits)")
+    .description("Rename a project: one key becomes the project ID and the board identifier, across registry, manifest and provider")
+    .option("--apply", "Write the rename (default is a dry run)")
+    .option("--registry <location>", `Registry service URL or fixture path (default: ${projectRegistryPath()})`)
+    .option("--json", "Output machine-parseable JSON")
+    .action(async (oldId: string, newId: string, options) => {
+      try {
+        const result = await renameProject({
+          oldId,
+          newId,
+          apply: Boolean(options.apply),
+          registryPath: options.registry,
+        });
+        if (options.json) console.log(JSON.stringify(result, null, 2));
+        else console.log(formatRenameResult(result));
+        if (!result.ok) process.exit(1);
+      } catch (err) {
+        const code = err instanceof RenameError ? err.code : "error";
+        const text = err instanceof Error ? err.message : String(err);
+        if (options.json) console.log(JSON.stringify({ ok: false, error: text, code }, null, 2));
+        else console.error(`${xmark} project rename failed: [${code}] ${text}`);
         process.exit(1);
       }
     });
