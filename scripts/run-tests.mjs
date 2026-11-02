@@ -133,6 +133,7 @@ const SUITES = [
   "tests/mcp-catalog-regressions.mjs",
   "tests/mcp-server-regressions.mjs",
   "tests/project-registry-regressions.mjs",
+  "tests/shared-board-scope-regressions.mjs",
   "tests/init-board-ingress-regressions.mjs",
   "tests/project-identity-regressions.mjs",
   "tests/pjan-199-project-rename.mjs",

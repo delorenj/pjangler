@@ -40,7 +40,8 @@ function validateManifestFields(manifest: Json, path: string): void {
     if (!object(artifact)) fail(`source_artifacts.${index}`, 'an object');
     strings(artifact, ['kind', 'path', 'package_name'], `source_artifacts.${index}.`);
   }
-  if (manifest.ticket_provider) strings(manifest.ticket_provider, ['type', 'workspace', 'identifier', 'identifier_source', 'identifier_fetched_at', 'board_id', 'board_confirmed_at', 'board_url', 'state'], 'ticket_provider.');
+  if (manifest.ticket_provider) strings(manifest.ticket_provider, ['type', 'workspace', 'identifier', 'identifier_source', 'identifier_fetched_at', 'board_id', 'board_confirmed_at', 'board_url', 'state', 'scope_label'], 'ticket_provider.');
+  if (manifest.ticket_provider?.scope_default !== undefined && typeof manifest.ticket_provider.scope_default !== 'boolean') fail('ticket_provider.scope_default', 'a boolean');
   for (const [name, agent] of Object.entries(manifest.agents ?? {})) {
     if (!object(agent)) fail(`agents.${name}`, 'an object');
     strings(agent as Json, ['role', 'role_dir', 'provisioning_state'], `agents.${name}.`);

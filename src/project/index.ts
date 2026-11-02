@@ -167,6 +167,10 @@ export interface ProjectTicketProvider {
   board_confirmed_at?: string;
   /** Legacy input only. New manifests derive board URLs from provider/workspace/board_id. */
   board_url?: string;
+  /** Shared boards: the label this project takes (e.g. "repo:game"). See ticketScope.ts. */
+  scope_label?: string;
+  /** Shared boards: this project takes tickets that match no project's scope_label. */
+  scope_default?: boolean;
   state?: "planned" | "linked" | "skipped" | string;
 }
 

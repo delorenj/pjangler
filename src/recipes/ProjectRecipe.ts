@@ -13,6 +13,7 @@ import {
   type ProjectManifest,
   type ProjectTicketProvider,
 } from "../project/index";
+import { ticketScope } from "../project/ticketScope";
 import {
   BMAD_INSTALLER_VERSION,
   createProjectChecks,
@@ -209,6 +210,7 @@ function refreshPlanFromCanonicalManifest(plan: ProjectInitPlan): void {
       : {}),
     board_id: manifestBoardId,
     ...(boardConfirmedAt ? { board_confirmed_at: boardConfirmedAt } : {}),
+    ...ticketScope(manifestTicket),
     state:
       manifestState === "skipped"
         ? "skipped"
