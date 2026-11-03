@@ -3,6 +3,6 @@
   "statements": 82.47,
   "functions": 74.21,
   "branches": 80.24,
-  "updated": "2026-11-02",
+  "updated": "2026-11-03",
   "note": "Managed by scripts/coverage-ratchet.mjs. Raised automatically; lower it by hand, in the commit that justifies it."
 }
