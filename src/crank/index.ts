@@ -24,7 +24,9 @@
 // (zcrank.py) and pj then read a tab's switches as: keys whose canon name matches UNION keys whose
 // root equals the tab's owner. Renaming a tab no longer orphans its switches. The new FIRST
 // resolution rung ("live-cwd") finds a project's tab by where its panes stand, not what the tab
-// is called.
+// is called. zellij's list-panes drops pane_cwd for a random subset of panes on every call, so pj
+// and the engine fill the gaps from ONE shared memory (pane-cwds.json, 6h, per pane id + tab) and
+// retry; a pane that never reports stays unknown and is ignored (rule 3, amended in the PJAN-201 review).
 //
 // Tab names carry status suffixes (gruvato 🟢, ...) in zellij; zcrankctl
 // strips them before storing, so canon() here strips the same characters.
@@ -36,8 +38,9 @@
 // beat-row filter, longest-interval-wins).
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { resolveProject, type ProjectHandle } from "../project/boardQuery";
 import { cyan, dim, green, heading, yellow } from "../utils/style";
 import { engineSummary, type EngineStatus } from "./engine";
@@ -420,12 +423,15 @@ export function liveTabs(deps: { shell?: Shell } = {}): LiveTab[] {
   }
 }
 
-/** Live zellij panes (every tab, plugins included) for the Workspace session; [] when unreadable. */
+/**
+ * Live zellij panes (every tab, plugins included) for the Workspace session; [] when unreadable.
+ * list-panes takes ~4s (measured 2026-11-04), hence 8s like the engine, not the 5s of list-tabs.
+ */
 export function livePanes(deps: { shell?: Shell } = {}): LivePane[] {
   const shell = deps.shell ?? defaultShell;
   const result = shell("env", [
     "-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME",
-    "timeout", "5s", "zellij", "-s", ZCRANK_SESSION, "action", "list-panes", "--json", "--all",
+    "timeout", "8s", "zellij", "-s", ZCRANK_SESSION, "action", "list-panes", "--json", "--all",
   ]);
   if (result.status !== 0 || !result.stdout.trim()) return [];
   try {
@@ -461,17 +467,30 @@ export function livePanes(deps: { shell?: Shell } = {}): LivePane[] {
 /** Per-command memo of dir -> identity (null = looked, none). */
 export type IdentityCache = Map<string, string | null>;
 
+/** Total time one scan may spend in `git worktree list` calls (the engine's BUDGET is 20s too). */
+export interface IdentityBudget {
+  totalMs: number;
+  /** Set by the first git call: the instant the budget runs out. */
+  untilMs?: number;
+}
+
 /**
  * Project identity of a directory: the MAIN worktree path of the repo containing it (the
  * first `worktree <path>` line of `git worktree list --porcelain`), realpath'd. A linked
  * worktree maps to its main repo; a submodule is its own repo. Not a repo, git failing, or
  * a 2s timeout => undefined. Memoised in `cache` for the life of one scan / command.
  */
-export function projectIdentity(dir: string | undefined, deps: { shell?: Shell; cache?: IdentityCache } = {}): string | undefined {
+export function projectIdentity(dir: string | undefined, deps: { shell?: Shell; cache?: IdentityCache; budget?: IdentityBudget } = {}): string | undefined {
   const target = (dir ?? "").trim();
   if (!target) return undefined;
   const cached = deps.cache?.get(target);
   if (cached !== undefined) return cached ?? undefined;
+  if (deps.budget) {
+    // Like the engine (zcrank_identity.BUDGET): once one scan has spent its git time, the rest
+    // get no identity (not cached) instead of stretching the refresh on a slow filesystem.
+    deps.budget.untilMs ??= Date.now() + deps.budget.totalMs;
+    if (Date.now() > deps.budget.untilMs) return undefined;
+  }
   const shell = deps.shell ?? defaultShell;
   let identity: string | undefined;
   try {
@@ -513,13 +532,126 @@ export function withTabOwners(tabs: LiveTab[], panes: LivePane[], identify: (cwd
   });
 }
 
-/** Live tabs with their pane-derived owners, read from zellij. Never throws: no panes => no owners. */
-export function liveTabsWithOwners(deps: { shell?: Shell } = {}): LiveTab[] {
+// zellij's list-panes drops pane_cwd for a random subset of terminal panes on every call (measured
+// live 2026-11-04: 0..11 of 18 over consecutive calls), which would flap a tab's owner. The engine
+// (zcrank_identity.resolve_panes) therefore remembers the last cwd zellij reported per pane in
+// ~/.local/state/zcrank/pane-cwds.json and retries. pj reads and writes THE SAME FILE with the same
+// rule, so both sides derive a tab's owner from the same inputs. Keep in sync with zcrank_identity.py.
+
+/** A remembered pane cwd is trusted this long when zellij withholds it (engine CWD_TTL). */
+export const PANE_CWD_TTL_SECONDS = 6 * 3600;
+
+/** The engine's pane-cwd memory (override: ZCRANK_CWD_CACHE, which the engine honours too). */
+export function paneCwdCachePath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.ZCRANK_CWD_CACHE?.trim() || join(homedir(), ".local/state/zcrank/pane-cwds.json");
+}
+
+interface CwdEntry {
+  cwd?: unknown;
+  tab_id?: unknown;
+  ts?: unknown;
+}
+
+function loadCwdCache(path: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCwdCache(path: string, cache: Record<string, unknown>): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(cache));
+    renameSync(tmp, path);
+  } catch {
+    // a cache we cannot write only costs stability, never correctness
+  }
+}
+
+/** A cache entry younger than the TTL. A malformed entry (junk ts, not an object) is stale, never an error. */
+function cwdEntryFresh(entry: unknown, nowSeconds: number): entry is CwdEntry {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+  const ts = Number((entry as CwdEntry).ts ?? 0);
+  return Number.isFinite(ts) && nowSeconds - ts < PANE_CWD_TTL_SECONDS;
+}
+
+/**
+ * The panes from `fetch()`, each terminal pane's missing cwd filled from the last cwd zellij
+ * reported for that same pane (same id AND tab, younger than the TTL). While terminal panes remain
+ * unknown, fetch again up to `retries` times and take any cwd the new call has. Reported cwds
+ * refresh the shared memory; entries for gone or expired panes are dropped. Never throws.
+ */
+export function resolvePaneCwds(
+  fetch: () => LivePane[],
+  opts: { retries?: number; nowMs?: number; cachePath?: string } = {},
+): LivePane[] {
+  const now = (opts.nowMs ?? Date.now()) / 1000;
+  const path = opts.cachePath ?? paneCwdCachePath();
+  const get = (): LivePane[] => {
+    try {
+      const rows = fetch();
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  };
+  const panes = get();
+  if (!panes.length) return panes;
+  const cache = loadCwdCache(path);
+  const sameTab = (entry: CwdEntry, pane: LivePane): boolean => (entry.tab_id ?? null) === (pane.tabId ?? null);
+  const fill = (): number => {
+    let unknown = 0;
+    for (const pane of panes) {
+      if (pane.isPlugin) continue;
+      const key = String(pane.id);
+      if (pane.cwd) {
+        cache[key] = { cwd: pane.cwd, tab_id: pane.tabId ?? null, ts: now };
+        continue;
+      }
+      const entry = cache[key];
+      if (cwdEntryFresh(entry, now) && sameTab(entry, pane) && typeof entry.cwd === "string" && entry.cwd) {
+        pane.cwd = entry.cwd;
+      } else {
+        unknown++;
+      }
+    }
+    return unknown;
+  };
+  let unknown = fill();
+  for (let attempt = 0; attempt < (opts.retries ?? 0) && unknown; attempt++) {
+    const again = new Map(get().filter((pane) => pane.cwd).map((pane) => [pane.id, pane.cwd as string]));
+    for (const pane of panes) {
+      const cwd = again.get(pane.id);
+      if (!pane.isPlugin && !pane.cwd && cwd) pane.cwd = cwd;
+    }
+    unknown = fill();
+  }
+  const live = new Set(panes.filter((pane) => !pane.isPlugin).map((pane) => String(pane.id)));
+  for (const key of Object.keys(cache)) {
+    if (!live.has(key) || !cwdEntryFresh(cache[key], now)) delete cache[key];
+  }
+  saveCwdCache(path, cache);
+  return panes;
+}
+
+/**
+ * Live tabs with their pane-derived owners, read from zellij. Never throws: no panes => no owners.
+ * Pane cwds zellij withholds come from the engine's shared memory, then one retry (`retries`).
+ */
+export function liveTabsWithOwners(deps: { shell?: Shell; retries?: number; nowMs?: number; cachePath?: string } = {}): LiveTab[] {
   const tabs = liveTabs(deps);
   if (!tabs.length) return tabs;
   const cache: IdentityCache = new Map();
-  return withTabOwners(tabs, livePanes(deps), (cwd) => projectIdentity(cwd, { shell: deps.shell, cache }));
+  const budget: IdentityBudget = { totalMs: IDENTITY_BUDGET_MS };
+  const panes = resolvePaneCwds(() => livePanes(deps), { retries: deps.retries ?? 1, nowMs: deps.nowMs, cachePath: deps.cachePath });
+  return withTabOwners(tabs, panes, (cwd) => projectIdentity(cwd, { shell: deps.shell, cache, budget }));
 }
+
+const IDENTITY_BUDGET_MS = 20_000;
 
 // ---------------------------------------------------------------------------
 // Project → tab resolution

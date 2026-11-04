@@ -12,7 +12,7 @@ import "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -45,6 +45,8 @@ const {
   // PJAN-201
   ENGINE_DEFAULT_JOB_ID, engineBlockedLabel, engineSources, engineSummary, liveTabs, livePanes, parseEngineStatus, projectIdentity,
   readEngineStatus, unknownEngineStatus, withTabOwners,
+  // PJAN-201 review
+  liveTabsWithOwners, ownerMemoReader, resolvePaneCwds, paneCwdCachePath, LIVE_OWNERS_TTL_MS, PANE_CWD_TTL_SECONDS,
 } = await import(kitOut);
 
 const rs = await startThrowawayRedis();
@@ -276,7 +278,7 @@ try {
   const realPanes = livePanes({ shell: zellij });
   const realTabs = liveTabs({ shell: zellij });
   {
-    assert.deepEqual(seen[0], ["env", "-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME", "timeout", "5s", "zellij", "-s", "Workspace", "action", "list-panes", "--json", "--all"]);
+    assert.deepEqual(seen[0], ["env", "-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME", "timeout", "8s", "zellij", "-s", "Workspace", "action", "list-panes", "--json", "--all"]);
     assert.equal(realPanes.length, JSON.parse(realPanesJson).length);
     const jb = realPanes.find((pane) => pane.id === 122);
     assert.deepEqual(jb, { id: 122, tabId: 30, tabPosition: 1, tabName: "ipm 🟢", isPlugin: false, cwd: "/home/delorenj/code/james-brennan" });
@@ -322,6 +324,161 @@ try {
     const byPosition = withTabOwners(realTabs.map(({ id, ...rest }) => rest), realPanes, idOf);
     assert.equal(byPosition.find((tab) => tab.name === "Milkshake").owner, "/home/delorenj/code/Milkshake");
     assert.equal(withTabOwners([], realPanes, idOf).length, 0);
+  }
+
+  console.log("pane cwd memory: zellij withholds pane_cwd, the shared pane-cwds.json fills it (same id + tab, 6h), one retry covers the rest");
+  {
+    const base = mkdtempSync(join(tmpdir(), "pjan-201-cwds-"));
+    try {
+      const gitIn = (cwd, ...args) => spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
+        encoding: "utf8", env: hermeticEnv({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }),
+      });
+      const repoA = join(base, "alpha");
+      const repoB = join(base, "beta");
+      for (const repo of [repoA, repoB]) {
+        mkdirSync(repo);
+        gitIn(repo, "init", "-q", "-b", "main");
+        gitIn(repo, "commit", "-q", "--allow-empty", "-m", "init");
+      }
+      const A = realpathSync(repoA);
+      const B = realpathSync(repoB);
+      const row = (id, tabId, cwd, extra = {}) => ({ id, is_plugin: false, tab_id: tabId, tab_position: tabId, tab_name: `t${tabId}`, ...(cwd ? { pane_cwd: cwd } : {}), ...extra });
+      const full = [row(1, 5, repoA), row(2, 5, repoA), row(3, 5, repoB), row(4, 6, repoB), row(5, 6, null), row(9, 5, null, { is_plugin: true })];
+      const thin = [row(1, 5, null), row(2, 5, null), row(3, 5, repoB), row(4, 6, null), row(5, 6, null), row(9, 5, null, { is_plugin: true })];
+      const panesOf = (rows) => rows.map((r) => ({ id: r.id, tabId: r.tab_id, tabPosition: r.tab_position, tabName: r.tab_name, isPlugin: r.is_plugin, cwd: r.pane_cwd }));
+      const cachePath = join(base, "state", "pane-cwds.json");
+      const T0 = Date.parse("2026-11-04T10:00:00Z");
+
+      // call 1 (zellij reports): the memory is written in the engine's shape, plugins never
+      resolvePaneCwds(() => panesOf(full), { nowMs: T0, cachePath });
+      const stored = JSON.parse(readFileSync(cachePath, "utf8"));
+      assert.deepEqual(Object.keys(stored).sort(), ["1", "2", "3", "4"], "terminal panes with a cwd only (pane 5 never reported, plugin 9 is not a terminal)");
+      assert.deepEqual(stored["1"], { cwd: repoA, tab_id: 5, ts: T0 / 1000 });
+
+      // call 2 (zellij withholds most): the memory fills 1, 2 and 4; pane 5 stays unknown
+      const filled = resolvePaneCwds(() => panesOf(thin), { nowMs: T0 + 60_000, cachePath });
+      assert.deepEqual(filled.map((p) => p.cwd), [repoA, repoA, repoB, repoB, undefined, undefined]);
+      const owners = withTabOwners([{ name: "t5", position: 5, id: 5 }, { name: "t6", position: 6, id: 6 }], filled, (cwd) => (cwd === repoA ? A : B));
+      assert.equal(owners[0].owner, A, "2 alpha vs 1 beta");
+      assert.equal(owners[1].owner, B);
+
+      // a remembered cwd is scoped to its pane AND tab, bounded by the TTL, never trusted when corrupt
+      assert.equal(resolvePaneCwds(() => panesOf([row(1, 9, null)]), { nowMs: T0 + 120_000, cachePath })[0].cwd, undefined, "same pane id on another tab (id reuse after a restart)");
+      resolvePaneCwds(() => panesOf([row(1, 5, repoA)]), { nowMs: T0, cachePath });
+      assert.equal(resolvePaneCwds(() => panesOf([row(1, 5, null)]), { nowMs: T0 + (PANE_CWD_TTL_SECONDS + 1) * 1000, cachePath })[0].cwd, undefined, "expired");
+      for (const bad of [{ "1": { cwd: repoA, tab_id: 5, ts: "abc" } }, { "1": { cwd: repoA, tab_id: 5, ts: null } }, { "1": "junk", "2": ["x"] }, ["not", "an", "object"]]) {
+        writeFileSync(cachePath, JSON.stringify(bad));
+        assert.equal(resolvePaneCwds(() => panesOf([row(1, 5, null)]), { nowMs: T0, cachePath })[0].cwd, undefined, `corrupt entry ${JSON.stringify(bad)}`);
+      }
+      writeFileSync(cachePath, "not json at all");
+      assert.equal(resolvePaneCwds(() => panesOf([row(1, 5, repoA)]), { nowMs: T0, cachePath })[0].cwd, repoA, "an unreadable memory is just empty");
+      // gone panes are pruned
+      resolvePaneCwds(() => panesOf([row(2, 5, repoA)]), { nowMs: T0 + 1000, cachePath });
+      assert.deepEqual(Object.keys(JSON.parse(readFileSync(cachePath, "utf8"))), ["2"]);
+      // a fetch that finds nothing leaves the memory alone; one that throws is []
+      assert.deepEqual(resolvePaneCwds(() => [], { cachePath }), []);
+      assert.deepEqual(resolvePaneCwds(() => { throw new Error("zellij gone"); }, { cachePath }), []);
+      assert.deepEqual(Object.keys(JSON.parse(readFileSync(cachePath, "utf8"))), ["2"]);
+      // an unwritable memory costs only stability
+      assert.equal(resolvePaneCwds(() => panesOf([row(1, 5, repoA)]), { cachePath: join(cachePath, "nope", "x.json") })[0].cwd, repoA);
+
+      // retries: only while terminal panes stay unknown, and only as many as asked
+      rmSync(cachePath, { force: true });
+      let calls = 0;
+      const flaky = () => { calls++; return panesOf([row(1, 5, calls > 1 ? repoA : null), row(2, 5, repoA)]); };
+      assert.equal(resolvePaneCwds(flaky, { retries: 1, nowMs: T0, cachePath })[0].cwd, repoA);
+      assert.equal(calls, 2);
+      calls = 0;
+      resolvePaneCwds(flaky, { retries: 3, nowMs: T0 + 5000, cachePath });
+      assert.equal(calls, 1, "pane 1 is remembered now: no retry needed");
+
+      // the env override is the engine's own variable
+      assert.equal(paneCwdCachePath({ ZCRANK_CWD_CACHE: "/x/y.json" }), "/x/y.json");
+      assert.match(paneCwdCachePath({}), /\.local\/state\/zcrank\/pane-cwds\.json$/);
+
+      // end to end through the shell seam: liveTabsWithOwners = list-tabs + list-panes(+memory) + real git
+      rmSync(cachePath, { force: true });
+      const tabsJson = JSON.stringify([{ name: "ipm 🟢", position: 0, tab_id: 5 }, { name: "other", position: 1, tab_id: 6 }]);
+      let phase = "full";
+      const argvs = [];
+      const shell = (command, args) => {
+        argvs.push(args);
+        if (args.includes("list-tabs")) return { stdout: tabsJson, status: 0 };
+        if (args.includes("list-panes")) return { stdout: JSON.stringify(phase === "full" ? full : thin), status: 0 };
+        return spawnSync(command, args, { encoding: "utf8", env: hermeticEnv() });
+      };
+      const first = liveTabsWithOwners({ shell, cachePath, nowMs: T0 });
+      assert.deepEqual(first.map((t) => t.owner), [A, B]);
+      phase = "thin";
+      const second = liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 30_000, retries: 0 });
+      assert.deepEqual(second.map((t) => t.owner), [A, B], "zellij withheld the cwds; the owners did not flap");
+      rmSync(cachePath, { force: true });
+      const cold = liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 40_000, retries: 0 });
+      assert.deepEqual(cold.map((t) => t.owner), [B, undefined], "no memory: tab 5 keeps only the pane that reported, tab 6 has none");
+
+      // Both sides, ONE memory file: whatever pj writes the engine's resolve_panes reads, and back.
+      // Skipped where the engine is not installed (CI); on the dev box this is the real module.
+      const engineBin = join(process.env.HOME ?? "", ".agents/tools/jev-clairic/bin");
+      if (existsSync(join(engineBin, "zcrank_identity.py"))) {
+        const engine = (cache, panesJson, now) => {
+          const py = [
+            "import json,sys; sys.path.insert(0, sys.argv[1]); import zcrank_identity as z",
+            "panes = z.resolve_panes(lambda: json.loads(sys.argv[2]), now=float(sys.argv[3]))",
+            "print(json.dumps({str(k): v for k, v in z.owners_from_panes(panes).items()}))",
+          ].join("\n");
+          const r = spawnSync("python3", ["-c", py, engineBin, JSON.stringify(panesJson), String(now)], { encoding: "utf8", env: hermeticEnv({ ZCRANK_CWD_CACHE: cache }) });
+          assert.equal(r.status, 0, r.stderr);
+          return JSON.parse(r.stdout);
+        };
+        const shared = join(base, "shared", "pane-cwds.json");
+        resolvePaneCwds(() => panesOf(full), { nowMs: T0, cachePath: shared });           // pj remembers
+        const engineView = engine(shared, thin, T0 / 1000 + 60);                          // engine fills from pj's file
+        const pjView = Object.fromEntries(withTabOwners([{ name: "t5", position: 5, id: 5 }, { name: "t6", position: 6, id: 6 }],
+          resolvePaneCwds(() => panesOf(thin), { nowMs: T0 + 60_000, cachePath: shared }), (cwd) => (cwd === repoA ? A : B)).filter((t) => t.owner).map((t) => [String(t.id), t.owner]));
+        assert.deepEqual(engineView, pjView, "same inputs, same owners");
+        assert.deepEqual(engineView, { "5": A, "6": B });
+        rmSync(shared, { force: true });
+        engine(shared, full, T0 / 1000);                                                  // engine remembers
+        const fromEngine = resolvePaneCwds(() => panesOf(thin), { nowMs: T0 + 60_000, cachePath: shared });
+        assert.deepEqual(fromEngine.map((p) => p.cwd), [repoA, repoA, repoB, repoB, undefined, undefined], "pj fills from the engine's file");
+      }
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  console.log("git budget: past it, no more identity lookups (not cached); within it, normal");
+  {
+    const cache = new Map();
+    assert.equal(projectIdentity("/tmp", { cache, budget: { totalMs: -1 } }), undefined, "budget already spent");
+    assert.equal(cache.has("/tmp"), false, "an out-of-budget lookup is not cached as 'no identity'");
+    const spent = { totalMs: 60_000 };
+    projectIdentity(process.cwd(), { budget: spent });
+    assert.ok(spent.untilMs > Date.now(), "the first git call starts the clock");
+  }
+
+  console.log("owner memo: owners outlive a list-tabs; renames are seen at once; a new tab or the TTL re-reads");
+  {
+    let now = 1_000_000;
+    let reads = 0;
+    let tabs = [{ name: "ipm 🟢", position: 0, id: 30 }, { name: "x", position: 1, id: 31 }];
+    const read = () => { reads++; return tabs.map((t) => (t.id === 30 ? { ...t, owner: "/jb", ownedPanes: { "/jb": 2 } } : { ...t })); };
+    const reader = ownerMemoReader({ clock: () => now, read, tabs: () => tabs.map((t) => ({ ...t })) });
+    assert.equal(reader()[0].owner, "/jb");
+    assert.equal(reads, 1);
+    now += 60_000;
+    tabs = [{ name: "something else", position: 0, id: 30 }, { name: "x", position: 1, id: 31 }];
+    const renamed = reader();
+    assert.equal(reads, 1, "no list-panes for a toggle one minute later");
+    assert.deepEqual(renamed.map((t) => [t.name, t.owner]), [["something else", "/jb"], ["x", undefined]], "the new name, the remembered owner");
+    tabs = [...tabs, { name: "new", position: 2, id: 40 }];
+    reader();
+    assert.equal(reads, 2, "a tab nobody has looked up re-reads");
+    now += LIVE_OWNERS_TTL_MS + 1;
+    reader();
+    assert.equal(reads, 3, "the TTL re-reads");
+    tabs = [];
+    assert.deepEqual(reader(), [], "no live tabs is just empty");
   }
 
   // The 24h of REAL usage_audit rows for job 777c511a009c (completed beats from 2026-11-03T15:25Z
@@ -456,6 +613,26 @@ try {
       assert.equal(tailed.known, true);
       assert.equal(tailed.lastTickMs, Date.parse("2026-11-04T14:41:01.408Z"));
       assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: big }, tailBytes: 1 }).known, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  console.log("engine status: a future-dated row never becomes the last tick; a FIFO where the audit file should be is unknown, not a hang");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "pjan-201-audit-"));
+    try {
+      const future = `${JSON.stringify({ ts: "2999-01-01T00:00:00Z", job_id: ENGINE_DEFAULT_JOB_ID, status: "completed", total_tokens: 5 })}\n`;
+      const clean = parseEngineStatus(AUDIT, { nowMs: NOW });
+      const skewed = parseEngineStatus(AUDIT + future, { nowMs: NOW });
+      assert.equal(skewed.lastTickMs, clean.lastTickMs, "the 2999 row is ignored");
+      assert.equal(skewed.outcome, clean.outcome);
+      assert.equal(skewed.tokens24h, clean.tokens24h);
+      assert.equal(parseEngineStatus(future, { nowMs: NOW }).known, false, "only a future row = no claim");
+      const fifo = join(dir, "audit.fifo");
+      if (spawnSync("mkfifo", [fifo]).status === 0) {
+        assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: fifo } }).known, false);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

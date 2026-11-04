@@ -8,6 +8,7 @@ import {
   disableCrank,
   enableCrank,
   keyScopeOf,
+  liveTabs,
   liveTabsWithOwners,
   readEngineStatus,
   setCrankInterval,
@@ -48,6 +49,36 @@ export interface CrankController {
 /** Zellij tab names change rarely and `list-tabs` is a subprocess: re-read them on this cadence. */
 const LIVE_TABS_TTL_MS = 30_000;
 
+/**
+ * Who owns a tab changes far more slowly than its name, and finding out costs a ~4s list-panes
+ * call plus git (PJAN-201 review). So the owners are kept this long, joined onto a fresh
+ * (cheap) list-tabs by tab_id each time: renames are still seen at once, a new tab is looked up
+ * immediately, and a toggle or interval key press no longer freezes the TUI for 4s.
+ */
+export const LIVE_OWNERS_TTL_MS = 300_000;
+
+export function ownerMemoReader(
+  deps: { clock?: () => number; read?: () => LiveTab[]; tabs?: () => LiveTab[] } = {},
+): () => LiveTab[] {
+  const clock = deps.clock ?? Date.now;
+  const read = deps.read ?? (() => liveTabsWithOwners());
+  const listTabs = deps.tabs ?? (() => liveTabs());
+  let memo: { at: number; byId: Map<number, Pick<LiveTab, "owner" | "ownedPanes">> } | undefined;
+  return () => {
+    const now = clock();
+    const tabs = listTabs();
+    if (memo && now - memo.at <= LIVE_OWNERS_TTL_MS && tabs.length && tabs.every((tab) => tab.id !== undefined && memo?.byId.has(tab.id))) {
+      const known = memo.byId;
+      return tabs.map((tab) => ({ ...tab, ...known.get(tab.id as number) }));
+    }
+    const full = read();
+    memo = full.length && full.every((tab) => tab.id !== undefined)
+      ? { at: now, byId: new Map(full.map((tab) => [tab.id as number, { owner: tab.owner, ownedPanes: tab.ownedPanes }])) }
+      : undefined;
+    return full;
+  };
+}
+
 export function createCrankController(deps: {
   slug: string;
   project: ProjectNames;
@@ -61,7 +92,7 @@ export function createCrankController(deps: {
   clock?: () => number;
 }): CrankController {
   const clock = deps.clock ?? Date.now;
-  const readLive = deps.live ?? (() => liveTabsWithOwners());
+  const readLive = deps.live ?? ownerMemoReader({ clock });
   const readEngine = (nowMs: number): EngineStatus => {
     try {
       return (deps.engine ?? ((now) => readEngineStatus({ nowMs: now })))(nowMs);

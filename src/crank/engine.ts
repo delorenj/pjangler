@@ -13,7 +13,7 @@
 // status completed|started and ts >= now - 24h, summed over total_tokens; refused at
 // sum >= cap. Standalone on purpose (no imports from ./index) so index can re-export it.
 
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -64,6 +64,9 @@ interface AuditRow {
   reason?: string;
 }
 
+/** Audit rows more than this far ahead of the clock are ignored. */
+const FUTURE_SKEW_MS = 5 * 60_000;
+
 function parseAuditRows(text: string, jobId: string): AuditRow[] {
   const rows: AuditRow[] = [];
   for (const line of text.split("\n")) {
@@ -107,7 +110,9 @@ function capFromReason(reason: string | undefined): number | undefined {
 export function parseEngineStatus(auditText: string, input: { jobId?: string; cap?: number; nowMs: number }): EngineStatus {
   const jobId = input.jobId ?? ENGINE_DEFAULT_JOB_ID;
   try {
-    const rows = parseAuditRows(auditText, jobId);
+    // A row stamped in the future (clock skew, garbage) must not become "the last tick" and mask
+    // the real engine state until that moment passes.
+    const rows = parseAuditRows(auditText, jobId).filter((r) => r.tsMs <= input.nowMs + FUTURE_SKEW_MS);
     const last = rows.at(-1);
     if (!last) return unknownEngineStatus(input.nowMs, jobId);
 
@@ -170,9 +175,12 @@ export function parseEngineStatus(auditText: string, input: { jobId?: string; ca
 
 /** The last `maxBytes` of a file as text, without a leading partial line. Throws on I/O error. */
 function readTail(path: string, maxBytes: number): string {
-  const fd = openSync(path, "r");
+  // O_NONBLOCK: opening a FIFO read-only must not hang; only a regular file is ever read.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
-    const size = fstatSync(fd).size;
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`${path} is not a regular file`);
+    const size = stat.size;
     const length = Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
     let read = 0;
