@@ -18,6 +18,14 @@
 //   3. prefix match either way against a live tab (zcrankctl's fuzzy rule),
 //   4. else the project's own name, stored as-is, and the operator is told.
 //
+// PJAN-201 adds a second, name-independent correlation: the project's ROOT. A zcrank:tab:<key>
+// hash may carry `root` (the project identity that owns the switch), and a live tab is owned by
+// the project whose repo holds a strict plurality of its terminal panes' cwds. The engine
+// (zcrank.py) and pj then read a tab's switches as: keys whose canon name matches UNION keys whose
+// root equals the tab's owner. Renaming a tab no longer orphans its switches. The new FIRST
+// resolution rung ("live-cwd") finds a project's tab by where its panes stand, not what the tab
+// is called.
+//
 // Tab names carry status suffixes (gruvato 🟢, ...) in zellij; zcrankctl
 // strips them before storing, so canon() here strips the same characters.
 //
@@ -28,10 +36,13 @@
 // beat-row filter, longest-interval-wins).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { resolveProject, type ProjectHandle } from "../project/boardQuery";
-import { cyan, dim, green, heading } from "../utils/style";
+import { cyan, dim, green, heading, yellow } from "../utils/style";
+import { engineSummary, type EngineStatus } from "./engine";
+
+export * from "./engine";
 
 export const ZCRANK_REDIS_HOST = "127.0.0.1";
 export const ZCRANK_REDIS_PORT = 6379;
@@ -287,6 +298,15 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
     setTabEnabled: (tab: string, enabled: boolean): void => {
       run("HSET", `zcrank:tab:${tab}`, "enabled", enabled ? "1" : "0");
     },
+    /** HGET zcrank:tab:<tab> root -> the owning project identity, or undefined (legacy key / absent). */
+    tabRoot: (tab: string): string | undefined => {
+      const v = run("HGET", `zcrank:tab:${tab}`, "root");
+      return v === "" || v == null ? undefined : v;
+    },
+    /** HSET zcrank:tab:<tab> root <project identity> (PJAN-201). */
+    setTabRoot: (tab: string, root: string): void => {
+      run("HSET", `zcrank:tab:${tab}`, "root", root);
+    },
     /** HGET zcrank:tab:<tab> interval -> a valid interval, else undefined (absent or garbage). */
     tabInterval: (tab: string): CrankInterval | undefined => parseInterval(run("HGET", `zcrank:tab:${tab}`, "interval")),
     /** HSET zcrank:tab:<tab> interval <5m|1h|6h|1d>. */
@@ -349,6 +369,23 @@ export function redisGlobEscape(text: string): string {
 export interface LiveTab {
   name: string;
   position: number;
+  /** zellij's stable-per-session tab_id (list-tabs), when known. */
+  id?: number;
+  /** PJAN-201: the project identity holding a strict plurality of the tab's terminal panes, if any. */
+  owner?: string;
+  /** PJAN-201: how many identified terminal panes each project identity holds in this tab. */
+  ownedPanes?: Record<string, number>;
+}
+
+/** One zellij pane from `list-panes --json --all` (PJAN-201). */
+export interface LivePane {
+  id: number;
+  tabId?: number;
+  tabPosition?: number;
+  tabName: string;
+  isPlugin: boolean;
+  /** pane_cwd; absent for some panes (treated as unknown). */
+  cwd?: string;
 }
 
 /**
@@ -370,17 +407,125 @@ export function liveTabs(deps: { shell?: Shell } = {}): LiveTab[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
-      .map((entry) => ({ name: String(entry.name ?? ""), position: Number(entry.position ?? 0) }));
+      .map((entry) => {
+        const id = Number(entry.tab_id);
+        return {
+          name: String(entry.name ?? ""),
+          position: Number(entry.position ?? 0),
+          ...(entry.tab_id !== undefined && entry.tab_id !== null && Number.isInteger(id) ? { id } : {}),
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Live zellij panes (every tab, plugins included) for the Workspace session; [] when unreadable. */
+export function livePanes(deps: { shell?: Shell } = {}): LivePane[] {
+  const shell = deps.shell ?? defaultShell;
+  const result = shell("env", [
+    "-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME",
+    "timeout", "5s", "zellij", "-s", ZCRANK_SESSION, "action", "list-panes", "--json", "--all",
+  ]);
+  if (result.status !== 0 || !result.stdout.trim()) return [];
+  try {
+    const parsed = JSON.parse(result.stdout) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const panes: LivePane[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as Record<string, unknown>;
+      const id = Number(e.id);
+      if (!Number.isFinite(id)) continue;
+      const tabId = Number(e.tab_id);
+      const tabPosition = Number(e.tab_position);
+      panes.push({
+        id,
+        tabId: e.tab_id !== undefined && e.tab_id !== null && Number.isInteger(tabId) ? tabId : undefined,
+        tabPosition: e.tab_position !== undefined && e.tab_position !== null && Number.isInteger(tabPosition) ? tabPosition : undefined,
+        tabName: String(e.tab_name ?? ""),
+        isPlugin: e.is_plugin === true,
+        cwd: typeof e.pane_cwd === "string" && e.pane_cwd.trim() ? e.pane_cwd : undefined,
+      });
+    }
+    return panes;
   } catch {
     return [];
   }
 }
 
 // ---------------------------------------------------------------------------
+// Project identity and tab ownership (PJAN-201)
+// ---------------------------------------------------------------------------
+
+/** Per-command memo of dir -> identity (null = looked, none). */
+export type IdentityCache = Map<string, string | null>;
+
+/**
+ * Project identity of a directory: the MAIN worktree path of the repo containing it (the
+ * first `worktree <path>` line of `git worktree list --porcelain`), realpath'd. A linked
+ * worktree maps to its main repo; a submodule is its own repo. Not a repo, git failing, or
+ * a 2s timeout => undefined. Memoised in `cache` for the life of one scan / command.
+ */
+export function projectIdentity(dir: string | undefined, deps: { shell?: Shell; cache?: IdentityCache } = {}): string | undefined {
+  const target = (dir ?? "").trim();
+  if (!target) return undefined;
+  const cached = deps.cache?.get(target);
+  if (cached !== undefined) return cached ?? undefined;
+  const shell = deps.shell ?? defaultShell;
+  let identity: string | undefined;
+  try {
+    const result = shell("timeout", ["2s", "git", "-C", target, "worktree", "list", "--porcelain"]);
+    if (result.status === 0) {
+      const first = result.stdout.split("\n").find((line) => line.startsWith("worktree "));
+      const path = first?.slice("worktree ".length).replace(/\r$/, "").trim();
+      if (path) identity = realpathSync(path);
+    }
+  } catch {
+    identity = undefined;
+  }
+  deps.cache?.set(target, identity ?? null);
+  return identity;
+}
+
+/**
+ * Attach each live tab's owner: the identity held by a STRICT plurality of its terminal
+ * (non-plugin) panes that have an identity. Panes without a cwd or identity are ignored; a
+ * tie, or no identified pane, means no owner. Panes join tabs by tab_id (else tab position).
+ */
+export function withTabOwners(tabs: LiveTab[], panes: LivePane[], identify: (cwd: string) => string | undefined): LiveTab[] {
+  return tabs.map((tab) => {
+    const counts = new Map<string, number>();
+    for (const pane of panes) {
+      if (pane.isPlugin || !pane.cwd) continue;
+      const inTab = tab.id !== undefined && pane.tabId !== undefined ? pane.tabId === tab.id : pane.tabPosition === tab.position;
+      if (!inTab) continue;
+      const identity = identify(pane.cwd);
+      if (identity) counts.set(identity, (counts.get(identity) ?? 0) + 1);
+    }
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const [top, runnerUp] = ranked;
+    const owner = top && (!runnerUp || top[1] > runnerUp[1]) ? top[0] : undefined;
+    const enriched: LiveTab = { ...tab };
+    if (owner) enriched.owner = owner;
+    if (ranked.length) enriched.ownedPanes = Object.fromEntries(ranked);
+    return enriched;
+  });
+}
+
+/** Live tabs with their pane-derived owners, read from zellij. Never throws: no panes => no owners. */
+export function liveTabsWithOwners(deps: { shell?: Shell } = {}): LiveTab[] {
+  const tabs = liveTabs(deps);
+  if (!tabs.length) return tabs;
+  const cache: IdentityCache = new Map();
+  return withTabOwners(tabs, livePanes(deps), (cwd) => projectIdentity(cwd, { shell: deps.shell, cache }));
+}
+
+// ---------------------------------------------------------------------------
 // Project → tab resolution
 // ---------------------------------------------------------------------------
 
-export type TabSource = "live-exact" | "redis-exact" | "live-prefix" | "project-name";
+export type TabSource = "live-cwd" | "live-exact" | "redis-exact" | "live-prefix" | "project-name";
 
 export interface TabResolution {
   /** The name stored under zcrank:tab:<this>. */
@@ -396,6 +541,16 @@ export interface TabResolution {
    * the live display name is what `pj crank enable` migrates every old key onto (PJAN-182).
    */
   liveTab?: string;
+  /** PJAN-201: the owner (project identity) of the live tab this resolved to, when it has one. */
+  tabOwner?: string;
+}
+
+/** What the resolver needs beyond names: the project's identity and which stored key belongs to which root. */
+export interface ResolveScope {
+  /** The project's identity (main worktree path), when it has one. */
+  identity?: string;
+  /** Stored key -> its `root` field (absent for legacy keys). */
+  roots?: Record<string, string>;
 }
 
 /** A project's candidate names for tab matching, in precedence order. */
@@ -431,25 +586,68 @@ export function candidateNames(project: ProjectNames): string[] {
 }
 
 /**
- * Resolve which zcrank tab a project owns, trying every candidate name
- * through zcrankctl's ladder: live-exact, redis-exact, live-prefix, then
- * the project's own name stored as-is. Never throws for a miss.
+ * A live tab that already has a key keeps it, even when the name drifted from it in
+ * case or punctuation ("green-in-between" vs GreenInBetween). Writing the live spelling
+ * instead minted a second key next to it (WING-7). Only an equal canon counts: a colon
+ * head ("IPM: Navi" vs IPM) would make sibling tabs share one switch.
+ */
+function keyForLiveTab(tab: LiveTab, storedTabs: string[]): string {
+  const display = tabDisplay(tab.name);
+  if (storedTabs.includes(display)) return display;
+  return storedTabs.find((s) => canon(s) && canon(s) === canon(display)) ?? display;
+}
+
+/** The live tab (by display name) a resolution points at, to read its owner. */
+function ownerOfLiveTab(live: LiveTab[], liveTab: string | undefined): string | undefined {
+  if (liveTab === undefined) return undefined;
+  return live.find((tab) => tabDisplay(tab.name) === liveTab)?.owner;
+}
+
+/**
+ * Resolve which zcrank tab a project owns. The first rung (PJAN-201, "live-cwd") is name-free:
+ * the live tab(s) whose panes' cwds make this project's identity the strict plurality owner.
+ * Then zcrankctl's name ladder: live-exact, redis-exact, live-prefix, then the project's own
+ * name stored as-is. Never throws for a miss.
  */
 export function resolveTabForProject(
   project: ProjectNames,
   live: LiveTab[],
   storedTabs: string[],
+  scope: ResolveScope = {},
 ): TabResolution {
+  const byCwd = resolveByCwd(project, live, storedTabs, scope);
+  if (byCwd) return byCwd;
+  const resolution = resolveByName(project, live, storedTabs);
+  const tabOwner = ownerOfLiveTab(live, resolution.liveTab);
+  return tabOwner ? { ...resolution, tabOwner } : resolution;
+}
+
+function resolveByCwd(project: ProjectNames, live: LiveTab[], storedTabs: string[], scope: ResolveScope): TabResolution | undefined {
+  const identity = scope.identity;
+  if (!identity) return undefined;
+  const owned = live.filter((tab) => tab.owner === identity);
+  if (!owned.length) return undefined;
+  const candidateCanons = new Set(candidateNames(project).map((name) => canon(name)).filter(Boolean));
+  // Several tabs own this project: a tab whose name matches a candidate first, then the tab
+  // holding the most of the project's panes, then the leftmost.
+  const ranked = [...owned].sort((a, b) =>
+    Number(candidateCanons.has(canon(b.name))) - Number(candidateCanons.has(canon(a.name)))
+    || (b.ownedPanes?.[identity] ?? 0) - (a.ownedPanes?.[identity] ?? 0)
+    || a.position - b.position);
+  const tab = ranked[0];
+  if (!tab) return undefined;
+  let key = keyForLiveTab(tab, storedTabs);
+  if (!storedTabs.includes(key)) {
+    // No key names this tab. A rename must not mint a new key: reuse the one already rooted here.
+    const rooted = storedTabs.find((stored) => scope.roots?.[stored] === identity);
+    if (rooted !== undefined) key = rooted;
+  }
+  return { tab: key, source: "live-cwd", matched: identity, storedAsIs: false, liveTab: tabDisplay(tab.name), tabOwner: identity };
+}
+
+function resolveByName(project: ProjectNames, live: LiveTab[], storedTabs: string[]): TabResolution {
   const candidates = candidateNames(project);
-  // A live tab that already has a key keeps it, even when the name drifted from it in
-  // case or punctuation ("green-in-between" vs GreenInBetween). Writing the live spelling
-  // instead minted a second key next to it (WING-7). Only an equal canon counts: a colon
-  // head ("IPM: Navi" vs IPM) would make sibling tabs share one switch.
-  const keyFor = (tab: LiveTab): string => {
-    const display = tabDisplay(tab.name);
-    if (storedTabs.includes(display)) return display;
-    return storedTabs.find((s) => canon(s) && canon(s) === canon(display)) ?? display;
-  };
+  const keyFor = (tab: LiveTab): string => keyForLiveTab(tab, storedTabs);
   // 1. Exact match on a live tab (live is the authority): whole names first, then either
   //    side of a colon, so project navi owns the tab "IPM: Navi" but a tab named exactly
   //    "Navi" wins over it.
@@ -526,13 +724,30 @@ export function projectAgentsFor(handle: ProjectHandle, registryAgents?: Record<
 // Keys naming a tab, snapshot, and the writes behind enable / disable / interval
 // ---------------------------------------------------------------------------
 
-/** Every stored key that names this tab: the key itself plus each key with an equal canon (WING-7). */
-export function keysNamingTab(tab: string, storedKeys: string[]): string[] {
+/** Which keys belong to a live tab by ownership rather than by name (PJAN-201). */
+export interface KeyScope {
+  /** The live tab's owner (project identity). */
+  owner?: string;
+  /** Stored key -> its `root`. */
+  roots?: Record<string, string>;
+}
+
+/**
+ * Every stored key that names this tab: the key itself plus each key with an equal canon (WING-7),
+ * UNION (PJAN-201) every key whose `root` is the tab's owner. Name matches come first, then root
+ * matches in stored order; no duplicates. A tab with neither has no keys (Unlisted = OFF).
+ */
+export function keysNamingTab(tab: string, storedKeys: string[], scope: KeyScope = {}): string[] {
   const c = canon(tab);
   const out: string[] = [];
   if (storedKeys.includes(tab)) out.push(tab);
   for (const key of storedKeys) {
     if (key !== tab && c && canon(key) === c) out.push(key);
+  }
+  if (scope.owner) {
+    for (const key of storedKeys) {
+      if (scope.roots?.[key] === scope.owner && !out.includes(key)) out.push(key);
+    }
   }
   return out;
 }
@@ -560,8 +775,8 @@ export interface CrankSnapshot {
 }
 
 /** Read one tab's crank state. Pure reads: never writes. */
-export function snapshotCrank(store: CrankStore, tab: string, storedKeys: string[], nowMs: number, beatLimit = 5): CrankSnapshot {
-  const keys = keysNamingTab(tab, storedKeys);
+export function snapshotCrank(store: CrankStore, tab: string, storedKeys: string[], nowMs: number, beatLimit = 5, scope: KeyScope = {}): CrankSnapshot {
+  const keys = keysNamingTab(tab, storedKeys, scope);
   const readKeys = keys.length ? keys : [tab];
   const enabledValues = keys.map((key) => store.tabEnabled(key)).filter((v): v is string => v !== undefined);
   const enabled = enabledValues.length ? keys.length > 0 && keys.every((key) => store.tabEnabled(key) === "1") : undefined;
@@ -603,6 +818,8 @@ export interface RenamePlan {
  * equals the canon of one of the project's candidate names or of the live display name.
  * Keys that merely prefix- or colon-match are never touched ("IPM" next to "IPM: Navi" is a
  * sibling tab's switch), and neither is a key that is some OTHER live tab's own spelling.
+ * PJAN-201: a stored key whose `root` is the project's identity is ALSO an old key, even when it
+ * is another live tab's spelling (the root says it is this project's switch).
  */
 export function planRenameMigration(input: {
   resolution: TabResolution;
@@ -612,14 +829,18 @@ export function planRenameMigration(input: {
   intervals: (key: string) => CrankInterval | undefined;
   /** An interval the user chose in the same breath: it wins, so nothing is carried. */
   chosenInterval?: CrankInterval;
+  /** The project's identity and each stored key's root (PJAN-201). */
+  identity?: string;
+  roots?: Record<string, string>;
 }): RenamePlan | undefined {
   const target = input.resolution.liveTab;
-  if (!target || (input.resolution.source !== "live-exact" && input.resolution.source !== "live-prefix")) return undefined;
+  if (!target || (input.resolution.source !== "live-exact" && input.resolution.source !== "live-prefix" && input.resolution.source !== "live-cwd")) return undefined;
   const targetCanon = canon(target);
   const wanted = new Set([targetCanon, ...input.candidates.map((name) => canon(name))].filter(Boolean));
   const otherLive = new Set(input.live.map((tab) => canon(tab.name)).filter((c) => c && c !== targetCanon));
   const oldKeys = [...new Set(input.storedKeys)].filter((key) => {
     if (key === target) return false;
+    if (input.identity && input.roots?.[key] === input.identity) return true;
     const c = canon(key);
     return c !== "" && wanted.has(c) && !otherLive.has(c);
   });
@@ -665,16 +886,51 @@ export interface CrankContext {
   candidates: string[];
   live: LiveTab[];
   storedKeys: string[];
+  /** The project's identity (PJAN-201), written as `root` on every key pj writes for it. */
+  identity?: string;
+  /** Stored key -> root (only keys that carry one). */
+  roots: Record<string, string>;
 }
 
 /** Resolve the project onto a tab from the current live tabs and stored keys. */
-export function buildCrankContext(project: ProjectNames, live: LiveTab[], storedKeys: string[]): CrankContext {
-  return { resolution: resolveTabForProject(project, live, storedKeys), candidates: candidateNames(project), live, storedKeys };
+export function buildCrankContext(project: ProjectNames, live: LiveTab[], storedKeys: string[], scope: ResolveScope = {}): CrankContext {
+  const roots = scope.roots ?? {};
+  return {
+    resolution: resolveTabForProject(project, live, storedKeys, { identity: scope.identity, roots }),
+    candidates: candidateNames(project),
+    live,
+    storedKeys,
+    identity: scope.identity,
+    roots,
+  };
+}
+
+/** The key scope a resolved context reads under: the live tab's owner plus every stored root. */
+export function keyScopeOf(ctx: Pick<CrankContext, "resolution" | "roots">): KeyScope {
+  return { owner: ctx.resolution.tabOwner, roots: ctx.roots };
 }
 
 /** Stored zcrank:tab:* keys with the prefix stripped. */
 export function storedTabKeys(store: CrankStore): string[] {
   return store.tabKeys().map((key) => key.split(":").slice(2).join(":"));
+}
+
+/** Stored key -> `root` for the keys that carry one (legacy keys are simply absent). */
+export function storedTabRoots(store: CrankStore, keys: string[]): Record<string, string> {
+  const roots: Record<string, string> = {};
+  for (const key of keys) {
+    let root: string | undefined;
+    try {
+      root = store.tabRoot(key);
+    } catch (error) {
+      // `root` is advisory: a wrong-typed key (a Redis error reply) simply has none, and the
+      // command that really needs that key fails on its own read, in its own words. A Redis that
+      // is not answering is not that, and still throws.
+      if (!(error instanceof Error) || !error.message.startsWith("Redis error reply")) throw error;
+    }
+    if (root) roots[key] = root;
+  }
+  return roots;
 }
 
 export interface EnableResult {
@@ -700,18 +956,22 @@ export function enableCrank(store: CrankStore, ctx: CrankContext, options: { int
     live: ctx.live,
     intervals: (key) => store.tabInterval(key),
     chosenInterval: options.interval,
+    identity: ctx.identity,
+    roots: ctx.roots,
   });
   const tab = plan?.target ?? ctx.resolution.tab;
   store.setTabEnabled(tab, true);
+  writeRoot(store, tab, ctx.identity);
   if (options.interval) store.setTabInterval(tab, options.interval);
   if (plan) applyRenameMigration(store, plan);
   else {
     // No live tab, so nothing migrates. Other spellings of the key still name this tab to the engine
     // (any OFF wins, the longest interval wins), so bring them along: ON, and the chosen interval
     // not overridden by a stale longer one.
-    for (const sibling of keysNamingTab(tab, ctx.storedKeys)) {
+    for (const sibling of keysNamingTab(tab, ctx.storedKeys, keyScopeOf(ctx))) {
       if (sibling === tab) continue;
       store.setTabEnabled(sibling, true);
+      writeRoot(store, sibling, ctx.identity);
       if (options.interval) store.clearTabInterval(sibling);
     }
   }
@@ -722,9 +982,15 @@ export function enableCrank(store: CrankStore, ctx: CrankContext, options: { int
   return { tab, renamed, interval: options.interval ?? plan?.carryInterval };
 }
 
-/** `pj crank disable`: enabled=0 plus a log row, under the resolved key. */
-export function disableCrank(store: CrankStore, tab: string, now: Date = new Date()): void {
+/** Stamp the project identity on a key pj writes (no-op for a project with no identity). */
+function writeRoot(store: CrankStore, tab: string, root: string | undefined): void {
+  if (root) store.setTabRoot(tab, root);
+}
+
+/** `pj crank disable`: enabled=0 plus a log row, under the resolved key (stamped with `root`). */
+export function disableCrank(store: CrankStore, tab: string, now: Date = new Date(), root?: string): void {
   store.setTabEnabled(tab, false);
+  writeRoot(store, tab, root);
   store.pushLog(tab, "disabled", "pj crank disable", crankTimestamp(now));
 }
 
@@ -733,12 +999,20 @@ export function disableCrank(store: CrankStore, tab: string, now: Date = new Dat
  * `tab` and cleared from every other key naming it, so the longest-wins rule across spellings
  * can never override what the operator just picked.
  */
-export function setCrankInterval(store: CrankStore, tab: string, storedKeys: string[], interval: CrankInterval | undefined, now: Date = new Date()): void {
-  for (const key of keysNamingTab(tab, storedKeys)) {
+export function setCrankInterval(
+  store: CrankStore,
+  tab: string,
+  storedKeys: string[],
+  interval: CrankInterval | undefined,
+  now: Date = new Date(),
+  scope: KeyScope & { root?: string } = {},
+): void {
+  for (const key of keysNamingTab(tab, storedKeys, scope)) {
     if (key !== tab) store.clearTabInterval(key);
   }
   if (interval) store.setTabInterval(tab, interval);
   else store.clearTabInterval(tab);
+  writeRoot(store, tab, scope.root);
   const action = interval ? `pj crank tui: interval ${interval}` : `pj crank tui: interval reset to global (${store.globalInterval()})`;
   store.pushLog(tab, "interval", action, crankTimestamp(now));
 }
@@ -756,9 +1030,13 @@ export interface CrankListRow {
   /** Effective interval, and whether it is the global default rather than the tab's own. */
   interval: CrankInterval;
   inherited: boolean;
+  /** The live tab's display name when the project resolved onto a live tab (PJAN-201). */
+  liveTab?: string;
 }
 
 export interface CrankListReport {
+  /** One advisory line about the beat engine; absent when the caller did not read it. */
+  engine?: EngineStatus;
   rows: CrankListRow[];
   orphans: { tab: string; enabled: boolean; interval: CrankInterval; inherited: boolean }[];
 }
@@ -780,31 +1058,44 @@ export function buildCrankList(input: {
   /** A key's own interval; omitted = nothing is overridden. */
   tabInterval?: (tab: string) => CrankInterval | undefined;
   globalInterval?: CrankInterval;
+  /** PJAN-201: a project's identity from its repo path (undefined = none), and each stored key's root. */
+  identityOf?: (repoPath: string) => string | undefined;
+  roots?: Record<string, string>;
+  engine?: EngineStatus;
 }): CrankListReport {
   const global = input.globalInterval ?? ZCRANK_DEFAULT_INTERVAL;
-  const intervalOf = (tab: string) => effectiveInterval(
-    (keysNamingTab(tab, input.storedTabs).length ? keysNamingTab(tab, input.storedTabs) : [tab]).map((key) => input.tabInterval?.(key)),
-    global,
-  );
+  const roots = input.roots ?? {};
+  const intervalOf = (tab: string, owner?: string) => {
+    const keys = keysNamingTab(tab, input.storedTabs, { owner, roots });
+    return effectiveInterval((keys.length ? keys : [tab]).map((key) => input.tabInterval?.(key)), global);
+  };
   const rows: CrankListRow[] = [];
   const consumed = new Set<string>();
+  const consumedKeys = new Set<string>();
   for (const project of input.projects) {
-    const resolution = resolveTabForProject(project, input.live, input.storedTabs);
+    const identity = project.repoPath ? input.identityOf?.(project.repoPath) : undefined;
+    const resolution = resolveTabForProject(project, input.live, input.storedTabs, { identity, roots });
     consumed.add(canon(resolution.tab));
-    const enabled = input.tabEnabled(resolution.tab);
+    const keys = keysNamingTab(resolution.tab, input.storedTabs, { owner: resolution.tabOwner, roots });
+    for (const key of keys) consumedKeys.add(key);
+    // The engine's rule: ON only when every key naming the tab is ON. A single resolved key
+    // (nothing else names the tab) reads exactly as before.
+    const values = (keys.length ? keys : [resolution.tab]).map((key) => input.tabEnabled(key)).filter((v): v is string => v !== undefined);
+    const enabled = values.length ? (values.every((v) => v === "1") ? "1" : "0") : undefined;
     rows.push({
       slug: project.slug,
       name: project.name,
       tab: resolution.tab,
       crank: enabled === "1" ? "ON" : enabled === "0" ? "OFF" : "—",
       source: resolution.source,
-      ...intervalOf(resolution.tab),
+      ...(resolution.liveTab !== undefined ? { liveTab: resolution.liveTab } : {}),
+      ...intervalOf(resolution.tab, resolution.tabOwner),
     });
   }
   const orphans = input.storedTabs
-    .filter((stored) => !consumed.has(canon(stored)))
+    .filter((stored) => !consumed.has(canon(stored)) && !consumedKeys.has(stored))
     .map((stored) => ({ tab: stored, enabled: input.tabEnabled(stored) === "1", ...intervalOf(stored) }));
-  return { rows, orphans };
+  return { engine: input.engine, rows, orphans };
 }
 
 // ---------------------------------------------------------------------------
@@ -829,18 +1120,31 @@ export function renderLogRow(raw: string): string | null {
   }
 }
 
+/** The TAB cell: the live tab for a live-cwd row (with the key when it differs), else the key. */
+function tabCell(row: CrankListRow): string {
+  if (row.source !== "live-cwd" || row.liveTab === undefined) return row.tab;
+  return canon(row.tab) === canon(row.liveTab) ? row.liveTab : `${row.liveTab} (key ${row.tab})`;
+}
+
 export function formatCrankList(report: CrankListReport): string {
   const lines: string[] = [""];
   lines.push(`  ${heading("Crank by project")}`);
+  if (report.engine) {
+    const summary = engineSummary(report.engine);
+    // "engine status unknown" already names the engine; a known status gets the label.
+    lines.push(summary.tone === "unknown"
+      ? `  ${dim(summary.text)}`
+      : `  ${summary.tone === "ok" ? green("Engine") : yellow("Engine")} ${summary.tone === "warn" ? yellow(summary.text) : dim(summary.text)}`);
+  }
   lines.push("");
   const slugWidth = Math.max("PROJECT".length, ...report.rows.map((row) => row.slug.length));
-  const tabWidth = Math.max("TAB".length, ...report.rows.map((row) => row.tab.length), ...report.orphans.map((orphan) => orphan.tab.length));
+  const tabWidth = Math.max("TAB".length, ...report.rows.map((row) => tabCell(row).length), ...report.orphans.map((orphan) => orphan.tab.length));
   const intervalCell = (row: { interval: CrankInterval; inherited: boolean }) =>
     row.inherited ? dim(`${row.interval} (global)`) : row.interval;
   lines.push(`  ${"PROJECT".padEnd(slugWidth)}  ${"TAB".padEnd(tabWidth)}  ${"CRANK".padEnd(5)}  INTERVAL`);
   for (const row of report.rows) {
     const state = row.crank === "ON" ? green("ON") : row.crank === "OFF" ? dim("OFF") : dim("—");
-    lines.push(`  ${cyan(row.slug.padEnd(slugWidth))}  ${row.tab.padEnd(tabWidth)}  ${state}${" ".repeat(Math.max(0, 5 - (row.crank === "ON" ? 2 : row.crank === "OFF" ? 3 : 1)))}  ${intervalCell(row)}`);
+    lines.push(`  ${cyan(row.slug.padEnd(slugWidth))}  ${tabCell(row).padEnd(tabWidth)}  ${state}${" ".repeat(Math.max(0, 5 - (row.crank === "ON" ? 2 : row.crank === "OFF" ? 3 : 1)))}  ${intervalCell(row)}`);
   }
   if (report.orphans.length) {
     lines.push("");

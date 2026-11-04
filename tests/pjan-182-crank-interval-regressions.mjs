@@ -17,7 +17,7 @@ import { operatorHome } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FakeStdin, FakeStdout, startThrowawayRedis, waitFor } from "./pjan-182-crank-regressions-helpers.mjs";
@@ -53,6 +53,8 @@ const {
   enableCrank, formatCrankList, formatDuration, isDue, lastRunMs, longestInterval, mergeLogRows, nextRunMs, parseInterval,
   planRenameMigration, redis, redisEndpoint, redisGlobEscape, setCrankInterval, snapshotCrank, storedTabKeys, tabDisplay,
   resolveTabForProject, pickInterval, runCrankDashboard, intervalOptions,
+  // PJAN-201
+  keyScopeOf, keysNamingTab, livePanes, liveTabs, parseEngineStatus, storedTabRoots, withTabOwners,
 } = kit;
 
 const T = (iso) => Date.parse(iso);
@@ -758,6 +760,304 @@ print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due":
     assert.ok(!stdout.frame().includes("crank ON"), "no success flash for a write that did not land");
     stdin.press("q");
     await finished;
+  }
+
+  // =========================================================================
+  // PJAN-201: the project's ROOT correlates a tab with its switches, not the tab's name
+  // =========================================================================
+  //
+  // Inputs are the REAL list-panes / list-tabs JSON captured from the Workspace session on
+  // 2026-11-04 (tests/data), where project james-brennan lives in the tab "ipm 🟢". Every cwd in the
+  // capture is itself a repo root, so identity == cwd below: that is the one stand-in (for git), and
+  // the real-git identity rules are pinned in tests/pjan-184-crank-units.mjs.
+  const realPanesJson = readFileSync(join(root, "tests", "data", "pjan-201-live-list-panes.json"), "utf8");
+  const realTabsJson = readFileSync(join(root, "tests", "data", "pjan-201-live-list-tabs.json"), "utf8");
+  const zellijShell = (command, args) => ({ stdout: args.includes("list-panes") ? realPanesJson : realTabsJson, status: 0 });
+  const realTabs = liveTabs({ shell: zellijShell });
+  const realPanes = livePanes({ shell: zellijShell });
+  const JB = "/home/delorenj/code/james-brennan";
+  const PJ = "/home/delorenj/code/33GOD/pjangler";
+  const idOf = (cwd) => cwd;
+  // The stored keys as they were in the live Redis when the operator hit the bug.
+  const REAL_STORED = ["green-in-between", "IPM", "gruvato", "tower-of-lost-things", "HeyMa", "Holocene", "james-brennan-techj", "james-brennan", "Intelliforia", "Pile of Dumb Things", "client-portal"];
+  const JB_PROJECT = { name: "james-brennan", agents: [] };
+  const tiedTabs = withTabOwners(realTabs, realPanes, idOf);
+  const jbTabs = withTabOwners(realTabs, realPanes.filter((pane) => pane.id !== 150), idOf);
+
+  console.log("PJAN-201: james-brennan in the tab 'ipm' — the live case that bound the stale key by name");
+  {
+    // today's behaviour, no ownership: james-brennan binds the stale zcrank:tab:james-brennan
+    const legacy = resolveTabForProject(JB_PROJECT, jbTabs, REAL_STORED);
+    assert.equal(legacy.source, "redis-exact");
+    assert.equal(legacy.tab, "james-brennan");
+    // the capture AS IT IS: the operator's second pane (pjangler) ties the tab 1:1, so nothing owns it yet
+    const tie = resolveTabForProject(JB_PROJECT, tiedTabs, REAL_STORED, { identity: JB, roots: {} });
+    assert.equal(tie.source, "redis-exact", "a tied tab has no owner: the ladder falls through to the names");
+    // one more pane of james-brennan (or one fewer of pjangler) breaks the tie: the tab is found by where its panes stand
+    const owned = resolveTabForProject(JB_PROJECT, jbTabs, REAL_STORED, { identity: JB, roots: {} });
+    assert.deepEqual(owned, { tab: "IPM", source: "live-cwd", matched: JB, storedAsIs: false, liveTab: "ipm", tabOwner: JB });
+    // ...and pjangler, whose only live pane is in that same tab, does not own it
+    const pj = resolveTabForProject({ name: "pjangler", agents: [] }, jbTabs, REAL_STORED, { identity: PJ, roots: {} });
+    assert.notEqual(pj.source, "live-cwd");
+    // other projects resolve through their own panes: client-portal's only pane sits in the tab 'client-portal-custom'
+    const portal = resolveTabForProject({ name: "client-portal", agents: [] }, tiedTabs, REAL_STORED, { identity: "/home/delorenj/code/client-portal", roots: {} });
+    assert.equal(portal.source, "live-cwd");
+    assert.equal(portal.liveTab, "client-portal-custom");
+    assert.equal(portal.tab, "client-portal-custom", "no key names that tab and none is rooted: the live name");
+  }
+
+  console.log("PJAN-201: keys naming a tab = canon-name matches UNION keys whose root is the tab's owner");
+  {
+    assert.deepEqual(keysNamingTab("IPM", REAL_STORED), ["IPM"]);
+    assert.deepEqual(keysNamingTab("IPM", REAL_STORED, { owner: JB, roots: {} }), ["IPM"], "legacy keys carry no root: nothing to add");
+    assert.deepEqual(keysNamingTab("IPM", REAL_STORED, { owner: JB, roots: { "james-brennan": JB } }), ["IPM", "james-brennan"]);
+    assert.deepEqual(keysNamingTab("IPM", REAL_STORED, { owner: JB, roots: { "james-brennan": PJ } }), ["IPM"], "another project's root is not this tab's");
+    assert.deepEqual(keysNamingTab("IPM", REAL_STORED, { roots: { "james-brennan": JB } }), ["IPM"], "a tab with no owner takes no root keys");
+    assert.deepEqual(keysNamingTab("IPM", ["IPM", "ipm"], { owner: JB, roots: { ipm: JB } }), ["IPM", "ipm"], "no duplicates");
+    // Unlisted = OFF still holds: no name match and no root match means no keys at all
+    assert.deepEqual(keysNamingTab("scratch pad", REAL_STORED, { owner: JB, roots: { "Pile of Dumb Things": PJ } }), []);
+    // a tab that matches no name but whose owner has a rooted key
+    assert.deepEqual(keysNamingTab("scratch pad", REAL_STORED, { owner: JB, roots: { "james-brennan": JB } }), ["james-brennan"]);
+    assert.deepEqual(keyScopeOf({ resolution: { tabOwner: JB }, roots: { a: JB } }), { owner: JB, roots: { a: JB } });
+  }
+
+  console.log("PJAN-201: a tab renamed to something that matches nothing still resolves through its root, and a rename mints no new key");
+  {
+    const renamed = jbTabs.map((tab) => (tab.id === 30 ? { ...tab, name: "scratch pad 🟢" } : tab));
+    const rooted = resolveTabForProject(JB_PROJECT, renamed, REAL_STORED, { identity: JB, roots: { "james-brennan": JB } });
+    assert.deepEqual(rooted, { tab: "james-brennan", source: "live-cwd", matched: JB, storedAsIs: false, liveTab: "scratch pad", tabOwner: JB }, "the rooted key is reused");
+    // no rooted key anywhere: a new key under the live name (the documented fallback), never a stale name-bound one
+    const none = resolveTabForProject(JB_PROJECT, renamed, REAL_STORED, { identity: JB, roots: {} });
+    assert.equal(none.tab, "scratch pad");
+    assert.equal(none.source, "live-cwd");
+    // a key that matches the live name beats a rooted key under another name
+    const both = resolveTabForProject(JB_PROJECT, renamed, [...REAL_STORED, "Scratch Pad"], { identity: JB, roots: { "james-brennan": JB } });
+    assert.equal(both.tab, "Scratch Pad");
+    // without the new rung (no identity) the old ladder binds the stale name key
+    assert.equal(resolveTabForProject(JB_PROJECT, renamed, REAL_STORED).tab, "james-brennan");
+  }
+
+  console.log("PJAN-201: several tabs owned by one project — a candidate-name match, then most panes, then lowest position");
+  {
+    // hand-built (there is no capture of one project across several tabs)
+    const tab = (name, position, panes) => ({ name, position, owner: JB, ownedPanes: { [JB]: panes } });
+    const rank = (tabs) => resolveTabForProject({ name: "James Brennan", agents: [] }, tabs, [], { identity: JB, roots: {} }).liveTab;
+    assert.equal(rank([tab("x", 0, 1), tab("y", 1, 3), tab("james-brennan", 2, 1)]), "james-brennan", "a name match beats more panes");
+    assert.equal(rank([tab("x", 0, 1), tab("y", 1, 3), tab("z", 2, 2)]), "y", "most owned panes");
+    assert.equal(rank([tab("x", 3, 2), tab("y", 1, 2), tab("z", 2, 2)]), "y", "then the leftmost");
+    // tabs owned by another project never qualify
+    assert.equal(resolveTabForProject({ name: "Q", agents: [] }, [{ name: "x", position: 0, owner: PJ }], [], { identity: JB, roots: {} }).source, "project-name");
+    // no identity for the project: the rung is skipped
+    assert.equal(resolveTabForProject({ name: "Q", agents: [] }, [tab("x", 0, 1)], [], {}).source, "project-name");
+  }
+
+  console.log("PJAN-201: planRenameMigration treats a key rooted at the project as old, even another live tab's spelling");
+  {
+    const resolution = resolveTabForProject(JB_PROJECT, jbTabs, REAL_STORED, { identity: JB, roots: {} });
+    const plan = (roots, stored = REAL_STORED, identity = JB) => planRenameMigration({
+      resolution, candidates: ["james-brennan"], storedKeys: stored, live: jbTabs,
+      intervals: (key) => (key === "james-brennan" ? "1d" : undefined), identity, roots,
+    });
+    const base = plan({});
+    assert.equal(base.target, "ipm");
+    assert.deepEqual(base.oldKeys, ["IPM", "james-brennan"], "today's canon rules: the live name and the candidate name");
+    assert.equal(base.carryInterval, "1d");
+    // a rooted key whose name matches nothing is swept in too
+    const swept = plan({ "Holocene": JB }, REAL_STORED);
+    assert.ok(swept.oldKeys.includes("Holocene"));
+    // ...even when that key is another live tab's own spelling: its root says whose switch it is
+    const otherLive = plan({ Milkshake: JB }, [...REAL_STORED, "Milkshake"]);
+    assert.ok(otherLive.oldKeys.includes("Milkshake"));
+    // but a canon-looking key that IS another live tab's spelling and is rooted elsewhere (or nowhere) is never touched
+    const guarded = planRenameMigration({ resolution, candidates: ["milkshake", "james-brennan"], storedKeys: ["Milkshake", "IPM"], live: jbTabs, intervals: () => undefined, identity: JB, roots: { Milkshake: PJ } });
+    assert.deepEqual(guarded.oldKeys, ["IPM"]);
+    const unrooted = planRenameMigration({ resolution, candidates: ["milkshake", "james-brennan"], storedKeys: ["Milkshake", "IPM"], live: jbTabs, intervals: () => undefined });
+    assert.deepEqual(unrooted.oldKeys, ["IPM"]);
+    // no identity: the root rule is off
+    assert.equal(plan({ Holocene: JB }, REAL_STORED, null).oldKeys.includes("Holocene"), false);
+  }
+
+  console.log("PJAN-201: enable, disable and interval write `root` (the stale-key trap: the key the engine reads is the one stamped)");
+  {
+    flush();
+    rs.cli("HSET", "zcrank:tab:IPM", "enabled", "1");
+    rs.cli("HSET", "zcrank:tab:james-brennan", "enabled", "1", "interval", "1d", "root", JB);
+    rs.cli("RPUSH", "zcrank:log:james-brennan", row("2026-11-01T10:00:00Z", "sent", "an old beat"));
+    const keys = storedTabKeys(store);
+    const roots = storedTabRoots(store, keys);
+    assert.deepEqual(roots, { "james-brennan": JB }, "legacy keys have no root; only the stamped one reads back");
+    const ctx = buildCrankContext(JB_PROJECT, jbTabs, keys, { identity: JB, roots });
+    assert.equal(ctx.resolution.source, "live-cwd");
+    assert.equal(ctx.identity, JB);
+    const done = enableCrank(store, ctx, { now: new Date("2026-11-04T15:00:00Z") });
+    assert.equal(done.tab, "ipm", "everything merges onto the live tab's display name");
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "root"), JB, "enable stamps the root on the target");
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "enabled"), "1");
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "interval"), "1d", "carried from the rooted key");
+    assert.equal(rs.cli("EXISTS", "zcrank:tab:james-brennan"), "0", "the rooted old key was migrated away");
+    assert.equal(rs.cli("EXISTS", "zcrank:tab:IPM"), "0");
+    assert.ok(rs.cli("LRANGE", "zcrank:log:ipm", "0", "-1").includes("an old beat"), "its log moved with it");
+    assert.deepEqual(done.renamed.map((r) => r.from).sort(), ["IPM", "james-brennan"]);
+
+    disableCrank(store, "ipm", new Date("2026-11-04T15:01:00Z"), JB);
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "enabled"), "0");
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "root"), JB, "disable stamps it too");
+
+    rs.cli("HSET", "zcrank:tab:sibling", "enabled", "1", "interval", "6h", "root", JB);
+    const afterKeys = storedTabKeys(store);
+    const scope = { owner: JB, roots: storedTabRoots(store, afterKeys) };
+    setCrankInterval(store, "ipm", afterKeys, "1h", new Date("2026-11-04T15:02:00Z"), { ...scope, root: JB });
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "interval"), "1h");
+    assert.equal(rs.cli("HEXISTS", "zcrank:tab:sibling", "interval"), "0", "a root-matched sibling can no longer out-last the interval just picked");
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "root"), JB);
+
+    // a project with no identity (not a git dir) writes exactly what it did before: no root field
+    flush();
+    const bare = buildCrankContext({ name: "Solo", agents: [] }, [], [], {});
+    enableCrank(store, bare, { now: new Date("2026-11-04T15:03:00Z") });
+    disableCrank(store, "Solo", new Date("2026-11-04T15:04:00Z"));
+    setCrankInterval(store, "Solo", ["Solo"], "1h", new Date("2026-11-04T15:05:00Z"));
+    assert.equal(rs.cli("HEXISTS", "zcrank:tab:Solo", "root"), "0");
+
+    // enable with no live tab still brings the spellings along and stamps them
+    flush();
+    rs.cli("HSET", "zcrank:tab:Foo", "enabled", "0");
+    rs.cli("HSET", "zcrank:tab:foo", "enabled", "0");
+    const dark = buildCrankContext({ name: "Foo", agents: [] }, [], ["Foo", "foo"], { identity: "/x/foo", roots: {} });
+    enableCrank(store, dark, { now: new Date("2026-11-04T15:06:00Z") });
+    assert.equal(rs.cli("HGET", "zcrank:tab:Foo", "root"), "/x/foo");
+    assert.equal(rs.cli("HGET", "zcrank:tab:foo", "root"), "/x/foo");
+    assert.equal(rs.cli("HGET", "zcrank:tab:foo", "enabled"), "1");
+  }
+
+  console.log("PJAN-201: a snapshot reads the union — any OFF wins, the longest interval wins, the newest beat across all the keys' logs");
+  {
+    flush();
+    rs.cli("HSET", "zcrank:tab:IPM", "enabled", "1");
+    rs.cli("HSET", "zcrank:tab:james-brennan", "enabled", "0", "interval", "1d", "root", JB);
+    rs.cli("RPUSH", "zcrank:log:IPM", row("2026-11-04T10:00:00Z", "sent", "ipm beat"));
+    rs.cli("RPUSH", "zcrank:log:james-brennan", row("2026-11-04T12:00:00Z", "sent", "root beat"));
+    const keys = storedTabKeys(store);
+    const roots = storedTabRoots(store, keys);
+    const nowMs = T("2026-11-04T13:00:00Z");
+    const byName = snapshotCrank(store, "IPM", keys, nowMs);
+    assert.deepEqual(byName.keys, ["IPM"]);
+    assert.equal(byName.enabled, true, "by name alone the stale key is invisible (the old behaviour)");
+    const union = snapshotCrank(store, "IPM", keys, nowMs, 5, { owner: JB, roots });
+    assert.deepEqual(union.keys, ["IPM", "james-brennan"]);
+    assert.equal(union.enabled, false, "one OFF key fails the whole tab closed");
+    assert.equal(union.interval, "1d");
+    assert.equal(union.lastRunMs, T("2026-11-04T12:00:00Z"));
+    assert.deepEqual(union.beats.map((beat) => beat.action), ["root beat", "ipm beat"]);
+    // pane overrides are looked up under every key naming the tab: the rows exist for both spellings
+    assert.equal(snapshotCrank(store, "IPM", keys, nowMs, 5, { owner: PJ, roots }).keys.length, 1, "an owner with no rooted key adds nothing");
+  }
+
+  console.log("PJAN-201: the controller follows the tab by root, and every TUI toggle stamps it");
+  {
+    flush();
+    rs.cli("HSET", "zcrank:tab:IPM", "enabled", "1");
+    rs.cli("HSET", "zcrank:tab:james-brennan", "enabled", "1", "root", JB);
+    const controller = createCrankController({
+      slug: "james-brennan", project: JB_PROJECT, store, live: () => jbTabs, identity: JB, engine: () => kit.unknownEngineStatus(Date.now()),
+    });
+    const view = controller.read();
+    assert.equal(view.resolution.source, "live-cwd");
+    assert.deepEqual(view.snapshot.keys, ["IPM", "james-brennan"]);
+    assert.equal(view.engine.known, false);
+    controller.setInterval("6h");
+    assert.equal(rs.cli("HGET", "zcrank:tab:IPM", "interval"), "6h");
+    assert.equal(rs.cli("HGET", "zcrank:tab:IPM", "root"), JB, "an interval set from the TUI stamps the key the engine reads");
+    controller.disable();
+    assert.equal(rs.cli("HGET", "zcrank:tab:IPM", "enabled"), "0");
+    controller.enable();
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "root"), JB);
+    assert.equal(rs.cli("HGET", "zcrank:tab:ipm", "enabled"), "1");
+    // an engine reader that throws is "unknown", never a failed read
+    const sturdy = createCrankController({ slug: "j", project: JB_PROJECT, store, live: () => jbTabs, identity: JB, engine: () => { throw new Error("boom"); } });
+    assert.equal(sturdy.read().engine.known, false);
+  }
+
+  console.log("PJAN-201: the crank list resolves by cwd, shows the live tab, and a rooted key is no orphan");
+  {
+    const tabEnabled = (key) => ({ IPM: "1", "james-brennan": "0" })[key];
+    const engine = parseEngineStatus(readFileSync(join(root, "tests", "data", "pjan-201-usage-audit.jsonl"), "utf8"), { cap: 10_000_000, nowMs: T("2026-11-04T14:45:00Z") });
+    const input = {
+      projects: [{ slug: "james-brennan", name: "james-brennan", repoPath: "/repos/jb", agents: [] }, { slug: "pjangler", name: "pjangler", repoPath: "/repos/pj", agents: [] }],
+      live: jbTabs, storedTabs: REAL_STORED, tabEnabled, tabInterval: (key) => (key === "james-brennan" ? "1d" : undefined), globalInterval: "5m",
+      identityOf: (path) => ({ "/repos/jb": JB, "/repos/pj": PJ })[path], engine,
+    };
+    const withRoot = buildCrankList({ ...input, roots: { "james-brennan": JB } });
+    const jbRow = withRoot.rows.find((r) => r.slug === "james-brennan");
+    assert.equal(jbRow.source, "live-cwd");
+    assert.equal(jbRow.tab, "IPM");
+    assert.equal(jbRow.liveTab, "ipm");
+    assert.equal(jbRow.crank, "OFF", "ON only when every key naming the tab is ON: the rooted key says OFF");
+    assert.deepEqual([jbRow.interval, jbRow.inherited], ["1d", false]);
+    assert.ok(!withRoot.orphans.some((o) => o.tab === "james-brennan" || o.tab === "IPM"), "keys matched by root are consumed, not orphaned");
+    const legacy = buildCrankList({ ...input, roots: {} });
+    assert.equal(legacy.rows.find((r) => r.slug === "james-brennan").crank, "ON", "without a root the stale key is invisible to the tab");
+    assert.ok(legacy.orphans.some((o) => o.tab === "james-brennan"), "...and shows up as an orphan");
+    assert.equal(withRoot.engine, engine);
+    const text = formatCrankList(withRoot).replace(/\u001b\[[0-9;]*m/g, "");
+    assert.match(text, /Engine REFUSING since .*daily token limit reached \(10,000,000\)/, "one engine banner line");
+    assert.equal(text.split("\n").filter((line) => line.includes("Engine")).length, 1);
+    assert.match(text, /james-brennan\s+ipm\s+OFF/, "a live-cwd row shows the live tab");
+    const renamedTabs = jbTabs.map((tab) => (tab.id === 30 ? { ...tab, name: "scratch pad 🟢" } : tab));
+    const renamedText = formatCrankList(buildCrankList({ ...input, live: renamedTabs, roots: { "james-brennan": JB } })).replace(/\u001b\[[0-9;]*m/g, "");
+    assert.match(renamedText, /james-brennan\s+scratch pad \(key james-brennan\)\s+(ON|OFF)/, "...and the key it reuses when that differs");
+    assert.doesNotMatch(formatCrankList({ rows: [], orphans: [] }), /Engine/, "no engine read, no banner");
+  }
+
+  console.log("ink dashboard (PJAN-201): an Engine line, 'blocked' instead of a fake countdown, and 'Last runs' says whose runs they are");
+  {
+    const FIXED = T("2026-11-04T14:45:00Z");
+    const audit = readFileSync(join(root, "tests", "data", "pjan-201-usage-audit.jsonl"), "utf8");
+    const refusing = parseEngineStatus(audit, { cap: 10_000_000, nowMs: FIXED });
+    const hhmm = (iso) => {
+      const d = new Date(iso);
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    };
+    const run = async (engine, drive) => {
+      flush();
+      rs.cli("HSET", "zcrank:tab:Pile of Dumb Things", "enabled", "1");
+      rs.cli("RPUSH", "zcrank:log:Pile of Dumb Things", row("2026-11-04T14:30:00Z", "sent", "touched this tab"));
+      const controller = createCrankController({
+        slug: "tower", project: { name: "Pile of Dumb Things", agents: [] }, store, live: () => [{ name: "Pile of Dumb Things", position: 0 }], engine: () => engine,
+      });
+      const stdin = new FakeStdin();
+      const stdout = new FakeStdout();
+      const finished = runCrankDashboard(controller, { ...ink(stdin, stdout), alternateScreen: false, refreshMs: 60_000 });
+      await waitFor(() => stdout.frame().includes("Next run"), "first frame");
+      await drive(stdout, stdin);
+      stdin.press("q");
+      await finished;
+    };
+    await run(refusing, async (stdout, stdin) => {
+      const f = stdout.frame();
+      assert.match(f, /Engine\s+REFUSING since .*daily token limit reached \(10,000,000\)/);
+      assert.match(f, new RegExp(`Next run\\s+blocked: daily token cap — resumes ≈ ${hhmm("2026-11-04T15:30:00Z")}`), "the countdown is replaced, not shown beside the block");
+      assert.doesNotMatch(f, /Next run\s+in \d/);
+      assert.match(f, /Last runs of this tab \(beats that touched it, not engine ticks\)/);
+      assert.match(f, /sent\s+touched this tab/);
+      // switched OFF there is nothing to wait for: the line says off, the engine line still tells the truth
+      stdin.press("t");
+      await waitFor(() => /Next run\s+off/.test(stdout.frame()), "OFF");
+      assert.match(stdout.frame(), /Engine\s+REFUSING/);
+    });
+    await run(kit.unknownEngineStatus(FIXED), async (stdout) => {
+      const f = stdout.frame();
+      assert.match(f, /Engine\s+engine status unknown/);
+      assert.match(f, /Next run\s+in (\d+m \d\ds|\d+s) \(/, "an unknown engine makes no claim: the countdown stays");
+    });
+    const healthy = parseEngineStatus(audit.split("\n").filter((line) => line && JSON.parse(line).status === "completed").join("\n"), { cap: 10_000_000, nowMs: T("2026-11-03T21:40:00Z") });
+    await run(healthy, async (stdout) => {
+      assert.match(stdout.frame(), /Engine\s+last tick 4m ago \(cranked\)/);
+      assert.match(stdout.frame(), /Next run\s+in /);
+    });
+    await run(parseEngineStatus(audit.split("\n").filter((line) => line && JSON.parse(line).status === "completed").join("\n"), { cap: 10_000_000, nowMs: FIXED }), async (stdout) => {
+      assert.match(stdout.frame(), /Next run\s+blocked: engine not ticking \(last tick 17h/, "an engine that stopped ticking is not 'in 3m' either");
+    });
   }
 
   console.log("intervalOptions: exactly the four, global badged");

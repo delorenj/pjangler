@@ -11,8 +11,8 @@ import "./helpers/hermetic-suite.mjs";
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { hermeticEnv } from "./helpers/hermetic-env.mjs";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -40,7 +40,12 @@ if (built.status !== 0) {
   console.error(`failed to bundle the units kit:\n${built.stderr}`);
   process.exit(1);
 }
-const { createCrankController, isInteractive, loadScreen, TuiUnavailableError, parseLogRow, projectAgentsFor, projectNameFor, redis, renderLogRow } = await import(kitOut);
+const {
+  createCrankController, isInteractive, loadScreen, TuiUnavailableError, parseLogRow, projectAgentsFor, projectNameFor, redis, renderLogRow,
+  // PJAN-201
+  ENGINE_DEFAULT_JOB_ID, engineBlockedLabel, engineSources, engineSummary, liveTabs, livePanes, parseEngineStatus, projectIdentity,
+  readEngineStatus, unknownEngineStatus, withTabOwners,
+} = await import(kitOut);
 
 const rs = await startThrowawayRedis();
 let failed;
@@ -192,6 +197,268 @@ try {
     store.replaceLog("T", []);
     assert.equal(rs.cli("EXISTS", "zcrank:log:T"), "0");
     assert.deepEqual(store.logRows("T"), []);
+  }
+
+  // -------------------------------------------------------------------------
+  // PJAN-201: project identity, tab ownership, engine health
+  // -------------------------------------------------------------------------
+
+  console.log("projectIdentity: a repo, its linked worktree, a subdirectory and a symlink all name the MAIN worktree; a submodule is its own repo");
+  {
+    const base = hermeticScratch("pjan-201-identity");
+    try {
+      const env = hermeticEnv({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CEILING_DIRECTORIES: base });
+      const git = (cwd, ...args) => {
+        const r = spawnSync("git", args, { cwd, encoding: "utf8", env });
+        assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+      };
+      const lib = join(base, "lib");
+      mkdirSync(lib);
+      git(lib, "init", "-q");
+      git(lib, "commit", "-q", "--allow-empty", "-m", "lib");
+      const main = join(base, "main");
+      mkdirSync(main);
+      git(main, "init", "-q");
+      git(main, "commit", "-q", "--allow-empty", "-m", "init");
+      git(main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "sub");
+      git(main, "worktree", "add", "-q", join(main, ".worktrees", "x"), "-b", "x");
+      mkdirSync(join(main, "deep", "er"), { recursive: true });
+      symlinkSync(main, join(base, "link"), "dir");
+      mkdirSync(join(base, "plain"));
+
+      const mainReal = realpathSync(main);
+      assert.equal(projectIdentity(main), mainReal);
+      assert.equal(projectIdentity(join(main, "deep", "er")), mainReal, "a subdirectory");
+      assert.equal(projectIdentity(join(main, ".worktrees", "x")), mainReal, "a linked worktree maps to its main repo");
+      assert.equal(projectIdentity(join(base, "link")), mainReal, "realpath'd through a symlink");
+      // The pinned rule is the first `worktree <path>` line verbatim. For a submodule whose gitdir was
+      // absorbed into the superproject (`submodule add`), that line is the gitdir, not the checkout:
+      // still its own identity, never the superproject's, but the value is .git/modules/<name>.
+      assert.equal(projectIdentity(join(main, "sub")), realpathSync(join(main, ".git", "modules", "sub")), "an absorbed submodule is its own repo, never the superproject");
+      assert.notEqual(projectIdentity(join(main, "sub")), mainReal);
+      // a nested repo with its own .git directory (how the 33GOD components live on this box) is its checkout path
+      const nested = join(main, "nested");
+      mkdirSync(nested);
+      git(nested, "init", "-q");
+      assert.equal(projectIdentity(nested), realpathSync(nested), "a standalone repo nested in another is its own identity");
+      assert.equal(projectIdentity(join(base, "plain")), undefined, "not a git dir");
+      assert.equal(projectIdentity(join(base, "missing")), undefined, "a directory that does not exist");
+      assert.equal(projectIdentity(undefined), undefined);
+      assert.equal(projectIdentity("  "), undefined);
+
+      // the Shell seam: exact command (bounded by timeout 2s), a timeout is no identity, results are memoised per cwd
+      const calls = [];
+      const cache = new Map();
+      const shell = (command, args) => {
+        calls.push([command, ...args]);
+        return args.includes("/slow") ? { stdout: "", status: 124 } : { stdout: `worktree ${main}\nHEAD abc\nbranch refs/heads/main\n\nworktree /elsewhere\n`, status: 0 };
+      };
+      assert.equal(projectIdentity(main, { shell, cache }), mainReal);
+      assert.equal(projectIdentity(main, { shell, cache }), mainReal);
+      assert.equal(projectIdentity("/slow", { shell, cache }), undefined, "timeout (124) => no identity");
+      assert.equal(projectIdentity("/slow", { shell, cache }), undefined);
+      assert.equal(calls.length, 2, "one git call per cwd within a scan");
+      assert.deepEqual(calls[0], ["timeout", "2s", "git", "-C", main, "worktree", "list", "--porcelain"]);
+      assert.equal(projectIdentity(main, { shell: () => ({ stdout: "worktree /nowhere/at/all\n", status: 0 }) }), undefined, "an identity that cannot be realpath'd is none");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  console.log("livePanes / liveTabs: parse the REAL list-panes and list-tabs JSON captured from the Workspace session");
+  const realPanesJson = readFileSync(join(root, "tests", "data", "pjan-201-live-list-panes.json"), "utf8");
+  const realTabsJson = readFileSync(join(root, "tests", "data", "pjan-201-live-list-tabs.json"), "utf8");
+  const seen = [];
+  const zellij = (command, args) => {
+    seen.push([command, ...args]);
+    return { stdout: args.includes("list-panes") ? realPanesJson : realTabsJson, status: 0 };
+  };
+  const realPanes = livePanes({ shell: zellij });
+  const realTabs = liveTabs({ shell: zellij });
+  {
+    assert.deepEqual(seen[0], ["env", "-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME", "timeout", "5s", "zellij", "-s", "Workspace", "action", "list-panes", "--json", "--all"]);
+    assert.equal(realPanes.length, JSON.parse(realPanesJson).length);
+    const jb = realPanes.find((pane) => pane.id === 122);
+    assert.deepEqual(jb, { id: 122, tabId: 30, tabPosition: 1, tabName: "ipm 🟢", isPlugin: false, cwd: "/home/delorenj/code/james-brennan" });
+    assert.equal(realPanes.find((pane) => pane.id === 16).cwd, undefined, "pane_cwd is absent for some panes: unknown, not empty");
+    assert.equal(realPanes.find((pane) => pane.id === 77).isPlugin, true);
+    assert.equal(realTabs.find((tab) => tab.name === "ipm 🟢").id, 30, "list-tabs carries the stable tab_id");
+    // unreadable output is [] — never a throw
+    assert.deepEqual(livePanes({ shell: () => ({ stdout: "not json", status: 0 }) }), []);
+    assert.deepEqual(livePanes({ shell: () => ({ stdout: "", status: 1 }) }), []);
+    assert.deepEqual(livePanes({ shell: () => ({ stdout: "{}", status: 0 }) }), []);
+  }
+
+  console.log("tab ownership: strict plurality of terminal panes' identities; a tie, no cwd, or only plugins means no owner");
+  {
+    // Every cwd in the capture is itself a repo root, so identity == cwd here. This stands in for
+    // git ONLY in this section: the real-git identity rules are the section above.
+    const idOf = (cwd) => cwd;
+    const owned = withTabOwners(realTabs, realPanes, idOf);
+    const ipm = owned.find((tab) => tab.id === 30);
+    // the live reality today: james-brennan's pane and the operator's pjangler pane share the tab
+    assert.equal(ipm.owner, undefined, "1 vs 1 is a tie: no owner");
+    assert.deepEqual(ipm.ownedPanes, { "/home/delorenj/code/james-brennan": 1, "/home/delorenj/code/33GOD/pjangler": 1 });
+    assert.equal(owned.find((tab) => tab.name === "Wingman").owner, undefined, "panes without pane_cwd are ignored: no identified pane, no owner");
+    assert.equal(owned.find((tab) => tab.name === "Wingman").ownedPanes, undefined);
+    assert.equal(owned.find((tab) => tab.name === "Milkshake").owner, "/home/delorenj/code/Milkshake");
+    assert.equal(owned.find((tab) => tab.name === "deckard").owner, "/home/delorenj/code/deckard");
+
+    const without = (id) => realPanes.filter((pane) => pane.id !== id);
+    assert.equal(withTabOwners(realTabs, without(150), idOf).find((tab) => tab.id === 30).owner, "/home/delorenj/code/james-brennan", "drop the second pane: the lone identity owns it");
+    const extra = { ...realPanes.find((pane) => pane.id === 150), id: 9001 };
+    assert.equal(withTabOwners(realTabs, [...realPanes, extra], idOf).find((tab) => tab.id === 30).owner, "/home/delorenj/code/33GOD/pjangler", "2 vs 1 is a strict plurality");
+    const three = [...realPanes, { ...extra, id: 9002 }, { ...extra, id: 9003 }];
+    assert.equal(withTabOwners(realTabs, three, idOf).find((tab) => tab.id === 30).owner, "/home/delorenj/code/33GOD/pjangler");
+    // 2 vs 2 is a tie again
+    const tie = [...realPanes, extra, { ...realPanes.find((pane) => pane.id === 122), id: 9004 }];
+    assert.equal(withTabOwners(realTabs, tie, idOf).find((tab) => tab.id === 30).owner, undefined);
+    // a plugin pane never votes, and panes whose cwd has no identity are ignored (not counted against)
+    const plugin = { ...realPanes.find((pane) => pane.id === 150), id: 9005, isPlugin: true };
+    assert.equal(withTabOwners(realTabs, [...without(150), plugin], idOf).find((tab) => tab.id === 30).owner, "/home/delorenj/code/james-brennan");
+    const noGit = (cwd) => (cwd.endsWith("pjangler") ? undefined : cwd);
+    assert.equal(withTabOwners(realTabs, realPanes, noGit).find((tab) => tab.id === 30).owner, "/home/delorenj/code/james-brennan", "an unidentified pane is ignored");
+    // panes join tabs by tab_id, falling back to position when a tab has no id
+    const byPosition = withTabOwners(realTabs.map(({ id, ...rest }) => rest), realPanes, idOf);
+    assert.equal(byPosition.find((tab) => tab.name === "Milkshake").owner, "/home/delorenj/code/Milkshake");
+    assert.equal(withTabOwners([], realPanes, idOf).length, 0);
+  }
+
+  // The 24h of REAL usage_audit rows for job 777c511a009c (completed beats from 2026-11-03T15:25Z
+  // to 21:35Z, then the engine refusing every tick), trimmed to the fields the reader uses.
+  const AUDIT = readFileSync(join(root, "tests", "data", "pjan-201-usage-audit.jsonl"), "utf8");
+  const NOW = Date.parse("2026-11-04T14:45:00Z");
+  const localHHMM = (iso) => {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+
+  console.log("engine health: the real audit says refused for the daily token cap, with the beats, tokens and resume instant");
+  {
+    const status = parseEngineStatus(AUDIT, { cap: 10_000_000, nowMs: NOW });
+    assert.equal(status.known, true);
+    assert.equal(status.jobId, ENGINE_DEFAULT_JOB_ID);
+    assert.equal(status.outcome, "refused");
+    assert.equal(status.tokenBlocked, true);
+    assert.equal(status.reason, "daily token limit reached (10,000,000)");
+    assert.equal(status.lastTickMs, Date.parse("2026-11-04T14:41:01.408Z"));
+    assert.equal(status.beats24h, 15);
+    assert.equal(status.tokens24h, 10_108_474);
+    assert.equal(status.cap, 10_000_000);
+    // oldest first: the 15:25:25.545Z beat (860,279 tokens) ages out at 15:25:25.545Z next day and the sum is under the cap
+    assert.equal(status.resumeMs, Date.parse("2026-11-04T15:25:25.545Z"));
+    assert.equal(status.refusedSinceMs, Date.parse("2026-11-03T21:41:06.558Z"), "the unbroken run of refusals since the last real beat");
+    // the cap falls back to the number in the refusal itself
+    assert.equal(parseEngineStatus(AUDIT, { nowMs: NOW }).cap, 10_000_000);
+    assert.equal(parseEngineStatus(AUDIT, { nowMs: NOW }).resumeMs, status.resumeMs);
+
+    const label = engineBlockedLabel(status);
+    assert.equal(label, `blocked: daily token cap — resumes ≈ ${localHHMM("2026-11-04T15:30:00Z")}`, "the estimate is shown as the first 5-minute tick at/after the resume instant");
+    const summary = engineSummary(status);
+    assert.equal(summary.tone, "warn");
+    assert.match(summary.text, /^REFUSING since 17h \d\dm ago: daily token limit reached \(10,000,000\) · last tick 3m ago · 15 beats \/ 10\.1M tokens in 24h of 10\.0M · resumes ≈ \d\d:\d\d$/);
+  }
+
+  console.log("engine health: the resume instant walks the window oldest-first until the sum is under the cap");
+  {
+    // a lower cap needs TWO beats to age out: 10,108,474 - 860,279 = 9,248,195 (still over 9M), minus 750,017 = 8,498,178
+    const status = parseEngineStatus(AUDIT, { cap: 9_000_000, nowMs: NOW });
+    assert.equal(status.resumeMs, Date.parse("2026-11-03T15:40:51.468Z") + 24 * 3600_000);
+    // already under the cap in the window (the refusal row is stale): resume is now
+    assert.equal(parseEngineStatus(AUDIT, { cap: 20_000_000, nowMs: NOW }).resumeMs, NOW);
+    // a later `now`: the oldest beat has left the 24h window, so the tokens drop below the cap
+    const later = parseEngineStatus(AUDIT, { cap: 10_000_000, nowMs: Date.parse("2026-11-04T15:26:00Z") });
+    assert.equal(later.beats24h, 14);
+    assert.equal(later.tokens24h, 10_108_474 - 860_279);
+    assert.equal(later.resumeMs, Date.parse("2026-11-04T15:26:00Z"));
+  }
+
+  console.log("engine health: a cranking engine, other refusals, a failed tick, other jobs and garbage lines");
+  {
+    const lines = AUDIT.trim().split("\n");
+    const cranked = lines.filter((line) => JSON.parse(line).status === "completed").join("\n");
+    const ok = parseEngineStatus(cranked, { cap: 10_000_000, nowMs: Date.parse("2026-11-03T21:45:00Z") });
+    assert.equal(ok.outcome, "cranked");
+    assert.equal(ok.tokenBlocked, false);
+    assert.equal(ok.reason, undefined);
+    assert.equal(engineBlockedLabel(ok), undefined, "a healthy engine blocks nothing");
+    assert.equal(engineSummary(ok).tone, "ok");
+    assert.match(engineSummary(ok).text, /^last tick 9m ago \(cranked\) · 15 beats/);
+
+    const busy = JSON.stringify({ ts: "2026-11-04T14:44:00Z", job_id: ENGINE_DEFAULT_JOB_ID, status: "skipped", total_tokens: 0, economics_reason: "daily run limit reached (96)" });
+    const runLimit = parseEngineStatus(`${AUDIT}${busy}\n`, { cap: 10_000_000, nowMs: NOW });
+    assert.equal(runLimit.outcome, "refused");
+    assert.equal(runLimit.tokenBlocked, false);
+    assert.equal(runLimit.resumeMs, undefined, "no resume estimate for a refusal this module does not model");
+    assert.equal(engineBlockedLabel(runLimit), "blocked: daily run limit reached (96)");
+
+    const failed = JSON.stringify({ ts: "2026-11-04T14:44:00Z", job_id: ENGINE_DEFAULT_JOB_ID, status: "failed", total_tokens: 0 });
+    const other = parseEngineStatus(`${AUDIT}${failed}\n`, { cap: 10_000_000, nowMs: NOW });
+    assert.equal(other.outcome, "other");
+    assert.equal(engineBlockedLabel(other), undefined);
+    assert.match(engineSummary(other).text, /last tick 1m ago \(failed\)/);
+
+    const elsewhere = JSON.stringify({ ts: "2026-11-04T14:44:30Z", job_id: "someone-else", status: "completed", total_tokens: 99 });
+    assert.equal(parseEngineStatus(`${AUDIT}${elsewhere}\n`, { cap: 10_000_000, nowMs: NOW }).lastTickMs, Date.parse("2026-11-04T14:41:01.408Z"), "other jobs' rows are not this engine's");
+
+    const messy = `{not json\n\n[1,2]\n${JSON.stringify({ job_id: ENGINE_DEFAULT_JOB_ID, status: "completed" })}\n${AUDIT}garbage tail`;
+    const parsed = parseEngineStatus(messy, { cap: 10_000_000, nowMs: NOW });
+    assert.equal(parsed.known, true, "garbage lines and rows with no ts are skipped, the rest still read");
+    assert.equal(parsed.beats24h, 15);
+    assert.equal(parseEngineStatus("garbage\n{\n", { nowMs: NOW }).known, false);
+    assert.equal(parseEngineStatus("", { nowMs: NOW }).known, false);
+    assert.equal(engineSummary(parseEngineStatus("", { nowMs: NOW })).text, "engine status unknown");
+    assert.equal(engineBlockedLabel(unknownEngineStatus(NOW)), undefined, "no claim when unknown");
+
+    // not ticking at all: the last row is old
+    const stalled = parseEngineStatus(cranked, { cap: 10_000_000, nowMs: Date.parse("2026-11-04T14:45:00Z") });
+    assert.match(engineBlockedLabel(stalled), /^blocked: engine not ticking \(last tick 17h \d\dm ago\)$/);
+    assert.equal(engineSummary(stalled).tone, "warn");
+  }
+
+  console.log("engine health: reading from disk is bounded, honours the env overrides, and never throws");
+  {
+    const dir = hermeticScratch("pjan-201-audit");
+    try {
+      const audit = join(dir, "usage_audit.jsonl");
+      writeFileSync(audit, AUDIT);
+      const jobs = join(dir, "jobs.json");
+      writeFileSync(jobs, JSON.stringify({ jobs: [{ id: "other", economics: { max_daily_tokens: 1 } }, { id: ENGINE_DEFAULT_JOB_ID, economics: { max_daily_tokens: 9_000_000 } }] }));
+      const viaEnv = readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: audit }, sources: { jobsPath: jobs } });
+      assert.equal(viaEnv.known, true);
+      assert.equal(viaEnv.cap, 9_000_000, "max_daily_tokens from jobs.json wins over the number in the refusal text");
+      assert.equal(viaEnv.resumeMs, Date.parse("2026-11-03T15:40:51.468Z") + 24 * 3600_000);
+      assert.deepEqual(engineSources({ PJ_CRANK_USAGE_AUDIT: "/a/b", PJ_CRANK_JOB_ID: "abc" }).auditPath, "/a/b");
+      assert.equal(engineSources({ PJ_CRANK_JOB_ID: "abc" }).jobId, "abc");
+      assert.equal(engineSources({}).jobId, ENGINE_DEFAULT_JOB_ID);
+      assert.match(engineSources({}).auditPath, /\.hermes\/profiles\/33god-pm\/cron\/usage_audit\.jsonl$/);
+      assert.match(engineSources({}).jobsPath, /\.hermes\/profiles\/33god-pm\/cron\/jobs\.json$/);
+      const otherJob = readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: audit, PJ_CRANK_JOB_ID: "nope" }, sources: { jobsPath: jobs } });
+      assert.equal(otherJob.known, false, "a job with no rows is unknown, not 'healthy'");
+
+      // garbage jobs.json: the cap falls back to the refusal text
+      writeFileSync(jobs, "{{{ nope");
+      assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: audit }, sources: { jobsPath: jobs } }).cap, 10_000_000);
+      // a missing audit file, a directory where the file should be, an empty file
+      assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: join(dir, "missing.jsonl") } }).known, false);
+      assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: dir } }).known, false);
+      writeFileSync(join(dir, "empty.jsonl"), "");
+      assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: join(dir, "empty.jsonl") } }).known, false);
+      writeFileSync(join(dir, "garbage.jsonl"), `${String.fromCharCode(0, 1)} garbage\n{"job_id":\n`);
+      assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: join(dir, "garbage.jsonl") } }).known, false);
+
+      // bounded tail: 3MB of other jobs' filler ahead of the real rows. A 64KB tail still finds the
+      // real rows (and drops the partial first line); a tail smaller than the rows sees nothing.
+      const filler = JSON.stringify({ ts: "2026-10-01T00:00:00Z", job_id: "filler", status: "completed", total_tokens: 1, pad: "x".repeat(900) });
+      const big = join(dir, "big.jsonl");
+      writeFileSync(big, `${(filler + "\n").repeat(3500)}${AUDIT}`);
+      const tailed = readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: big }, tailBytes: 64 * 1024, sources: { jobsPath: join(dir, "none.json") } });
+      assert.equal(tailed.known, true);
+      assert.equal(tailed.lastTickMs, Date.parse("2026-11-04T14:41:01.408Z"));
+      assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: big }, tailBytes: 1 }).known, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 } catch (error) {
   failed = error;

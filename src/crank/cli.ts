@@ -18,15 +18,22 @@ import {
   disableCrank,
   enableCrank,
   formatCrankList,
-  liveTabs,
+  keyScopeOf,
+  liveTabsWithOwners,
   parseInterval,
   projectAgentsFor,
+  projectIdentity,
   projectNameFor,
+  readEngineStatus,
   redis,
   renderLogRow,
   snapshotCrank,
   storedTabKeys,
+  storedTabRoots,
+  type CrankContext,
   type CrankInterval,
+  type CrankStore,
+  type IdentityCache,
   type ProjectNames,
 } from "./index";
 
@@ -36,7 +43,7 @@ const loadCrankScreens = () => loadScreen<CrankScreens>("./crank/tui.js", import
 const xmark = `${red(glyph.fail)}`;
 
 /** Everything needed to resolve a project onto a tab, or null off-project. */
-function currentProjectNames(): { slug: string; names: ProjectNames } {
+function currentProjectNames(): { slug: string; names: ProjectNames; identity?: string } {
   const handle = resolveProject(process.cwd());
   let record: { name?: string; agents?: Record<string, { role?: string }> } | undefined;
   try {
@@ -51,14 +58,22 @@ function currentProjectNames(): { slug: string; names: ProjectNames } {
       name: projectNameFor(handle, record?.name),
       agents: projectAgentsFor(handle, record?.agents),
     },
+    // PJAN-201: where the project lives (its main worktree), independent of any tab name.
+    identity: projectIdentity(handle.root),
   };
+}
+
+/** Resolve a project onto a tab against live tabs (with pane owners) and stored keys + roots. */
+function contextFor(project: { names: ProjectNames; identity?: string }, store: CrankStore): CrankContext {
+  const keys = storedTabKeys(store);
+  return buildCrankContext(project.names, liveTabsWithOwners(), keys, { identity: project.identity, roots: storedTabRoots(store, keys) });
 }
 
 /** Resolve the current project's zcrank tab against live tabs + stored keys. */
 function resolveCurrentTab(): { slug: string; tab: string; storedAsIs: boolean } {
   const project = currentProjectNames();
   const store = redis();
-  const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
+  const ctx = contextFor(project, store);
   return { slug: project.slug, tab: ctx.resolution.tab, storedAsIs: ctx.resolution.storedAsIs };
 }
 
@@ -109,12 +124,16 @@ export function registerCrankCli(program: Command): void {
             role: String((value as { role?: string } | undefined)?.role ?? ""),
           })),
         }));
-        const live = liveTabs();
+        const live = liveTabsWithOwners();
         const storedTabs = storedTabKeys(store);
+        const identityCache: IdentityCache = new Map();
         const report = buildCrankList({
           projects,
           live,
           storedTabs,
+          identityOf: (repoPath) => projectIdentity(repoPath, { cache: identityCache }),
+          roots: storedTabRoots(store, storedTabs),
+          engine: readEngineStatus(),
           tabEnabled: (tab) => store.tabEnabled(tab),
           tabInterval: (tab) => store.tabInterval(tab),
           globalInterval: store.globalInterval(),
@@ -190,11 +209,11 @@ async function runEnable(options: { interval?: string }): Promise<void> {
     // Project first: "not inside a project" must not hide behind a dead Redis.
     const project = currentProjectNames();
     const store = liveStore();
-    const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
+    const ctx = contextFor(project, store);
     if (!chosen && isInteractive()) {
       // Ask. The picker opens on what the tab runs at now; confirming that while it is only
       // inherited changes nothing, so the tab keeps following the global default.
-      const snap = snapshotCrank(store, ctx.resolution.tab, ctx.storedKeys, Date.now());
+      const snap = snapshotCrank(store, ctx.resolution.tab, ctx.storedKeys, Date.now(), 5, keyScopeOf(ctx));
       const screens = await loadCrankScreens();
       const picked = await screens.pickInterval({ slug: project.slug, tab: ctx.resolution.liveTab ?? ctx.resolution.tab, effective: snap.interval, inherited: snap.inherited, global: snap.global });
       if (!picked) {
@@ -208,7 +227,8 @@ async function runEnable(options: { interval?: string }): Promise<void> {
     for (const { from, to } of result.renamed) {
       console.log(`  ${yellow(glyph.warn)} tab renamed ${dim(glyph.dot)} ${from} ${dim(glyph.pointer)} ${bold(to)} ${dim("(old key merged into the new one and removed)")}`);
     }
-    const live = snapshotCrank(store, result.tab, storedTabKeys(store), Date.now());
+    const afterKeys = storedTabKeys(store);
+    const live = snapshotCrank(store, result.tab, afterKeys, Date.now(), 5, { owner: ctx.resolution.tabOwner, roots: storedTabRoots(store, afterKeys) });
     console.log(`  ${dim("interval")} ${live.interval}${live.inherited ? dim(` (inherits global ${live.global})`) : ""}`);
     if (ctx.resolution.storedAsIs) {
       console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);
@@ -222,8 +242,8 @@ function runDisable(): void {
   try {
     const project = currentProjectNames();
     const store = liveStore();
-    const ctx = buildCrankContext(project.names, liveTabs(), storedTabKeys(store));
-    disableCrank(store, ctx.resolution.tab);
+    const ctx = contextFor(project, store);
+    disableCrank(store, ctx.resolution.tab, new Date(), ctx.identity);
     console.log(`  ${dim("OFF")}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(ctx.resolution.tab)}`);
     if (ctx.resolution.storedAsIs) {
       console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);
@@ -241,7 +261,7 @@ async function runTui(): Promise<void> {
     }
     const project = currentProjectNames();
     const store = liveStore();
-    const controller = createCrankController({ slug: project.slug, project: project.names, store });
+    const controller = createCrankController({ slug: project.slug, project: project.names, store, identity: project.identity });
     const screens = await loadCrankScreens();
     await screens.runCrankDashboard(controller);
   } catch (error) {

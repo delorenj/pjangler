@@ -8,6 +8,9 @@ import { KeyHints, RadioGroup, runInk, useInterval, useNow, themeColor, marks, t
 import type { CrankController, CrankView } from "./controller";
 import {
   ZCRANK_INTERVALS,
+  clockTime,
+  engineBlockedLabel,
+  engineSummary,
   formatAge,
   formatDuration,
   nextRunMs,
@@ -80,11 +83,6 @@ export interface DashboardProps {
   onQuit: () => void;
 }
 
-function clockTime(ms: number): string {
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
 function describeMatch(view: CrankView): string {
   const { resolution } = view;
   if (resolution.storedAsIs) return `no live tab or key matches "${view.name}" - stored under the project name`;
@@ -139,6 +137,11 @@ export function CrankDashboard({ controller, refreshMs = 5000, clock = Date.now,
 
   const onInterval = (interval: CrankInterval) => act(`interval ${interval}`, () => controller.setInterval(interval));
   const next = nextRunMs({ enabled: isOn, interval: snap.interval, lastRun: snap.lastRunMs, nowMs: now });
+  // The countdown assumes the engine ticks. When the engine is refusing (token cap) or has stopped
+  // ticking, "in 3m" is a lie: say it is blocked instead (PJAN-201).
+  const engineLine = engineSummary(view.engine);
+  const blocked = isOn ? engineBlockedLabel(view.engine) : undefined;
+  const engineColor = engineLine.tone === "ok" ? themeColor("ok") : engineLine.tone === "warn" ? themeColor("warn") : themeColor("muted");
   const logRows = Math.max(3, (rows || 24) - 19);
   const tail = snap.log.slice(-logRows);
 
@@ -166,11 +169,16 @@ export function CrankDashboard({ controller, refreshMs = 5000, clock = Date.now,
       <Text color={themeColor("muted")}>{"           "}{inheritanceNote(snap.inherited, snap.global)}</Text>
       <Text>
         <Text color={themeColor("muted")}>{"Next run   "}</Text>
-        {next === undefined ? <Text color={themeColor("muted")}>off</Text> : <Text>{next <= now ? "now" : `in ${formatDuration((next - now) / 1000)}`} <Text color={themeColor("muted")}>({clockTime(next)})</Text></Text>}
+        {next === undefined ? <Text color={themeColor("muted")}>off</Text> : blocked ? <Text color={themeColor("warn")}>{blocked}</Text> : <Text>{next <= now ? "now" : `in ${formatDuration((next - now) / 1000)}`} <Text color={themeColor("muted")}>({clockTime(next)})</Text></Text>}
+      </Text>
+
+      <Text wrap="truncate-end">
+        <Text color={themeColor("muted")}>{"Engine     "}</Text>
+        <Text color={engineColor}>{engineLine.text}</Text>
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Text color={themeColor("muted")}>Last runs</Text>
+        <Text color={themeColor("muted")}>Last runs of this tab (beats that touched it, not engine ticks)</Text>
         {snap.beats.length === 0 ? <Text color={themeColor("muted")}>  none yet</Text> : snap.beats.map((beat, i) => (
           <Text key={`${beat.ts}-${i}`} wrap="truncate-end">  {formatAge(beat.tsMs, now).padEnd(10)} {beat.state.padEnd(9)} <Text color={themeColor("muted")}>{beat.action}</Text></Text>
         ))}

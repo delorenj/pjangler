@@ -44,10 +44,12 @@ const {
   crankTimestamp,
   formatCrankList,
   liveTabs,
+  parseEngineStatus,
   redis,
   renderLogRow,
   resolveTabForProject,
   tabDisplay,
+  unknownEngineStatus,
 } = await import(kitOut);
 
 // ---------------------------------------------------------------------------
@@ -465,6 +467,47 @@ console.log("cli: pj crank --help lists enable/disable/list/log");
   const outside = spawnSync(process.execPath, [join(workspace, "pj.mjs"), "crank", "enable"], { encoding: "utf8", cwd: workspace, env: hermeticEnv() });
   assert.notEqual(outside.status, 0, "crank enable outside a project must fail");
   assert.match(outside.stderr, /not inside a pjangler project/);
+}
+
+// ---------------------------------------------------------------------------
+// PJAN-201: the cwd rung sits above the name ladder; the old callers are unchanged
+// ---------------------------------------------------------------------------
+
+console.log("resolve (PJAN-201): live-cwd is the FIRST rung - where a project's panes stand beats what the tabs are called");
+{
+  const project = { name: "Navi", agents: [] };
+  const ID = "/repos/navi";
+  // a tab literally named Navi exists, but navi's repo is open in the tab "scratch"
+  const live = [{ name: "Navi", position: 0 }, { name: "scratch", position: 1, owner: ID, ownedPanes: { [ID]: 2 } }];
+  assert.equal(resolveTabForProject(project, live, []).source, "live-exact", "no scope: today's ladder, unchanged");
+  assert.equal(resolveTabForProject(project, live, [], { identity: ID, roots: {} }).source, "live-cwd");
+  assert.equal(resolveTabForProject(project, live, [], { identity: ID, roots: {} }).liveTab, "scratch");
+  // a project with no identity, or a tab nobody owns: the ladder is exactly what it was
+  assert.equal(resolveTabForProject(project, live, [], {}).source, "live-exact");
+  assert.equal(resolveTabForProject(project, [{ name: "Navi", position: 0 }], [], { identity: ID, roots: {} }).source, "live-exact");
+  // a name-resolved live tab reports the owner it has (the engine reads that tab's root keys too)
+  const named = resolveTabForProject(project, [{ name: "Navi", position: 0, owner: "/repos/other" }], [], { identity: ID, roots: {} });
+  assert.equal(named.source, "live-exact");
+  assert.equal(named.tabOwner, "/repos/other");
+  // and none at all when the tab has no owner
+  assert.equal("tabOwner" in resolveTabForProject(project, [{ name: "Navi", position: 0 }], []), false);
+}
+
+console.log("list (PJAN-201): the engine banner is one line, absent when not read, and 'unknown' makes no claim");
+{
+  const base = { rows: [], orphans: [] };
+  const plain = (text) => text.replace(/\u001b\[[0-9;]*m/g, "");
+  assert.doesNotMatch(plain(formatCrankList(base)), /Engine/);
+  const unknown = plain(formatCrankList({ ...base, engine: unknownEngineStatus(Date.now()) }));
+  assert.match(unknown, /^ {2}engine status unknown$/m);
+  assert.equal(unknown.split("\n").filter((line) => /engine/i.test(line)).length, 1);
+  const now = Date.parse("2026-11-04T14:45:00Z");
+  const audit = [
+    { ts: "2026-11-04T10:00:00.000Z", job_id: "777c511a009c", status: "completed", total_tokens: 600000 },
+    { ts: "2026-11-04T14:41:01.408Z", job_id: "777c511a009c", status: "skipped", total_tokens: 0, economics_reason: "daily token limit reached (500,000)" },
+  ].map((row) => JSON.stringify(row)).join("\n");
+  const refused = plain(formatCrankList({ ...base, engine: parseEngineStatus(audit, { nowMs: now }) }));
+  assert.match(refused, /Engine REFUSING: daily token limit reached \(500,000\) · last tick 3m ago · 1 beat \/ 600k tokens in 24h of 500k · resumes ≈ \d\d:\d\d/);
 }
 
 rmSync(workspace, { recursive: true, force: true });
