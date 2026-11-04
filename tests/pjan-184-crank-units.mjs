@@ -640,7 +640,7 @@ try {
       assert.equal(skewed.tokens24h, clean.tokens24h);
       assert.equal(parseEngineStatus(future, { nowMs: NOW }).known, false, "only a future row = no claim");
       const fifo = join(dir, "audit.fifo");
-      if (spawnSync("mkfifo", [fifo]).status === 0) {
+      if (spawnSync("mkfifo", [fifo], { env: hermeticEnv() }).status === 0) {
         assert.equal(readEngineStatus({ nowMs: NOW, env: { PJ_CRANK_USAGE_AUDIT: fifo } }).known, false);
       }
     } finally {
