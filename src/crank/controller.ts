@@ -16,6 +16,7 @@ import {
   snapshotCrank,
   storedTabKeys,
   storedTabRoots,
+  claimedRoots,
   type CrankContext,
   type CrankInterval,
   type CrankSnapshot,
@@ -58,22 +59,32 @@ const LIVE_TABS_TTL_MS = 30_000;
 export const LIVE_OWNERS_TTL_MS = 300_000;
 
 export function ownerMemoReader(
-  deps: { clock?: () => number; read?: () => LiveTab[]; tabs?: () => LiveTab[] } = {},
+  deps: { clock?: () => number; read?: (claimed: string[]) => LiveTab[]; tabs?: () => LiveTab[]; claimed?: () => string[] } = {},
 ): () => LiveTab[] {
   const clock = deps.clock ?? Date.now;
-  const read = deps.read ?? (() => liveTabsWithOwners());
+  const read = deps.read ?? ((claimed: string[]) => liveTabsWithOwners({ claimed }));
   const listTabs = deps.tabs ?? (() => liveTabs());
-  let memo: { at: number; byId: Map<number, Pick<LiveTab, "owner" | "ownedPanes">> } | undefined;
+  const readClaimed = (): string[] => {
+    try {
+      return deps.claimed?.() ?? [];
+    } catch {
+      return [];
+    }
+  };
+  let memo: { at: number; claimed: string; byId: Map<number, Pick<LiveTab, "owner" | "ownedPanes">> } | undefined;
   return () => {
     const now = clock();
     const tabs = listTabs();
-    if (memo && now - memo.at <= LIVE_OWNERS_TTL_MS && tabs.length && tabs.every((tab) => tab.id !== undefined && memo?.byId.has(tab.id))) {
+    // Claimed roots break owner ties, so a toggle that writes the first root re-reads owners at once.
+    const claimed = readClaimed();
+    const claimedSig = claimed.join("\n");
+    if (memo && memo.claimed === claimedSig && now - memo.at <= LIVE_OWNERS_TTL_MS && tabs.length && tabs.every((tab) => tab.id !== undefined && memo?.byId.has(tab.id))) {
       const known = memo.byId;
       return tabs.map((tab) => ({ ...tab, ...known.get(tab.id as number) }));
     }
-    const full = read();
+    const full = read(claimed);
     memo = full.length && full.every((tab) => tab.id !== undefined)
-      ? { at: now, byId: new Map(full.map((tab) => [tab.id as number, { owner: tab.owner, ownedPanes: tab.ownedPanes }])) }
+      ? { at: now, claimed: claimedSig, byId: new Map(full.map((tab) => [tab.id as number, { owner: tab.owner, ownedPanes: tab.ownedPanes }])) }
       : undefined;
     return full;
   };
@@ -92,7 +103,7 @@ export function createCrankController(deps: {
   clock?: () => number;
 }): CrankController {
   const clock = deps.clock ?? Date.now;
-  const readLive = deps.live ?? ownerMemoReader({ clock });
+  const readLive = deps.live ?? ownerMemoReader({ clock, claimed: () => claimedRoots(deps.store) });
   const readEngine = (nowMs: number): EngineStatus => {
     try {
       return (deps.engine ?? ((now) => readEngineStatus({ nowMs: now })))(nowMs);

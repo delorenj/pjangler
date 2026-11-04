@@ -66,7 +66,8 @@ function currentProjectNames(): { slug: string; names: ProjectNames; identity?: 
 /** Resolve a project onto a tab against live tabs (with pane owners) and stored keys + roots. */
 function contextFor(project: { names: ProjectNames; identity?: string }, store: CrankStore): CrankContext {
   const keys = storedTabKeys(store);
-  return buildCrankContext(project.names, liveTabsWithOwners(), keys, { identity: project.identity, roots: storedTabRoots(store, keys) });
+  const roots = storedTabRoots(store, keys);
+  return buildCrankContext(project.names, liveTabsWithOwners({ claimed: Object.values(roots) }), keys, { identity: project.identity, roots });
 }
 
 /** Resolve the current project's zcrank tab against live tabs + stored keys. */
@@ -124,8 +125,8 @@ export function registerCrankCli(program: Command): void {
             role: String((value as { role?: string } | undefined)?.role ?? ""),
           })),
         }));
-        const live = liveTabsWithOwners();
         const storedTabs = storedTabKeys(store);
+        const live = liveTabsWithOwners({ claimed: Object.values(storedTabRoots(store, storedTabs)) });
         const identityCache: IdentityCache = new Map();
         const report = buildCrankList({
           projects,

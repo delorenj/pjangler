@@ -512,7 +512,13 @@ export function projectIdentity(dir: string | undefined, deps: { shell?: Shell; 
  * (non-plugin) panes that have an identity. Panes without a cwd or identity are ignored; a
  * tie, or no identified pane, means no owner. Panes join tabs by tab_id (else tab position).
  */
-export function withTabOwners(tabs: LiveTab[], panes: LivePane[], identify: (cwd: string) => string | undefined): LiveTab[] {
+export function withTabOwners(
+  tabs: LiveTab[],
+  panes: LivePane[],
+  identify: (cwd: string) => string | undefined,
+  claimed: Iterable<string> = [],
+): LiveTab[] {
+  const claimedSet = new Set(claimed);
   return tabs.map((tab) => {
     const counts = new Map<string, number>();
     for (const pane of panes) {
@@ -523,8 +529,12 @@ export function withTabOwners(tabs: LiveTab[], panes: LivePane[], identify: (cwd
       if (identity) counts.set(identity, (counts.get(identity) ?? 0) + 1);
     }
     const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    const [top, runnerUp] = ranked;
-    const owner = top && (!runnerUp || top[1] > runnerUp[1]) ? top[0] : undefined;
+    // A tie at the top goes to the single tied identity some zcrank:tab key already claims as its
+    // root (an operator pane from another repo must not orphan the project's switch); zero or
+    // several claimed => no owner. Keep in sync with zcrank_identity.tab_owner.
+    const tied = ranked.filter(([, n]) => n === ranked[0]?.[1]).map(([identity]) => identity);
+    const claimedTied = tied.filter((identity) => claimedSet.has(identity));
+    const owner = tied.length === 1 ? tied[0] : claimedTied.length === 1 ? claimedTied[0] : undefined;
     const enriched: LiveTab = { ...tab };
     if (owner) enriched.owner = owner;
     if (ranked.length) enriched.ownedPanes = Object.fromEntries(ranked);
@@ -642,13 +652,20 @@ export function resolvePaneCwds(
  * Live tabs with their pane-derived owners, read from zellij. Never throws: no panes => no owners.
  * Pane cwds zellij withholds come from the engine's shared memory, then one retry (`retries`).
  */
-export function liveTabsWithOwners(deps: { shell?: Shell; retries?: number; nowMs?: number; cachePath?: string } = {}): LiveTab[] {
+export function liveTabsWithOwners(
+  deps: { shell?: Shell; retries?: number; nowMs?: number; cachePath?: string; claimed?: Iterable<string> } = {},
+): LiveTab[] {
   const tabs = liveTabs(deps);
   if (!tabs.length) return tabs;
   const cache: IdentityCache = new Map();
   const budget: IdentityBudget = { totalMs: IDENTITY_BUDGET_MS };
   const panes = resolvePaneCwds(() => livePanes(deps), { retries: deps.retries ?? 1, nowMs: deps.nowMs, cachePath: deps.cachePath });
-  return withTabOwners(tabs, panes, (cwd) => projectIdentity(cwd, { shell: deps.shell, cache, budget }));
+  return withTabOwners(tabs, panes, (cwd) => projectIdentity(cwd, { shell: deps.shell, cache, budget }), deps.claimed ?? []);
+}
+
+/** Every `root` stored on a zcrank:tab key: the claimed identities that break a tab-owner tie. */
+export function claimedRoots(store: CrankStore, keys: string[] = storedTabKeys(store)): string[] {
+  return [...new Set(Object.values(storedTabRoots(store, keys)))].sort();
 }
 
 const IDENTITY_BUDGET_MS = 20_000;

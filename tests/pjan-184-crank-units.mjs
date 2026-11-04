@@ -324,6 +324,16 @@ try {
     const byPosition = withTabOwners(realTabs.map(({ id, ...rest }) => rest), realPanes, idOf);
     assert.equal(byPosition.find((tab) => tab.name === "Milkshake").owner, "/home/delorenj/code/Milkshake");
     assert.equal(withTabOwners([], realPanes, idOf).length, 0);
+
+    // A tie goes to the single tied identity already claimed as a key's root (the reported ipm case:
+    // the operator's own pjangler pane must not orphan james-brennan's switch). Same rule as zcrank_identity.
+    const JB = "/home/delorenj/code/james-brennan";
+    const PJ = "/home/delorenj/code/33GOD/pjangler";
+    const ipmOwner = (panes, claimed) => withTabOwners(realTabs, panes, idOf, claimed).find((tab) => tab.id === 30).owner;
+    assert.equal(ipmOwner(realPanes, [JB]), JB, "1-1 tie, only james-brennan claimed: james-brennan owns ipm");
+    assert.equal(ipmOwner(realPanes, [JB, PJ]), undefined, "both tied identities claimed: no owner");
+    assert.equal(ipmOwner(realPanes, ["/home/delorenj/code/deckard"]), undefined, "a claim outside the tie breaks nothing");
+    assert.equal(ipmOwner(three, [JB]), PJ, "a claim never overrides a real plurality");
   }
 
   console.log("pane cwd memory: zellij withholds pane_cwd, the shared pane-cwds.json fills it (same id + tab, 6h), one retry covers the rest");
