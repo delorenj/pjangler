@@ -775,8 +775,10 @@ print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due":
   const zellijShell = (command, args) => ({ stdout: args.includes("list-panes") ? realPanesJson : realTabsJson, status: 0 });
   const realTabs = liveTabs({ shell: zellijShell });
   const realPanes = livePanes({ shell: zellijShell });
-  const JB = "/home/delorenj/code/james-brennan";
-  const PJ = "/home/delorenj/code/33GOD/pjangler";
+  // The real captured cwds (pane 122 = james-brennan, 150 = the operator's pjangler pane, 126 = client-portal).
+  const cwdOf = (id) => realPanes.find((pane) => pane.id === id).cwd;
+  const JB = cwdOf(122);
+  const PJ = cwdOf(150);
   const idOf = (cwd) => cwd;
   // The stored keys as they were in the live Redis when the operator hit the bug.
   const REAL_STORED = ["green-in-between", "IPM", "gruvato", "tower-of-lost-things", "HeyMa", "Holocene", "james-brennan-techj", "james-brennan", "Intelliforia", "Pile of Dumb Things", "client-portal"];
@@ -800,7 +802,7 @@ print(json.dumps({"interval": s["interval"], "inherited": s["inherited"], "due":
     const pj = resolveTabForProject({ name: "pjangler", agents: [] }, jbTabs, REAL_STORED, { identity: PJ, roots: {} });
     assert.notEqual(pj.source, "live-cwd");
     // other projects resolve through their own panes: client-portal's only pane sits in the tab 'client-portal-custom'
-    const portal = resolveTabForProject({ name: "client-portal", agents: [] }, tiedTabs, REAL_STORED, { identity: "/home/delorenj/code/client-portal", roots: {} });
+    const portal = resolveTabForProject({ name: "client-portal", agents: [] }, tiedTabs, REAL_STORED, { identity: cwdOf(126), roots: {} });
     assert.equal(portal.source, "live-cwd");
     assert.equal(portal.liveTab, "client-portal-custom");
     assert.equal(portal.tab, "client-portal-custom", "no key names that tab and none is rooted: the live name");
