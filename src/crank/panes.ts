@@ -27,7 +27,7 @@
 import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { ZCRANK_SESSION, defaultShell, projectIdentity, type IdentityBudget, type IdentityCache, type Shell } from "./index";
+import { ZCRANK_SESSION, defaultShell, parseListPanes, projectIdentity, runListPanes, type IdentityBudget, type IdentityCache, type Shell } from "./index";
 
 // ---------------------------------------------------------------------------
 // Agent classification (port of deckard-mux/src/proc.rs `AGENT_CLIS` / `agent_cli`)
@@ -40,6 +40,10 @@ import { ZCRANK_SESSION, defaultShell, projectIdentity, type IdentityBudget, typ
  */
 export const AGENT_CLIS: readonly string[] = [
   "claude", "codex", "copilot", "opencode", "aider", "hermes", "agy", "kimi-code", "kimi-co", "gemini", "openclaw",
+  // Not in Deckard's list: the Kimi binary on the operator box is `~/.kimi-code/bin/kimi` (argv[0]
+  // basename `kimi`), which neither `kimi-code` nor `kimi-co` prefixes. Listed after them so the
+  // reported name stays `kimi-code` where Deckard would say it.
+  "kimi",
 ];
 
 /**
@@ -59,14 +63,23 @@ export function agentCli(exe: string, argv: string): string | null {
   // also matches things that merely MENTION an agent: Claude Code's Bash-tool shells
   // (`zsh -c source ~/.claude/shell-snapshots/... tail -f ~/.claude/tmp/claude-1000/...`) and the
   // `tail -f` they run. Counted as agents they would pad every busy pane with bogus nested
-  // "agents" and make an agent-less pane look like an agent pane. Two narrowings, both of which
-  // keep every Deckard test case classified the same:
+  // "agents" and make an agent-less pane look like an agent pane. Two narrowings:
   //  - a shell running `-c <command>` is a command runner, never the agent itself;
-  //  - `/<cli>` must END a path component (end, space, `/` or `.`), so `/claude-1000` is not
-  //    `/claude`, while `.../claude/versions/2.1.235` and `.../gemini.js` still are.
+  //  - `/<cli>` must END a path component: end, space, `/` or `.`, or one of the component
+  //    suffixes agents really install under (PATH_SUFFIXES). `/claude-1000` (a tmp dir) is not
+  //    `/claude`, while `.../claude/versions/2.1.235`, `.../gemini.js`, `.../claude-code/cli.js`,
+  //    `.../gemini-cli/dist/index.js` and `.../hermes-agent/.venv/bin/python` are.
   if (SHELLS.has(exe) && argv.split(" ")[1] === "-c") return null;
-  return AGENT_CLIS.find((pat) => new RegExp(`/${pat.replace(/[-]/g, "\\-")}(?=$|[ /.])`).test(argv)) ?? null;
+  return PATH_PASS.find(([, re]) => re.test(argv))?.[0] ?? null;
 }
+
+/** Install-directory suffixes an agent's path component may carry: claude-code, gemini-cli, hermes-agent. */
+const PATH_SUFFIXES = ["code", "cli", "agent"] as const;
+const PATH_PASS: ReadonlyArray<readonly [string, RegExp]> = AGENT_CLIS.map((pat) => {
+  const name = pat.replace(/[-]/g, "\\-");
+  const end = "(?=$|[ /.])";
+  return [pat, new RegExp(`/${name}(?:${end}|-(?:${PATH_SUFFIXES.join("|")})${end})`)] as const;
+});
 
 const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh"]);
 
@@ -76,6 +89,8 @@ const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "fish"
 
 /** The fields of /proc/<pid>/stat this module needs. */
 export interface ProcStat {
+  /** The kernel's name for the executable (stat field 2). It changes on `exec`, which is what makes it a cache key. */
+  comm: string;
   /** R, S, D, Z, T ... Z is the one that matters: a zombie is not a working agent. */
   state: string;
   ppid: number;
@@ -94,7 +109,9 @@ export interface ProcStat {
  */
 export function parseProcStat(text: string): ProcStat | null {
   const close = text.lastIndexOf(")");
-  if (close < 0) return null;
+  const open = text.indexOf("(");
+  if (close < 0 || open < 0 || open > close) return null;
+  const comm = text.slice(open + 1, close);
   const fields = text.slice(close + 1).trim().split(/\s+/);
   const state = fields[0];
   const ppid = Number(fields[1]);
@@ -102,7 +119,7 @@ export function parseProcStat(text: string): ProcStat | null {
   const tpgid = Number(fields[5]);
   const startTime = fields[19];
   if (!state || !startTime || ![ppid, pgrp, tpgid].every(Number.isInteger)) return null;
-  return { state, ppid, pgrp, tpgid, startTime };
+  return { comm, state, ppid, pgrp, tpgid, startTime };
 }
 
 /** Stat of a live pid, or null when it vanished or cannot be read. */
@@ -130,15 +147,14 @@ export interface TaggedProc {
   stat: ProcStat;
 }
 
-interface Immutable {
+/** The pane tag a process carries. */
+interface PaneTag {
   paneId: number;
   session: string | null;
-  argv: string;
-  exe: string;
 }
 
-/** Read the immutable pair once. null = this process is not in a zellij pane. */
-function inspect(pid: number): Immutable | null {
+/** Read the zellij tag from /proc/<pid>/environ. null = this process is not in a zellij pane. */
+function readTag(pid: number): PaneTag | null {
   let raw: Buffer;
   try {
     // environ is NUL-separated and NOT valid UTF-8 in general: read bytes, so one odd variable
@@ -166,43 +182,59 @@ function inspect(pid: number): Immutable | null {
     start = end + 1;
   }
   // The tag is the whole point. No pane id, nothing to attribute.
-  if (paneId === null) return null;
-  let parts: string[] = [];
+  return paneId === null ? null : { paneId, session };
+}
+
+/** argv (space-joined) and argv[0]'s basename from /proc/<pid>/cmdline; empty when unreadable. */
+function readArgv(pid: number): { argv: string; exe: string } {
   try {
-    parts = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+    const parts = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+    return { argv: parts.join(" "), exe: parts[0] ? basename(parts[0]) : "" };
   } catch {
-    // vanished between environ and cmdline: classified as not-an-agent below (empty argv)
+    return { argv: "", exe: "" };
   }
-  return { paneId, session, argv: parts.join(" "), exe: parts[0] ? basename(parts[0]) : "" };
 }
 
 /**
- * A /proc walker with a per-pid cache of the immutable facts (`environ`, `cmdline`), INCLUDING the
- * negative result: on a typical box ~96% of pids are not in a zellij pane, so remembering that is
- * the whole optimisation (Deckard measured 21.7 ms cold vs 5.7 ms warm over 2400 pids; without
- * negative caching it is ~70 ms/s of pure syscall churn). `cwd` is the one thing re-read each
- * pass, because a pane can `cd`.
+ * A /proc walker with a per-pid cache, INCLUDING the negative result: on a typical box ~96% of
+ * pids are not in a zellij pane, so remembering that is the optimisation (Deckard measured 21.7 ms
+ * cold vs 5.7 ms warm over 2400 pids; without negative caching it is ~70 ms/s of pure syscall
+ * churn). `cwd` is re-read every pass, because a pane can `cd`.
  *
- * Divergence from Deckard: its cache is keyed by pid alone. A pid that is reused between passes
- * would then keep the OLD process's pane tag. This walker reads `stat` for every pid anyway (it
- * needs state, pgrp and tpgid), so it keys the cache on (pid, starttime) at no extra syscall, and
- * pid reuse refreshes the entry. A one-shot `pj crank panes` never reuses the cache; a later
- * long-lived consumer (the zcrank engine slice) does, which is why the class exists.
+ * What is cached is the pane TAG (from `environ`), nothing else, and it is keyed on the process's
+ * identity, not just its pid. Two divergences from Deckard, which keys on pid alone and calls
+ * argv "immutable for the process's life":
+ *  - argv is NOT immutable. `exec` replaces it (`sh -c 'sleep 1; exec claude'` is a shell, then an
+ *    agent, with the same pid), so a tagged process's cmdline is re-read every pass (it is ~100
+ *    processes, not ~2400). The one exception is a zombie, whose cmdline is gone: its last known
+ *    argv is kept, which is why the explicit zombie check in the inventory matters.
+ *  - the cache key is (pid, starttime, comm). starttime changes when a pid is REUSED by a new
+ *    process, so a dead agent's pane tag can never be attributed to its successor; comm changes on
+ *    `exec`, which also replaces the environment, so the tag is re-read then. All three come from
+ *    the `stat` this walker reads for every pid anyway (it needs state, pgrp and tpgid).
  *
  * Reuse one scanner across passes. A fresh one every tick pays the cold cost every tick.
  */
 export class ProcScanner {
-  private readonly known = new Map<number, { startTime: string; imm: Immutable | null }>();
+  private readonly known = new Map<number, { startTime: string; comm: string; tag: PaneTag | null; argv: string; exe: string }>();
 
   /** How many pids the cache holds (negatives included). For the cost report and tests. */
   cached(): number {
     return this.known.size;
   }
 
+  /** Is `pid` in the cache, as a tagged process or a remembered negative? */
+  has(pid: number): boolean {
+    return this.known.has(pid);
+  }
+
   /**
    * Every process in `session` that carries a pane tag. A process whose ZELLIJ_SESSION_NAME names
-   * a DIFFERENT session is dropped; one with no session name at all is kept, because zellij has
-   * not always set it and dropping it would lose real agents (Deckard's rule).
+   * a DIFFERENT session is dropped; one with no session name at all is kept (`session: null`),
+   * because zellij has not always set it and dropping it would lose real agents (Deckard's rule).
+   * That also keeps processes some other tool started under `env -u ZELLIJ_SESSION_NAME` (e.g.
+   * a `zellij action list-panes` run from a pane): they carry a pane id and no session, and are
+   * not agents, so classification discards them.
    */
   scan(session: string): TaggedProc[] {
     let names: string[];
@@ -221,20 +253,23 @@ export class ProcScanner {
       const stat = readProcStat(pid);
       if (!stat) continue;
       let slot = this.known.get(pid);
-      if (!slot || slot.startTime !== stat.startTime) {
-        slot = { startTime: stat.startTime, imm: inspect(pid) };
+      if (!slot || slot.startTime !== stat.startTime || slot.comm !== stat.comm) {
+        const tag = readTag(pid);
+        slot = { startTime: stat.startTime, comm: stat.comm, tag, ...(tag ? readArgv(pid) : { argv: "", exe: "" }) };
         this.known.set(pid, slot);
+      } else if (slot.tag && stat.state !== "Z") {
+        Object.assign(slot, readArgv(pid));
       }
-      const imm = slot.imm;
-      if (!imm) continue;
-      if (imm.session !== null && imm.session !== session) continue;
+      const tag = slot.tag;
+      if (!tag) continue;
+      if (tag.session !== null && tag.session !== session) continue;
       let cwd: string | null = null;
       try {
         cwd = readlinkSync(`/proc/${pid}/cwd`);
       } catch {
         // unreadable: unknown, not empty
       }
-      out.push({ pid, paneId: imm.paneId, session: imm.session, argv: imm.argv, exe: imm.exe, cwd, stat });
+      out.push({ pid, paneId: tag.paneId, session: tag.session, argv: slot.argv, exe: slot.exe, cwd, stat });
     }
     // Forget the dead, so the cache tracks the box rather than growing for the life of the scanner.
     for (const pid of this.known.keys()) if (!alive.has(pid)) this.known.delete(pid);
@@ -317,39 +352,27 @@ export interface PaneTableEntry {
 
 /**
  * Terminal pane id -> tab id / tab name / title from `zellij action list-panes --json --all` for
- * `session`. Plugin panes are skipped: their ids live in a different namespace from
- * ZELLIJ_PANE_ID, so a plugin 5 must never be taken for terminal 5. `ok` is false when zellij
- * could not be read, so the CLI can say so instead of printing tab-less rows silently.
+ * `session`, through the same command line and the same parser as `livePanes` in ./index. Plugin
+ * panes are skipped: their ids live in a different namespace from ZELLIJ_PANE_ID, so a plugin 5
+ * must never be taken for terminal 5.
  *
- * `env -u ZELLIJ -u ZELLIJ_SESSION_NAME` is required (zellij refuses to act on itself from inside
- * a pane) and `timeout 8s` bounds a wedged daemon (list-panes takes ~4s); both as in ./index.
+ * `ok` is false, with `error` saying why, when zellij could not be read: a missing binary, a
+ * failing command (a session that does not exist), output that is not a pane list, OR an empty
+ * list. A live session always has at least one pane (its tab bar), so `[]` means not-a-session or
+ * an unreadable answer, never "a session with nothing in it".
  */
-export function readPaneTable(session: string, shell: Shell = defaultShell): { ok: boolean; panes: Map<number, PaneTableEntry> } {
+export function readPaneTable(session: string, shell: Shell = defaultShell): { ok: boolean; error: string | null; panes: Map<number, PaneTableEntry> } {
   const panes = new Map<number, PaneTableEntry>();
-  const result = shell("env", ["-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME", "timeout", "8s", "zellij", "-s", session, "action", "list-panes", "--json", "--all"]);
-  if (result.status !== 0 || !result.stdout.trim()) return { ok: false, panes };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    return { ok: false, panes };
+  const result = runListPanes(session, shell);
+  if (result.status !== 0) return { ok: false, error: `zellij list-panes failed for session "${session}" (exit ${result.status}): no such session, or zellij is not installed`, panes };
+  const listed = parseListPanes(result.stdout);
+  if (!listed) return { ok: false, error: `zellij list-panes for session "${session}" printed no pane list`, panes };
+  if (!listed.length) return { ok: false, error: `zellij list-panes for session "${session}" listed no panes at all: not a live session`, panes };
+  for (const pane of listed) {
+    if (pane.isPlugin || !Number.isInteger(pane.id)) continue;
+    panes.set(pane.id, { tabId: pane.tabId ?? null, tabPosition: pane.tabPosition ?? null, tabName: pane.tabName, title: pane.title });
   }
-  if (!Array.isArray(parsed)) return { ok: false, panes };
-  const int = (value: unknown): number | null => (value !== undefined && value !== null && Number.isInteger(Number(value)) ? Number(value) : null);
-  for (const entry of parsed) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const e = entry as Record<string, unknown>;
-    if (e.is_plugin === true) continue;
-    const id = int(e.id);
-    if (id === null) continue;
-    panes.set(id, {
-      tabId: int(e.tab_id),
-      tabPosition: int(e.tab_position),
-      tabName: typeof e.tab_name === "string" ? e.tab_name : null,
-      title: typeof e.title === "string" ? e.title : null,
-    });
-  }
-  return { ok: true, panes };
+  return { ok: true, error: null, panes };
 }
 
 // ---------------------------------------------------------------------------
@@ -385,18 +408,30 @@ export interface AgentPane {
   nested: NestedAgent[];
 }
 
+/** Where the session name came from: the caller, $ZELLIJ_SESSION_NAME (we are inside zellij), or the crank's default. */
+export type SessionSource = "option" | "ZELLIJ_SESSION_NAME" | "default";
+
+/**
+ * The inventory, as an envelope so a consumer can tell "unknown" from "none":
+ * `zellijReadable: false` means pj could not learn which panes exist (`panes` is then EMPTY and
+ * means nothing), while `zellijReadable: true` with `panes: []` is a real "no agent panes".
+ */
 export interface PaneInventory {
   session: string;
-  /** False when zellij's pane table could not be read (rows then carry no tab). */
+  sessionSource: SessionSource;
+  /** False when zellij's pane table could not be read; see `error`. `panes` is then empty. */
   zellijReadable: boolean;
-  panes: AgentPane[];
+  /** Why zellij was unreadable; null when it was readable. */
+  error: string | null;
   /**
    * Pane ids that carry a live agent process tagged with this session but that zellij does not
-   * list: not live panes. Measured on the operator box: Claude's background daemon and the
-   * sessions it hosts keep the ZELLIJ_* environment of whichever pane first started the daemon,
-   * long after that pane closed. Never in `panes`; reported so the discrepancy is visible.
+   * list: closed panes, or panes opened/closed between the /proc scan and the zellij read.
+   * Measured on the operator box: Claude's background daemon and the sessions it hosts keep the
+   * ZELLIJ_* environment of whichever pane first started the daemon, long after that pane closed.
+   * Never in `panes`; reported so the discrepancy is visible.
    */
   unmappedPaneIds: number[];
+  panes: AgentPane[];
 }
 
 export interface DiscoverOptions {
@@ -450,17 +485,30 @@ function chooseCandidate(candidates: Candidate[]): Candidate {
 
 /** The inventory: one record per live agent pane of `session`, plus agent-less panes with `all`. */
 export function inventoryPanes(options: DiscoverOptions = {}): PaneInventory {
-  const session = options.session?.trim() || process.env.ZELLIJ_SESSION_NAME?.trim() || ZCRANK_SESSION;
+  const fromOption = options.session?.trim();
+  const fromEnv = process.env.ZELLIJ_SESSION_NAME?.trim();
+  const session = fromOption || fromEnv || ZCRANK_SESSION;
+  const sessionSource: SessionSource = fromOption ? "option" : fromEnv ? "ZELLIJ_SESSION_NAME" : "default";
   const shell = options.shell ?? defaultShell;
   const sessionsDir = options.sessionsDir ?? claudeSessionsDir();
-  const table = readPaneTable(session, shell);
   const scanner = options.scanner ?? new ProcScanner();
   const identityCache: IdentityCache = options.identityCache ?? new Map();
   const budget: IdentityBudget = { totalMs: IDENTITY_BUDGET_MS };
 
+  // /proc FIRST, then zellij's pane table (which takes ~4 s). The other order leaves a window in
+  // which a pane opened after the table was read shows up in /proc and is mislabelled unmapped;
+  // this way a pane that is in the scan but not the table was closed in the window, or is a ghost.
+  const procs = scanner.scan(session);
+  const table = readPaneTable(session, shell);
+  if (!table.ok) {
+    // pj cannot say which panes exist, so it says nothing about them: an empty list here means
+    // "unknown", and `zellijReadable: false` is what tells a consumer so.
+    return { session, sessionSource, zellijReadable: false, error: table.error, unmappedPaneIds: [], panes: [] };
+  }
+
   // Live (non-zombie) agent processes, grouped by pane. A zombie is not a working agent.
   const byPane = new Map<number, Candidate[]>();
-  for (const proc of scanner.scan(session)) {
+  for (const proc of procs) {
     if (proc.stat.state === "Z") continue;
     const agent = agentCli(proc.exe, proc.argv);
     if (!agent) continue;
@@ -475,8 +523,7 @@ export function inventoryPanes(options: DiscoverOptions = {}): PaneInventory {
   const unmappedPaneIds: number[] = [];
   for (const [paneId, candidates] of byPane) {
     // A pane zellij does not list is not a live pane, whatever its processes' environ still says.
-    // Only enforceable when zellij could be read; otherwise the /proc evidence stands alone.
-    if (table.ok && !table.panes.has(paneId)) {
+    if (!table.panes.has(paneId)) {
       unmappedPaneIds.push(paneId);
       continue;
     }
@@ -527,7 +574,7 @@ export function inventoryPanes(options: DiscoverOptions = {}): PaneInventory {
   }
 
   rows.sort((a, b) => a.position - b.position || a.row.paneId - b.row.paneId);
-  return { session, zellijReadable: table.ok, panes: rows.map((r) => r.row), unmappedPaneIds: unmappedPaneIds.sort((a, b) => a - b) };
+  return { session, sessionSource, zellijReadable: true, error: null, unmappedPaneIds: unmappedPaneIds.sort((a, b) => a - b), panes: rows.map((r) => r.row) };
 }
 
 /** One record per live agent pane in the session (see {@link inventoryPanes}). */
@@ -546,18 +593,57 @@ function tilde(path: string | null): string {
   return path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
-/** A fixed-column table: TAB, PANE, AGENT, PROJECT, STATUS, SESSION (+ nested agents). */
+/**
+ * Terminal display width of `text` in columns: wide (CJK) and emoji code points take 2, combining
+ * marks, variation selectors, ZWJ and zero-width characters take 0. Counting code points instead
+ * misaligns every tab named `ipm 🟢`. A small local function rather than the `string-width`
+ * package: that one sits in node_modules only transitively (Ink brings its own, a different
+ * major), and pjangler does not declare it.
+ */
+export function displayWidth(text: string): number {
+  let width = 0;
+  let joined = false; // the previous code point was a ZWJ: this one fuses into the same emoji
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) as number;
+    if (joined && /^\p{Extended_Pictographic}$/u.test(ch)) {
+      joined = false;
+      continue;
+    }
+    joined = cp === 0x200d;
+    if (/^[\p{Mn}\p{Me}\p{Cf}]$/u.test(ch) || cp === 0x200b || (cp >= 0xfe00 && cp <= 0xfe0f)) continue; // zero width
+    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) continue; // control
+    const wide =
+      /^\p{Emoji_Presentation}$/u.test(ch) || // 🟢 🔴 and friends
+      (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+      (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) || // CJK, kana, Yi
+      (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+      (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility
+      (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK compatibility forms
+      (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x20000 && cp <= 0x3fffd);
+    width += wide ? 2 : 1;
+  }
+  return width;
+}
+
+/**
+ * A fixed-column table: TAB, PANE, PID, AGENT, PROJECT, STATUS, SESSION, NESTED. PID is the
+ * process that speaks for the pane; NESTED lists the other agent processes as `agent:pid`.
+ */
 export function formatPaneTable(inventory: PaneInventory): string {
-  const header = ["TAB", "PANE", "AGENT", "PROJECT", "STATUS", "SESSION"];
+  const header = ["TAB", "PANE", "PID", "AGENT", "PROJECT", "STATUS", "SESSION", "NESTED"];
   const rows = inventory.panes.map((p) => [
     p.tabName ?? "-",
     String(p.paneId),
-    p.agent ? (p.nested.length ? `${p.agent} (+${p.nested.length} nested)` : p.agent) : "(no agent)",
+    p.pid === null ? "-" : String(p.pid),
+    p.agent ?? "(no agent)",
     tilde(p.project ?? p.cwd),
     p.agent ? p.status : "-",
     p.sessionId ?? (p.agent ? `- (${p.sessionReason})` : "-"),
+    p.nested.length ? p.nested.map((n) => `${n.agent}:${n.pid}`).join(",") : "-",
   ]);
-  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => [...(r[i] ?? "")].length)));
-  const line = (cells: string[]) => cells.map((c, i) => c + " ".repeat(Math.max(0, (widths[i] ?? 0) - [...c].length))).join("  ").trimEnd();
+  const widths = header.map((h, i) => Math.max(displayWidth(h), ...rows.map((r) => displayWidth(r[i] ?? ""))));
+  const line = (cells: string[]) => cells.map((c, i) => c + " ".repeat(Math.max(0, (widths[i] ?? 0) - displayWidth(c)))).join("  ").trimEnd();
   return [line(header), ...rows.map(line)].join("\n");
 }

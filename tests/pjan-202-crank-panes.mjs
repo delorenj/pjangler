@@ -25,7 +25,7 @@ const root = resolve(import.meta.dirname, "..");
 const scratch = hermeticScratch("pjan-202");
 symlinkSync(join(root, "node_modules"), join(scratch, "node_modules"), "dir");
 
-writeFileSync(join(scratch, "entry.ts"), `export * from ${JSON.stringify(join(root, "src/crank/panes.ts"))};\nexport { defaultShell } from ${JSON.stringify(join(root, "src/crank/index.ts"))};\n`);
+writeFileSync(join(scratch, "entry.ts"), `export * from ${JSON.stringify(join(root, "src/crank/panes.ts"))};\nexport { defaultShell, livePanes, parseListPanes } from ${JSON.stringify(join(root, "src/crank/index.ts"))};\n`);
 const kit = join(scratch, "kit.mjs");
 const built = spawnSync(
   join(root, "node_modules", ".bin", "esbuild"),
@@ -36,7 +36,10 @@ if (built.status !== 0) {
   console.error(`failed to bundle the panes kit:\n${built.stderr}`);
   process.exit(1);
 }
-const { AGENT_CLIS, ProcScanner, agentCli, claudeSessionsDir, defaultShell, discoverAgentPanes, formatPaneTable, inventoryPanes, parseProcStat, readClaudeSession, readProcStat } = await import(kit);
+const {
+  AGENT_CLIS, ProcScanner, agentCli, claudeSessionsDir, defaultShell, discoverAgentPanes, displayWidth, formatPaneTable, inventoryPanes, livePanes,
+  parseListPanes, parseProcStat, readClaudeSession, readPaneTable, readProcStat,
+} = await import(kit);
 
 const which = (name) => spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8", env: hermeticEnv() }).stdout.trim();
 const SLEEP = which("sleep");
@@ -70,6 +73,7 @@ const link = (name, target = process.execPath) => {
 const claude = link("claude");
 const opencode = link("opencode");
 const codexNode = link("codex");
+const kimi = link("kimi");
 const versioned = join(bin, "claude-home", "claude", "versions", "2.1.235");
 symlinkSync(process.execPath, versioned);
 const oddComm = link("a ) b 1 2 3");
@@ -80,7 +84,8 @@ const pids = new Set();
 const children = [];
 /** A real process in pane `pane` of `session`, argv[0] = `exe`. */
 function agentIn(pane, exe, args = IDLE, { session = SESSION, cwd = repo, tag = true } = {}) {
-  const env = hermeticEnv(tag ? { ZELLIJ_SESSION_NAME: session, ZELLIJ_PANE_ID: String(pane) } : {});
+  // session: null = a pane tag with NO session name (what `env -u ZELLIJ_SESSION_NAME ...` leaves behind)
+  const env = hermeticEnv(tag ? { ZELLIJ_PANE_ID: String(pane), ...(session === null ? {} : { ZELLIJ_SESSION_NAME: session }) } : {});
   const child = spawn(exe, args, { cwd, env, stdio: "ignore" });
   children.push(child);
   pids.add(child.pid);
@@ -123,7 +128,7 @@ try {
     assert.equal(agentCli("python3", "python3 /home/me/.local/bin/openclaw"), "openclaw");
     // MCP servers are tools, not sessions
     assert.equal(agentCli("node", "node /home/me/code/gemini-mcp/dist/index.js mcp-server"), null);
-    assert.equal(agentCli("node", "node /home/delorenj/.local/bin/codex mcp-server"), null);
+    assert.equal(agentCli("node", "node /home/x/.local/bin/codex mcp-server"), null);
     assert.equal(agentCli("codex", "codex mcp serve"), null);
     assert.ok(AGENT_CLIS.includes("kimi-code") && AGENT_CLIS.includes("opencode"));
   }
@@ -135,6 +140,29 @@ try {
     assert.equal(agentCli("tail", "tail -n +1 -f /h/.claude/tmp/claude-1000/-h-code-x/a6dbbf71.output"), null, "/claude-1000 is not /claude");
     // ...while a shebang script that IS the agent (argv[1] is the script, not -c) still counts
     assert.equal(agentCli("bash", "/bin/bash /h/.local/bin/claude --resume"), "claude");
+  }
+
+  console.log("agentCli: path pass keeps the real install layouts Deckard classifies (npm claude-code, hermes-agent venv, gemini-cli)");
+  {
+    // positives: each of these is an agent in Deckard (`argv.contains("/<cli>")`) and must stay one
+    assert.equal(agentCli("node", "node /h/.local/share/mise/installs/node/24/lib/node_modules/@anthropic-ai/claude-code/cli.js --resume"), "claude", "npm-installed Claude Code");
+    assert.equal(agentCli("node", "node /h/.nvm/versions/node/v22/bin/claude"), "claude", "bin shim, end of argv");
+    assert.equal(agentCli("python", "/h/.hermes/hermes-agent/.venv/bin/python -m hermes_cli.main chat"), "hermes", "hermes-agent venv");
+    assert.equal(agentCli("node", "node /h/.local/share/mise/installs/node/24/lib/node_modules/@google/gemini-cli/dist/index.js"), "gemini", "gemini-cli dist/index.js");
+    // negatives: a path component that merely STARTS with an agent name
+    assert.equal(agentCli("tail", "tail -f /h/.claude/tmp/claude-1000/-h-code-x/out"), null, "/claude-1000 is a tmp dir");
+    assert.equal(agentCli("tail", "tail -f /h/code/claude-notes/todo.txt"), null, "/claude-notes");
+    assert.equal(agentCli("node", "node /h/code/geminiscope/index.js"), null, "/geminiscope");
+    assert.equal(agentCli("zsh", "/usr/bin/zsh -c source /h/.claude/shell-snapshots/s.sh && cd /h/.hermes/hermes-agent && ls"), null, "a -c shell stays a command runner");
+    assert.equal(agentCli("python", "/h/.hermes/hermes-agent/.venv/bin/python -m x mcp-server"), null, "an MCP server stays a tool");
+  }
+
+  console.log("agentCli: Kimi is an agent (the box's binary is ~/.kimi-code/bin/kimi)");
+  {
+    assert.equal(agentCli("kimi", "/h/.kimi-code/bin/kimi --yolo"), "kimi");
+    assert.equal(agentCli("kimi-code", "kimi-code"), "kimi-code", "Deckard's own names keep their name");
+    assert.equal(agentCli("python", "python /h/.local/share/uv/tools/kimi-cli/bin/kimi-cli"), "kimi", "uv-tool kimi-cli");
+    assert.equal(agentCli("node", "node /h/x/kimi-server/dist/index.js mcp-server"), null);
   }
 
   console.log("parseProcStat: fields come from after the LAST `)` of a real process with a nasty comm");
@@ -263,23 +291,101 @@ try {
     assert.equal(rows.some((x) => x.paneId === 5), false, "plugin pane 5 (tab-bar) shares no namespace with terminal 5");
   }
 
-  console.log("zellij unreadable: /proc stands alone, rows carry no tab, and the inventory says so");
+  console.log("zellij unreadable: the inventory says UNKNOWN (empty panes, zellijReadable false, an error), never a /proc-only guess");
   {
-    const dead = () => ({ stdout: "", status: 1 });
-    const inv = inventoryPanes({ session: SESSION, shell: (c, a) => (a.includes("list-panes") ? dead() : defaultShell(c, a)), sessionsDir });
-    assert.equal(inv.zellijReadable, false);
-    const r = inv.panes.find((x) => x.paneId === 999);
-    assert.ok(r, "without a pane table nothing can be called unmapped");
-    assert.equal(r.tabId, null);
-    assert.equal(r.tabName, null);
-    assert.deepEqual(inv.unmappedPaneIds, []);
+    const through = (reply) => (c, a) => (a.includes("list-panes") ? reply : defaultShell(c, a));
+    const failing = inventoryPanes({ session: SESSION, shell: through({ stdout: "", status: 1 }), sessionsDir });
+    assert.equal(failing.zellijReadable, false);
+    assert.match(failing.error, /list-panes failed for session .* \(exit 1\)/);
+    assert.deepEqual(failing.panes, [], "the live agents are NOT listed as if zellij had confirmed them");
+    assert.deepEqual(failing.unmappedPaneIds, []);
+    assert.equal(failing.session, SESSION);
+    // an empty pane list is not "a session with no panes": a live session always has its tab bar
+    const empty = inventoryPanes({ session: SESSION, shell: through({ stdout: "[]", status: 0 }), sessionsDir });
+    assert.equal(empty.zellijReadable, false, "[] means not-a-session");
+    assert.match(empty.error, /no panes at all/);
+    const garbage = inventoryPanes({ session: SESSION, shell: through({ stdout: "not json", status: 0 }), sessionsDir });
+    assert.equal(garbage.zellijReadable, false);
+    assert.match(garbage.error, /no pane list/);
+    // and a readable session with no agent panes in it is a real "none"
+    const none = inventoryPanes({ session: `${SESSION}-nobody`, shell: zellijShell, sessionsDir });
+    assert.equal(none.zellijReadable, true);
+    assert.equal(none.error, null);
+    assert.deepEqual(none.panes, []);
+  }
+
+  console.log("session provenance: the inventory says which session was used and where the name came from");
+  {
+    assert.equal(inventoryPanes({ session: SESSION, shell: zellijShell, sessionsDir }).sessionSource, "option");
+    // the suite's own env has no ZELLIJ_SESSION_NAME (hermetic), so without an option this is the default
+    const inv = inventoryPanes({ shell: zellijShell, sessionsDir });
+    assert.deepEqual([inv.session, inv.sessionSource], ["Workspace", "default"]);
+    process.env.ZELLIJ_SESSION_NAME = `${SESSION}-env`;
+    try {
+      const fromEnv = inventoryPanes({ shell: zellijShell, sessionsDir });
+      assert.deepEqual([fromEnv.session, fromEnv.sessionSource], [`${SESSION}-env`, "ZELLIJ_SESSION_NAME"]);
+    } finally {
+      delete process.env.ZELLIJ_SESSION_NAME;
+    }
+  }
+
+  console.log("one parser: readPaneTable and livePanes read the same command and the same output the same way");
+  {
+    const seen = [];
+    const spy = (c, a) => {
+      seen.push([c, ...a]);
+      return { stdout: livePanesJson, status: 0 };
+    };
+    const live = livePanes({ shell: spy, session: "S1" });
+    const table = readPaneTable("S1", spy);
+    assert.deepEqual(seen[0], seen[1], "the same command line, byte for byte");
+    assert.ok(seen[0].join(" ").endsWith("zellij -s S1 action list-panes --json --all"), "read-only: list-panes, for the asked session");
+    const terminals = live.filter((pane) => !pane.isPlugin);
+    assert.deepEqual([...table.panes.keys()].sort((a, b) => a - b), terminals.map((pane) => pane.id).sort((a, b) => a - b));
+    for (const pane of terminals) assert.deepEqual([table.panes.get(pane.id).tabId, table.panes.get(pane.id).tabName], [pane.tabId ?? null, pane.tabName]);
+    assert.equal(parseListPanes("[]").length, 0, "an empty list parses; judging it is the caller's job");
+    assert.equal(parseListPanes(""), null);
+    assert.ok(parseListPanes(livePanesJson).every((pane) => pane.title !== undefined), "the shared parser carries the title the table needs");
+    assert.ok(live.every((pane) => !("title" in pane)), "livePanes keeps its existing shape");
+  }
+
+  console.log("a pane opened while zellij is being read is not mislabelled unmapped: /proc is scanned first");
+  {
+    let raced;
+    const racing = (c, a) => {
+      if (a.includes("list-panes") && !raced) raced = agentIn(78, claude); // appears DURING the ~4 s zellij read
+      return zellijShell(c, a);
+    };
+    const inv = inventoryPanes({ session: SESSION, shell: racing, sessionsDir });
+    assert.ok(raced, "premise: the process was started inside the zellij read");
+    assert.equal(inv.panes.some((x) => x.pid === raced.pid), false, "the scan had already finished, so it is simply not in this pass");
+    assert.deepEqual(inv.unmappedPaneIds, [999], "and it is not reported as an unmapped pane either");
+    assert.ok(rowFor(discover(), 78), "the next pass sees it");
+    stop(raced);
+  }
+
+  console.log("a process with a pane tag but NO session name is kept (Deckard's rule): its pane is an agent pane");
+  {
+    const bare = agentIn(151, claude, IDLE, { session: null });
+    const row = rowFor(discover(), 151);
+    assert.ok(row, "a sessionless tagged agent is attributed to its pane");
+    assert.equal(row.pid, bare.pid);
+    assert.equal(row.tabName, capturePane(151).tab_name);
+    assert.deepEqual(new ProcScanner().scan(SESSION).filter((p) => p.pid === bare.pid).map((p) => p.session), [null]);
+    stop(bare);
   }
 
   console.log("a zombie is not a working agent; an exited one is gone");
   {
     const victim = agentIn(21, claude);
     const gone = agentIn(21, opencode);
-    assert.ok(rowFor(discover(), 21), "premise: alive, it is an agent pane");
+    // A WARM scanner: it caches the pane tag while the process is alive. A zombie's stat still reads
+    // (same pid, starttime, comm), its tag stays cached, and its cmdline is gone, so only the
+    // explicit zombie check keeps it from being counted. A cold scanner cannot tell that rule apart,
+    // because it cannot read a zombie's environ at all.
+    const warm = new ProcScanner();
+    assert.ok(rowFor(discover({ scanner: warm }), 21), "premise: alive, it is an agent pane");
+    assert.ok(warm.has(victim.pid));
     victim.kill("SIGKILL");
     gone.kill("SIGKILL");
     // Node reaps through SIGCHLD on the event loop; with no await between the kill and the scan,
@@ -290,6 +396,7 @@ try {
       state = readProcStat(victim.pid)?.state;
     } while (state !== "Z" && Date.now() < deadline);
     assert.equal(state, "Z", "premise: the killed child is an unreaped zombie");
+    assert.equal(rowFor(discover({ scanner: warm }), 21), undefined, "a cached zombie does not make a pane an agent pane");
     assert.equal(rowFor(discover(), 21), undefined, "a zombie does not make a pane an agent pane");
     await sleepMs(200); // let node reap it: now it is gone entirely
     assert.equal(readProcStat(victim.pid), null);
@@ -373,86 +480,224 @@ try {
     assert.match(claudeSessionsDir({}), /\.claude\/sessions$/);
   }
 
-  console.log("ProcScanner: the negative-result cache is populated, and a new process joins on the next pass");
+  console.log("ProcScanner: negatives are cached, a new process joins on the next pass, a dead pid is forgotten");
   {
     const scanner = new ProcScanner();
     assert.equal(scanner.cached(), 0);
     assert.ok(scanner.scan(SESSION).length > 0, "the scan sees this suite's own tagged children");
+    assert.ok(scanner.has(process.pid), "an UNTAGGED process (this one) is remembered as a negative");
     const afterFirst = scanner.cached();
     assert.ok(afterFirst > 10, `the cache holds every pid it inspected, negatives included (${afterFirst})`);
     const late = agentIn(8, claude);
-    const rows = scanner.scan(SESSION);
-    assert.ok(rows.some((p) => p.pid === late.pid), "a process started after the first pass is seen");
-    assert.ok(scanner.cached() >= afterFirst - 50, "the cache did not empty itself between passes");
+    assert.equal(scanner.has(late.pid), false, "premise: not seen yet");
+    assert.ok(scanner.scan(SESSION).some((p) => p.pid === late.pid), "a process started after the first pass is seen");
+    assert.ok(scanner.has(late.pid) && scanner.has(process.pid) && scanner.has(real.pid), "tagged and negative entries both survive the second pass");
     stop(late);
-    assert.deepEqual(new ProcScanner().scan("a-session-name-that-cannot-exist-8f3a2b"), [], "an unused session is empty, not an error");
+    await sleepMs(300);
+    scanner.scan(SESSION);
+    assert.equal(scanner.has(late.pid), false, "an exited pid is dropped, so the cache tracks the box");
+    // The contract for a session nobody uses: no row NAMES it. Rows with session null are allowed:
+    // other tools start under `env -u ZELLIJ_SESSION_NAME` (e.g. `zellij action list-panes` from a
+    // pane), carry a pane id and no session, and Deckard keeps those on purpose.
+    const nobody = "a-session-name-that-cannot-exist-8f3a2b";
+    const rows = new ProcScanner().scan(nobody);
+    assert.ok(rows.every((p) => p.session === null), `no row names ${nobody}; only session-less tagged processes may appear`);
   }
 
-  console.log("formatPaneTable: one aligned row per pane, nested counted, missing session explained");
+  console.log("ProcScanner: a cached process that EXECs into an agent is re-read (comm changes), same pid, same scanner");
   {
-    const text = formatPaneTable(inventoryPanes({ session: SESSION, shell: zellijShell, sessionsDir, all: true }));
+    const warm = new ProcScanner();
+    const morph = spawn("sh", ["-c", 'sleep 1.5; exec "$0" "$@"', claude, ...IDLE], {
+      cwd: repo, stdio: "ignore", env: hermeticEnv({ ZELLIJ_SESSION_NAME: SESSION, ZELLIJ_PANE_ID: "151" }),
+    });
+    children.push(morph);
+    pids.add(morph.pid);
+    const before = discover({ scanner: warm });
+    assert.equal(rowFor(before, 151), undefined, "premise: a shell waiting on sleep is not an agent");
+    assert.equal(readProcStat(morph.pid).comm, "sh");
+    assert.ok(warm.has(morph.pid), "premise: the scanner cached it while it was a shell");
+    const deadline = Date.now() + 8000;
+    while (readProcStat(morph.pid)?.comm === "sh" && Date.now() < deadline) await sleepMs(50);
+    assert.notEqual(readProcStat(morph.pid).comm, "sh", "premise: it exec'd into the claude link (node renames its main thread, so comm is not \"claude\")");
+    const after = rowFor(discover({ scanner: warm }), 151);
+    assert.ok(after, "the same pid is now an agent pane: nothing about it was frozen at its shell days");
+    assert.equal(after.pid, morph.pid);
+    assert.equal(after.agent, "claude");
+    stop(morph);
+  }
+
+  console.log("ProcScanner: a remembered NEGATIVE is dropped when the process exec's into a tagged environment (comm changes)");
+  {
+    const warm = new ProcScanner();
+    const late = spawn("sh", ["-c", 'sleep 1.5; exec env ZELLIJ_SESSION_NAME="$MORPH_SESSION" ZELLIJ_PANE_ID=151 "$0" "$@"', claude, ...IDLE], {
+      cwd: repo, stdio: "ignore", env: hermeticEnv({ MORPH_SESSION: SESSION }), // starts with NO pane tag
+    });
+    children.push(late);
+    pids.add(late.pid);
+    assert.equal(rowFor(discover({ scanner: warm }), 151), undefined, "premise: untagged, so not in any pane");
+    assert.ok(warm.has(late.pid), "premise: remembered as a negative");
+    const deadline = Date.now() + 8000;
+    while (readProcStat(late.pid)?.comm === "sh" && Date.now() < deadline) await sleepMs(50);
+    assert.notEqual(readProcStat(late.pid).comm, "sh", "premise: it exec'd");
+    const after = rowFor(discover({ scanner: warm }), 151);
+    assert.equal(after?.pid, late.pid, "the exec replaced its environment: the stale negative was not trusted");
+    stop(late);
+  }
+
+  console.log("ProcScanner: argv is re-read every pass even when comm does not change (exec into another argv of the same name)");
+  {
+    // python started through a link named `claude` (comm "claude": an agent), which later exec's
+    // ANOTHER python-as-`claude` as an MCP server (comm still "claude", argv different). The target is
+    // passed in the environment so the first argv does not already say mcp-server.
+    const pyDir = join(scratch, "bin-py");
+    mkdirSync(pyDir);
+    const pyClaude = join(pyDir, "claude");
+    symlinkSync(which("python3"), pyClaude);
+    const warm = new ProcScanner();
+    const morph = spawn(pyClaude, ["-c", "import os, json, time; time.sleep(1.5); a = json.loads(os.environ['MORPH_ARGV']); os.execv(a[0], a)"], {
+      cwd: repo,
+      stdio: "ignore",
+      env: hermeticEnv({ ZELLIJ_SESSION_NAME: SESSION, ZELLIJ_PANE_ID: "151", MORPH_ARGV: JSON.stringify([pyClaude, "-c", "import time; time.sleep(600)", "mcp-server"]) }),
+    });
+    children.push(morph);
+    pids.add(morph.pid);
+    assert.equal(rowFor(discover({ scanner: warm }), 151)?.pid, morph.pid, "premise: first it is a claude agent");
+    const deadline = Date.now() + 8000;
+    while (!readFileSync(`/proc/${morph.pid}/cmdline`, "utf8").includes("mcp-server") && Date.now() < deadline) await sleepMs(50);
+    const st = readProcStat(morph.pid);
+    assert.equal(st.comm, "claude", "premise: comm did not change, so only a cmdline re-read can notice");
+    assert.equal(rowFor(discover({ scanner: warm }), 151), undefined, "now it is an MCP server, a tool: its old argv was not served from the cache");
+    stop(morph);
+  }
+
+  console.log("a real Kimi process is an agent pane with an unresolved session");
+  {
+    const k = agentIn(21, kimi);
+    const row = rowFor(discover(), 21);
+    assert.equal(row?.pid, k.pid);
+    assert.equal(row.agent, "kimi");
+    assert.equal(row.sessionId, null);
+    assert.equal(row.sessionReason, "unresolved");
+    stop(k);
+  }
+
+  console.log("formatPaneTable: PID and nested pids shown, columns aligned under emoji tab names, missing session explained");
+  {
+    const hermes = agentIn(21, claude); // pane 21 lives in the tab "herm 🔴es"; 122 and 150 in "ipm 🟢"
+    const inv = inventoryPanes({ session: SESSION, shell: zellijShell, sessionsDir, all: true });
+    const text = formatPaneTable(inv);
     const lines = text.split("\n");
-    assert.match(lines[0], /^TAB\s+PANE\s+AGENT\s+PROJECT\s+STATUS\s+SESSION$/);
-    assert.match(text, /opencode \(\+1 nested\)/);
+    assert.match(lines[0], /^TAB\s+PANE\s+PID\s+AGENT\s+PROJECT\s+STATUS\s+SESSION\s+NESTED$/);
+    const m = rowFor(inv.panes, 16);
+    const line16 = lines.find((l) => l.split(/\s+/)[l.startsWith("Wingman") ? 1 : -1] === "16" && l.includes(String(m.pid)));
+    assert.ok(line16, "pane 16's row carries its chosen pid");
+    assert.ok(new RegExp(`\\s${m.pid}\\s+opencode\\s`).test(line16), "the PID column holds the pid that speaks for the pane");
+    assert.ok(line16.includes(`claude:${m.nested[0].pid}`), "the nested agent is listed with ITS pid, not just counted");
     assert.match(text, /- \(unresolved\)/);
     assert.match(text, /- \(stale-session-file\)/);
     assert.match(text, /\(no agent\)/);
     assert.match(text, /11111111-1111-4111-8111-111111111111/);
+    for (const row of inv.panes.filter((x) => x.pid !== null)) assert.ok(text.includes(String(row.pid)), `pid ${row.pid} is in the table`);
+    // alignment by DISPLAY width: every line's second column starts at the same terminal column
+    assert.ok(text.includes("ipm 🟢") && text.includes("herm 🔴es"), "premise: the emoji tab names are in the table");
+    const startsAt = lines.map((l) => displayWidth(l.match(/^(.*?\S)\s{2,}(?=\S)/)[0]));
+    assert.equal(new Set(startsAt).size, 1, `the PANE column starts at one display column on every line: ${startsAt}`);
+    stop(hermes);
+    assert.equal(displayWidth("ipm 🟢"), 6);
+    assert.equal(displayWidth("日本語"), 6);
+    assert.equal(displayWidth("e\u0301x"), 2, "a combining mark is zero wide");
+    assert.equal(displayWidth("👨\u200d👩\u200d👧"), 2, "a ZWJ family is one emoji");
   }
 
-  console.log("pj crank panes (the built CLI): default session from ZELLIJ_SESSION_NAME, sessions dir from PJ_CLAUDE_SESSIONS_DIR");
+  console.log("pj crank panes (the built CLI): an envelope, honest exit codes, session provenance, pids");
   {
     const pj = join(root, "dist", "index.js");
     assert.ok(existsSync(pj), "dist/index.js missing: run `mise run build` first");
     const cliBin = join(scratch, "cli-bin");
     mkdirSync(cliBin);
-    for (const tool of ["env", "timeout", "git"]) symlinkSync(which(tool), join(cliBin, tool));
+    for (const tool of ["env", "timeout", "git", "cat"]) symlinkSync(which(tool), join(cliBin, tool));
     writeFileSync(join(scratch, "panes.json"), livePanesJson);
+    writeFileSync(join(scratch, "no-panes.json"), "[]");
     writeFileSync(join(cliBin, "zellij"), '#!/bin/sh\ncase "$*" in *"action list-panes --json --all"*) cat "$FAKE_ZELLIJ_PANES" ;; *) exit 2 ;; esac\n');
     chmodSync(join(cliBin, "zellij"), 0o755);
-    symlinkSync(which("cat"), join(cliBin, "cat"));
-    const run = (args, extraEnv = {}) =>
-      spawnSync(process.execPath, [pj, "crank", "panes", ...args], {
-        encoding: "utf8",
-        cwd: repo,
-        env: hermeticEnv({
-          PATH: cliBin,
-          ZELLIJ_SESSION_NAME: SESSION,
-          PJ_CLAUDE_SESSIONS_DIR: sessionsDir,
-          FAKE_ZELLIJ_PANES: join(scratch, "panes.json"),
-          ...extraEnv,
-        }),
+    const run = (args, extraEnv = {}, drop = []) => {
+      const env = hermeticEnv({
+        PATH: cliBin,
+        ZELLIJ_SESSION_NAME: SESSION,
+        PJ_CLAUDE_SESSIONS_DIR: sessionsDir,
+        FAKE_ZELLIJ_PANES: join(scratch, "panes.json"),
+        ...extraEnv,
       });
+      for (const name of drop) delete env[name];
+      return spawnSync(process.execPath, [pj, "crank", "panes", ...args], { encoding: "utf8", cwd: repo, env });
+    };
+
     const json = run(["--json"]);
     assert.equal(json.status, 0, json.stderr);
-    const rows = JSON.parse(json.stdout);
-    assert.ok(Array.isArray(rows));
+    const inv = JSON.parse(json.stdout);
+    assert.ok(!Array.isArray(inv), "an envelope, not a bare array");
+    assert.deepEqual(
+      [inv.session, inv.sessionSource, inv.zellijReadable, inv.error],
+      [SESSION, "ZELLIJ_SESSION_NAME", true, null],
+      "which session, where the name came from, and that zellij was readable",
+    );
+    assert.deepEqual(inv.unmappedPaneIds, [999]);
+    const rows = inv.panes;
     const r = rows.find((x) => x.paneId === 94);
-    assert.equal(r.pid, real.pid);
+    assert.equal(r.pid, real.pid, "JSON carries the pid");
     assert.equal(r.sessionId, "11111111-1111-4111-8111-111111111111");
     assert.equal(r.tabName, capturePane(94).tab_name);
-    assert.deepEqual(rows.map((x) => x.paneId), [94, 146, 122, 150, 8, 16, 118].sort((a, b) => rows.findIndex((x) => x.paneId === a) - rows.findIndex((x) => x.paneId === b)));
-    assert.deepEqual([...rows.map((x) => x.paneId)].sort((a, b) => a - b), [8, 16, 94, 118, 122, 146, 150]);
+    // rows come in tab order (capture positions: tab 2 -> 0, tab 30 -> 1, tab 7 -> 2, tab 9 -> 3), then pane id
+    assert.deepEqual(rows.map((x) => x.paneId), [94, 146, 122, 150, 8, 16, 118]);
+    const m = rows.find((x) => x.paneId === 16);
+    assert.deepEqual(m.nested, [{ pid: first.pid, agent: "claude" }], "nested pids are in the JSON too");
     assert.ok(!rows.some((x) => x.agent === null), "no --all: no agent-less rows");
     assert.match(json.stderr, /999/, "the unmapped pane id is called out on stderr");
     const all = JSON.parse(run(["--json", "--all"]).stdout);
-    assert.ok(all.some((x) => x.agent === null && x.paneId === 121));
+    assert.ok(all.panes.some((x) => x.agent === null && x.paneId === 121));
+
     const text = run([]);
     assert.equal(text.status, 0, text.stderr);
-    assert.match(text.stdout, /^TAB\s+PANE\s+AGENT/);
+    assert.match(text.stdout, /^TAB\s+PANE\s+PID\s+AGENT/);
+    assert.ok(text.stdout.includes(String(real.pid)), "the text table shows the selected pid");
+    assert.ok(text.stdout.includes(`claude:${first.pid}`), "and the nested agent's pid");
     assert.match(text.stdout, /11111111-1111-4111-8111-111111111111/);
-    // no zellij on PATH at all: still exit 0, rows without tabs, and a warning that says why
-    const none = join(scratch, "no-zellij");
-    mkdirSync(none);
-    for (const tool of ["env", "timeout", "git"]) symlinkSync(which(tool), join(none, tool));
-    const degraded = run(["--json"], { PATH: none });
-    assert.equal(degraded.status, 0, degraded.stderr);
-    assert.match(degraded.stderr, /unreadable/);
-    assert.ok(JSON.parse(degraded.stdout).every((x) => x.tabId === null));
-    // a session nobody runs in: a clean empty answer
-    const empty = run([], { ZELLIJ_SESSION_NAME: `${SESSION}-nobody` });
-    assert.equal(empty.status, 0);
-    assert.match(empty.stdout, /no live agent panes/);
+
+    // a readable session with no agent in it: a real "none", exit 0, readable
+    const quiet = run(["--json"], { ZELLIJ_SESSION_NAME: `${SESSION}-nobody` });
+    assert.equal(quiet.status, 0);
+    const none = JSON.parse(quiet.stdout);
+    assert.deepEqual([none.zellijReadable, none.panes], [true, []], "none is `readable` and empty");
+    assert.match(run([], { ZELLIJ_SESSION_NAME: `${SESSION}-nobody` }).stdout, /no live agent panes/);
+
+    // no zellij on PATH at all: UNKNOWN, not none: exit 1, empty panes, zellijReadable false, an error
+    const noZellij = join(scratch, "no-zellij");
+    mkdirSync(noZellij);
+    for (const tool of ["env", "timeout", "git"]) symlinkSync(which(tool), join(noZellij, tool));
+    const degraded = run(["--json"], { PATH: noZellij });
+    assert.equal(degraded.status, 1, "unreadable zellij is a failure, in --json too");
+    const unknown = JSON.parse(degraded.stdout);
+    assert.deepEqual([unknown.zellijReadable, unknown.panes, unknown.unmappedPaneIds], [false, [], []], "no phantom rows from /proc alone");
+    assert.match(unknown.error, /list-panes failed/);
+    const degradedText = run([], { PATH: noZellij });
+    assert.equal(degradedText.status, 1);
+    assert.match(degradedText.stderr, /list-panes failed for session .*\(from \$ZELLIJ_SESSION_NAME\)/, "text mode says so plainly, and which session");
+    assert.equal(degradedText.stdout.trim(), "", "and prints no table");
+
+    // a session that does not exist (zellij exits non-zero): the same honest failure
+    const gone = run(["--json"], { FAKE_ZELLIJ_PANES: join(scratch, "does-not-exist.json") });
+    assert.equal(gone.status, 1);
+    assert.equal(JSON.parse(gone.stdout).zellijReadable, false);
+    // zellij answering with an empty list is not a session either
+    const emptyList = run(["--json"], { FAKE_ZELLIJ_PANES: join(scratch, "no-panes.json") });
+    assert.equal(emptyList.status, 1);
+    assert.match(JSON.parse(emptyList.stdout).error, /no panes at all/);
+
+    // outside zellij ($ZELLIJ_SESSION_NAME unset): the default is used, and the output says so
+    const outside = run(["--json"], {}, ["ZELLIJ_SESSION_NAME"]);
+    const out = JSON.parse(outside.stdout);
+    assert.deepEqual([out.session, out.sessionSource], ["Workspace", "default"]);
+    assert.match(run([], {}, ["ZELLIJ_SESSION_NAME"]).stderr, /not inside zellij .* default session "Workspace"/);
   }
 } catch (error) {
   failed = error;

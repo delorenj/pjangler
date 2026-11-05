@@ -264,20 +264,36 @@ function runDisable(): void {
   }
 }
 
-/** PJAN-202: print the pane inventory. Touches no Redis and no zellij action but list-panes. */
+/**
+ * PJAN-202: print the pane inventory. Touches no Redis and no zellij action but list-panes.
+ *
+ * `--json` is an ENVELOPE, not a bare array: `zellijReadable: false` means "unknown" (panes is
+ * then empty and means nothing), `zellijReadable: true` with `panes: []` means "none". The exit
+ * code says the same: 1 when zellij is unreadable or the session does not exist, in both modes.
+ */
 function runPanes(options: { json?: boolean; all?: boolean }): void {
   try {
     const inventory = inventoryPanes({ all: options.all === true });
-    if (inventory.unmappedPaneIds.length) {
-      console.error(`  ${dim(`ignored ${inventory.unmappedPaneIds.length} pane id(s) with agent processes that zellij does not list (stale daemon environment): ${inventory.unmappedPaneIds.join(", ")}`)}`);
-    }
+    const sessionNote =
+      inventory.sessionSource === "default"
+        ? `not inside zellij ($ZELLIJ_SESSION_NAME is unset): using the default session "${inventory.session}"`
+        : inventory.sessionSource === "ZELLIJ_SESSION_NAME"
+          ? `session "${inventory.session}" (from $ZELLIJ_SESSION_NAME)`
+          : `session "${inventory.session}"`;
     if (options.json) {
-      console.log(JSON.stringify(inventory.panes, null, 2));
-      if (!inventory.zellijReadable) console.error(`zellij list-panes was unreadable for session "${inventory.session}": tab and title are null`);
-      return;
+      console.log(JSON.stringify(inventory, null, 2));
     }
     if (!inventory.zellijReadable) {
-      console.error(`  ${yellow(glyph.warn)} ${dim(`zellij list-panes was unreadable for session "${inventory.session}" — tab names are unknown`)}`);
+      console.error(`${xmark} ${inventory.error ?? "zellij is unreadable"} — ${sessionNote}`);
+      process.exit(1);
+    }
+    if (options.json) {
+      if (inventory.unmappedPaneIds.length) console.error(`  ${dim(`${inventory.unmappedPaneIds.length} pane id(s) with agent processes are not listed by zellij: ${inventory.unmappedPaneIds.join(", ")}`)}`);
+      return;
+    }
+    if (inventory.sessionSource === "default") console.error(`  ${yellow(glyph.warn)} ${dim(sessionNote)}`);
+    if (inventory.unmappedPaneIds.length) {
+      console.error(`  ${dim(`ignored ${inventory.unmappedPaneIds.length} pane id(s) with agent processes that zellij does not list (a closed pane, a pane that closed during the scan, or a stale daemon environment): ${inventory.unmappedPaneIds.join(", ")}`)}`);
     }
     if (!inventory.panes.length) {
       console.log(`  ${dim(`no live agent panes in session ${inventory.session}`)}`);

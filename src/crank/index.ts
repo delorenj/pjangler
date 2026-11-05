@@ -423,41 +423,63 @@ export function liveTabs(deps: { shell?: Shell } = {}): LiveTab[] {
   }
 }
 
+/** One entry of `zellij action list-panes --json --all`, every field the crank code reads. */
+export interface ListedPane extends LivePane {
+  /** zellij's pane title (an agent's terminal title, or the shell prompt); null when absent. */
+  title: string | null;
+}
+
+/**
+ * The ONE parser of `list-panes --json --all` output (livePanes here, `pj crank panes` in ./panes):
+ * two readers of the same command must not be able to drift. null = not a pane list (empty,
+ * not JSON, not an array); an empty array is a valid parse that the caller judges.
+ */
+export function parseListPanes(stdout: string): ListedPane[] | null {
+  if (!stdout.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const panes: ListedPane[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    const id = Number(e.id);
+    if (!Number.isFinite(id)) continue;
+    const tabId = Number(e.tab_id);
+    const tabPosition = Number(e.tab_position);
+    panes.push({
+      id,
+      tabId: e.tab_id !== undefined && e.tab_id !== null && Number.isInteger(tabId) ? tabId : undefined,
+      tabPosition: e.tab_position !== undefined && e.tab_position !== null && Number.isInteger(tabPosition) ? tabPosition : undefined,
+      tabName: String(e.tab_name ?? ""),
+      isPlugin: e.is_plugin === true,
+      cwd: typeof e.pane_cwd === "string" && e.pane_cwd.trim() ? e.pane_cwd : undefined,
+      title: typeof e.title === "string" ? e.title : null,
+    });
+  }
+  return panes;
+}
+
+/** Run `list-panes --json --all` for `session` (read-only). Same command line for every caller. */
+export function runListPanes(session: string, shell: Shell): { stdout: string; status: number } {
+  // `env -u ZELLIJ -u ZELLIJ_SESSION_NAME` is required (zellij refuses to act on itself from inside
+  // a pane); list-panes takes ~4s (measured 2026-11-04), hence 8s like the engine, not 5s.
+  return shell("env", ["-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME", "timeout", "8s", "zellij", "-s", session, "action", "list-panes", "--json", "--all"]);
+}
+
 /**
  * Live zellij panes (every tab, plugins included) for the Workspace session; [] when unreadable.
- * list-panes takes ~4s (measured 2026-11-04), hence 8s like the engine, not the 5s of list-tabs.
  */
-export function livePanes(deps: { shell?: Shell } = {}): LivePane[] {
+export function livePanes(deps: { shell?: Shell; session?: string } = {}): LivePane[] {
   const shell = deps.shell ?? defaultShell;
-  const result = shell("env", [
-    "-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME",
-    "timeout", "8s", "zellij", "-s", ZCRANK_SESSION, "action", "list-panes", "--json", "--all",
-  ]);
-  if (result.status !== 0 || !result.stdout.trim()) return [];
-  try {
-    const parsed = JSON.parse(result.stdout) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const panes: LivePane[] = [];
-    for (const entry of parsed) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const e = entry as Record<string, unknown>;
-      const id = Number(e.id);
-      if (!Number.isFinite(id)) continue;
-      const tabId = Number(e.tab_id);
-      const tabPosition = Number(e.tab_position);
-      panes.push({
-        id,
-        tabId: e.tab_id !== undefined && e.tab_id !== null && Number.isInteger(tabId) ? tabId : undefined,
-        tabPosition: e.tab_position !== undefined && e.tab_position !== null && Number.isInteger(tabPosition) ? tabPosition : undefined,
-        tabName: String(e.tab_name ?? ""),
-        isPlugin: e.is_plugin === true,
-        cwd: typeof e.pane_cwd === "string" && e.pane_cwd.trim() ? e.pane_cwd : undefined,
-      });
-    }
-    return panes;
-  } catch {
-    return [];
-  }
+  const result = runListPanes(deps.session ?? ZCRANK_SESSION, shell);
+  if (result.status !== 0) return [];
+  // LivePane is the crank's shape: the listing's title is for `pj crank panes` alone.
+  return (parseListPanes(result.stdout) ?? []).map(({ title: _title, ...pane }) => pane);
 }
 
 // ---------------------------------------------------------------------------
