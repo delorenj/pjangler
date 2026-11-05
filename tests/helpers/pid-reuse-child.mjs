@@ -43,11 +43,13 @@ const cmdline0 = (pid) => {
 };
 const launch = (pane) =>
   spawn(agentLink, IDLE, { stdio: "ignore", env: hermeticEnv({ HOME: home, ZELLIJ_SESSION_NAME: SESSION, ZELLIJ_PANE_ID: String(pane) }) });
-/** Wait until `pid` is the agent (exec done) and node has renamed its main thread: comm is then stable. */
+/** Wait until `pid` is the agent (exec done) and node has renamed its main thread: comm is then stable.
+ *  The renamed comm depends on the node build: "node-MainThread" on the operator box, plain
+ *  "MainThread" on GitHub's ubuntu-latest node (CI run 42077680158). Match the suffix, not one build. */
 const settled = async (pid) => {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    if (cmdline0(pid) === agentLink && readProcStat(pid)?.comm === "node-MainThread") return;
+    if (cmdline0(pid) === agentLink && /MainThread$/.test(readProcStat(pid)?.comm ?? "")) return;
     await sleep(10);
   }
   fail(`process ${pid} never settled (cmdline ${cmdline0(pid)}, comm ${readProcStat(pid)?.comm})`);
