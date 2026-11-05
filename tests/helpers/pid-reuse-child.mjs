@@ -2,7 +2,7 @@
 //
 // Run as root INSIDE a fresh pid namespace with its own /proc:
 //
-//   sudo -n unshare -pf --mount-proc <node> pid-reuse-child.mjs <kit.mjs> <agent-link> <home>
+//   sudo -n unshare --kill-child -pf --mount-proc <node> pid-reuse-child.mjs <kit.mjs> <agent-link> <home> <marker>
 //
 // Inside it, the scanner's DEFAULT enumeration (all of /proc) sees only this namespace, so the
 // whole scenario is deterministic and cannot touch, or be disturbed by, any process on the box:

@@ -146,6 +146,51 @@ const untilExec = async (pid) => {
   const deadline = Date.now() + 8000;
   while (readProcStat(pid)?.comm === "sh" && Date.now() < deadline) await sleepMs(20);
 };
+/**
+ * Run `argv` (absolute paths) as init of a fresh pid namespace with its own /proc, as root, with a
+ * hard deadline. Every process of the run carries a unique marker argument; at the deadline each
+ * process holding it (sudo, unshare, the namespace's init) is SIGKILLed from outside through sudo,
+ * which is the only signal a namespace's init cannot ignore. A timer on `sudo`'s own SIGTERM would
+ * not do: sudo relays it, init has no handler, and the run stays alive.
+ */
+const pidsWithMarker = (marker) => {
+  const found = [];
+  for (const name of readdirSync("/proc")) {
+    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+    try {
+      if (readFileSync(`/proc/${name}/cmdline`, "latin1").includes(marker)) found.push(Number(name));
+    } catch {
+      // gone, or unreadable
+    }
+  }
+  return found;
+};
+const inNamespace = (argv, ms) =>
+  new Promise((done, fail) => {
+    const marker = `pjan202-ns-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const child = spawn("sudo", ["-n", "unshare", "--kill-child", "-pf", "--mount-proc", ...argv, marker], {
+      env: hermeticEnv(), stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    let timedOut = false;
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const reap = () => {
+      const left = pidsWithMarker(marker);
+      if (left.length) spawnSync("sudo", ["-n", "kill", "-KILL", ...left.map(String)], { env: hermeticEnv(), timeout: 10_000 });
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      reap();
+    }, ms);
+    child.on("error", fail);
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      reap(); // whatever outlived a normal exit
+      done({ status, out, err, timedOut, marker });
+    });
+  });
 const rowFor = (rows, pane) => rows.find((r) => r.paneId === pane);
 const discover = (extra = {}) => discoverAgentPanes({ session: SESSION, shell: zellijShell, sessionsDir, scanner: ownScanner(), ...extra });
 
@@ -295,6 +340,60 @@ try {
     assert.equal(agentCli("python", "/h/.hermes/hermes-agent/.venv/bin/python /h/.hermes/hermes-agent/hermes chat"), "hermes", "the hermes entry script under the venv python");
     assert.equal(agentCli("2.1.317", "/h/.local/share/claude/versions/2.1.317 mcp serve"), null, "a versioned claude's MCP server is a tool");
     assert.equal(agentCli("x", "/h/.local/share/notclaude/versions/2.1.317"), null, "the directory must BE the CLI");
+  }
+
+  console.log("agentCli: an interpreter's option VALUES are not the program; module names match exactly; shell flag clusters carry -c");
+  {
+    const cc = "/h/.local/share/mise/installs/node/24/lib/node_modules/@anthropic-ai/claude-code/cli.js";
+    // node: the value of a separate-argument option is skipped, `--opt=value` is one token
+    assert.equal(agentCli("node", `node -r ./preload.js ${cc} --resume`), "claude", "-r <file>");
+    assert.equal(agentCli("node", `node --require x.js ${cc}`), "claude", "--require <file>");
+    assert.equal(agentCli("node", `node --require=x.js ${cc}`), "claude", "--require=<file>");
+    assert.equal(agentCli("node", `node --import ./hook.mjs ${cc}`), "claude", "--import <file>");
+    assert.equal(agentCli("node", `node --loader ts-node/esm ${cc}`), "claude", "--loader <x>");
+    assert.equal(agentCli("node", `node -C development ${cc}`), "claude", "-C <condition>");
+    assert.equal(agentCli("node", `node --conditions dev ${cc}`), "claude", "--conditions <x>");
+    assert.equal(agentCli("node", `node --inspect-port 9230 ${cc}`), "claude", "--inspect-port <n>");
+    assert.equal(agentCli("node", `node --max-old-space-size=8192 -r a.js --import b.mjs ${cc}`), "claude", "several at once");
+    assert.equal(agentCli("node", "node -r /h/code/claude/preload.js /h/code/some-app/server.js"), null, "a claude-named preload is an option value, not the program");
+    assert.equal(agentCli("node", "node --require /h/.claude-code/x.js /h/code/app/main.js"), null);
+    assert.equal(agentCli("node", "node -pe process.version /h/.claude-code/x"), null, "-pe is inline code");
+    // python: -W/-X/-Q take a value; -Wvalue is one token
+    assert.equal(agentCli("python3", "python3 -W ignore /h/.hermes/hermes-agent/hermes chat"), "hermes", "-W ignore");
+    assert.equal(agentCli("python3", "python3 -X utf8 /h/.hermes/hermes-agent/hermes chat"), "hermes", "-X utf8");
+    assert.equal(agentCli("python3", "python3 -Wignore -u /h/.hermes/hermes-agent/hermes"), "hermes", "-Wignore");
+    assert.equal(agentCli("python3", "python3 -W ignore -X utf8 -m hermes_cli.main chat"), "hermes", "values before -m");
+    assert.equal(agentCli("python3", "python3 -W /h/code/claude/x.py /h/code/app/run.py"), null, "-W's value is not the script");
+    assert.equal(agentCli("python3", "python3 -X utf8 /h/code/app/run.py"), null);
+    assert.equal(agentCli("python3", "python3 -Im hermes_cli.main chat"), "hermes", "-Im is -I -m");
+    assert.equal(agentCli("python3", "python3 -Ic import_claude"), null, "-Ic is inline code");
+    // -m modules: exact, or the CLI plus an install suffix; a package that merely STARTS with a name is not it
+    assert.equal(agentCli("python", "python -m claude_monitor"), null, "claude_monitor is not claude");
+    assert.equal(agentCli("python", "python -m geminiscope.main"), null);
+    assert.equal(agentCli("python", "python -m codex_exporter run"), null);
+    assert.equal(agentCli("python", "python -m hermes_cli.main chat"), "hermes", "hermes_cli = hermes + _cli");
+    assert.equal(agentCli("python", "python -m hermes chat"), "hermes", "exact");
+    assert.equal(agentCli("python", "python -m kimi_cli"), "kimi", "kimi_cli");
+    assert.equal(agentCli("python", "python -m claude_code"), "claude", "claude_code");
+    // shells: any short-flag cluster containing c is -c, so the command text is never a program
+    assert.equal(agentCli("bash", 'bash -lc /x/claude/run.sh; echo done'), null, "bash -lc");
+    assert.equal(agentCli("zsh", "zsh -ic /h/.local/bin/claude"), null, "zsh -ic");
+    assert.equal(agentCli("sh", "sh -ec /h/code/claude/x.sh"), null, "sh -ec");
+    assert.equal(agentCli("dash", "dash -c /h/.local/bin/claude --resume"), null, "N8: a path right after -c is the command text");
+    assert.equal(agentCli("bash", "/bin/bash -c /h/.local/bin/claude --resume"), null);
+    assert.equal(agentCli("fish", "fish -c /h/.local/bin/claude"), null, "fish -c");
+    assert.equal(agentCli("bash", "bash -l /h/.local/bin/claude --resume"), "claude", "no c in the flags: the script is the program");
+    assert.equal(agentCli("bash", "bash -o pipefail /h/.local/bin/claude"), "claude", "-o takes a value");
+    assert.equal(agentCli("bash", "bash --rcfile /h/rc /h/.local/bin/claude"), "claude");
+  }
+
+  console.log("agentCli: by-name matching is Deckard's prefix rule (argv[0] STARTS with a CLI name)");
+  {
+    // the npm codex package ships `codex-<triple>`; Deckard's `exe.starts_with(pat)` is what finds it
+    assert.equal(agentCli("codex-x86_64-unknown-linux-musl", "/h/lib/node_modules/@openai/codex/vendor/codex-x86_64-unknown-linux-musl/codex/codex-x86_64-unknown-linux-musl exec"), "codex");
+    assert.equal(agentCli("codex-linux-sandbox", "/h/x/codex-linux-sandbox --cwd /h/y"), "codex", "the sandbox helper is a codex binary by name (nested, never the pane's own)");
+    assert.equal(agentCli("claude-code", "claude-code --resume"), "claude");
+    assert.equal(agentCli("nvidia-claude-thing", "nvidia-claude-thing"), null, "a name that merely CONTAINS a CLI name is not prefix-matched");
   }
 
   console.log("agentCli: Kimi is an agent (the box's binary is ~/.kimi-code/bin/kimi)");
@@ -642,6 +741,49 @@ try {
     stop(daemon);
   }
 
+  console.log("an AMBIGUOUS pane terminal (two roots under the server, two ttys) proves nothing foreground: it does not pick the first");
+  {
+    const first = await ptyPane({ pane: 147, execLink: claude });
+    await sleepMs(60);
+    const second = await ptyPane({ pane: 147, execLink: claude });
+    const a = readProcStat(first.fg);
+    const b = readProcStat(second.fg);
+    assert.ok(a.ttyNr > 0 && b.ttyNr > 0 && a.ttyNr !== b.ttyNr, "premise: two ptys");
+    assert.ok(a.pgrp === a.tpgid && b.pgrp === b.tpgid, "premise: each is its own terminal's foreground group");
+    assert.equal(a.ppid, first.server.pid);
+    assert.equal(b.ppid, second.server.pid, "premise: both pane roots hang off a zellij server");
+    assert.ok(Number(b.startTime) > Number(a.startTime), "premise: the second is newer");
+    assert.ok(first.fg < second.fg, "premise: the first one also comes first in pid order, which is where a 'pick the first tty' bug would land");
+    const r = rowFor(discover(), 147);
+    assert.equal(r.pid, second.fg, "nothing is provably foreground, so the NEWEST speaks; the first root's tty is not taken as the pane's");
+    assert.deepEqual(r.nested, [{ pid: first.fg, agent: "claude" }]);
+    for (const pane of [first, second]) for (const pid of [pane.fg, pane.server.pid]) process.kill(pid, "SIGKILL");
+  }
+
+  console.log("a ZOMBIE pane root (a warm scanner still knows its tag) does not unsettle the pane's terminal");
+  {
+    const gone = await ptyPane({ pane: 148, execLink: claude });
+    const live = await ptyPane({ pane: 148, execLink: claude, helpers: [{ name: "bg", link: opencode, ownGroup: true }] });
+    const warm = ownScanner();
+    assert.ok(rowFor(discover({ scanner: warm }), 148), "premise: the warm scanner has seen every process of the pane alive (two live roots: ambiguous, so the newest speaks)");
+    process.kill(gone.fg, "SIGKILL"); // its parent (the stand-in) never reaps: an unreaped zombie
+    const deadline = Date.now() + 3000;
+    while (readProcStat(gone.fg)?.state !== "Z" && Date.now() < deadline) await sleepMs(10);
+    const z = readProcStat(gone.fg);
+    assert.equal(z?.state, "Z", "premise: an unreaped zombie");
+    // Whether a zombie still reports its controlling tty is the kernel's business: it usually does not
+    // (measured), and in a short window after the exit it does. Either way the pane's terminal must
+    // be the live root's, so nothing is asserted about it here; only the outcome below.
+    assert.ok(warm.has(gone.fg), "premise: the warm scanner remembers the zombie's pane tag");
+    const l = readProcStat(live.fg);
+    const bg = readProcStat(live.bg);
+    assert.ok(Number(bg.startTime) >= Number(l.startTime) && bg.pgrp !== bg.tpgid, "premise: a newer, background-group helper sits beside the live root");
+    const r = rowFor(discover({ scanner: warm }), 148);
+    assert.equal(r.pid, live.fg, "the live root is on THE terminal of the pane and is foreground; the zombie is ignored");
+    assert.deepEqual(r.nested, [{ pid: live.bg, agent: "opencode" }]);
+    for (const pid of [live.fg, live.bg, live.server.pid, gone.server.pid]) process.kill(pid, "SIGKILL");
+  }
+
   console.log("readClaudeSession: malformed and partial files degrade to a reason, never a throw");
   {
     const probe = agentIn(94, claude);
@@ -779,7 +921,7 @@ try {
     // ns_last_pid rewinds its pid counter, so a second process is handed a dead one's pid. That
     // needs root: passwordless sudo here and on GitHub's ubuntu-latest. Without it the test says
     // so out loud; it never passes silently.
-    const probe = spawnSync("sudo", ["-n", "true"], { encoding: "utf8", env: hermeticEnv() });
+    const probe = spawnSync("sudo", ["-n", "true"], { encoding: "utf8", env: hermeticEnv(), timeout: 10_000 });
     if (probe.status !== 0 || probe.error) {
       console.log("  SKIP (needs passwordless sudo): the pid-reuse half of the scanner's cache key was NOT exercised");
     } else if (!which("unshare")) {
@@ -787,14 +929,21 @@ try {
     } else {
       const reuseHome = join(scratch, "pid-reuse-home");
       mkdirSync(reuseHome);
-      const reuse = spawnSync(
-        "sudo",
-        ["-n", "unshare", "-pf", "--mount-proc", process.execPath, join(root, "tests", "helpers", "pid-reuse-child.mjs"), kit, claude, reuseHome],
-        { encoding: "utf8", env: hermeticEnv(), timeout: 90_000 },
-      );
-      assert.equal(reuse.status, 0, `pid reuse helper failed:\n${reuse.stdout}\n${reuse.stderr}`);
-      assert.match(reuse.stdout, /PID-REUSE-OK pid=\d+ comm=\S+ startA=\d+ startB=\d+/);
-      console.log(`  ${reuse.stdout.trim()}`);
+      const helperPath = join(root, "tests", "helpers", "pid-reuse-child.mjs");
+      const reuse = await inNamespace([process.execPath, helperPath, kit, claude, reuseHome], 90_000);
+      assert.equal(reuse.timedOut, false, `pid reuse helper hung:\n${reuse.out}\n${reuse.err}`);
+      assert.equal(reuse.status, 0, `pid reuse helper failed:\n${reuse.out}\n${reuse.err}`);
+      assert.match(reuse.out, /PID-REUSE-OK pid=\d+ comm=\S+ startA=\d+ startB=\d+/);
+      console.log(`  ${reuse.out.trim()}`);
+
+      // The bound itself: a namespace whose init never exits must be reaped by the deadline, not
+      // left running. (Pid 1 of a namespace ignores a SIGTERM it has no handler for, so neither
+      // spawn's timeout nor `timeout` can stop it; only a SIGKILL sent from OUTSIDE can.)
+      const started = Date.now();
+      const hung = await inNamespace([process.execPath, "-e", "setInterval(() => {}, 1e6)"], 2_000);
+      assert.equal(hung.timedOut, true, "premise: the forced hang hit the deadline");
+      assert.ok(Date.now() - started < 15_000, `the hang was bounded (${Date.now() - started} ms for a 2000 ms budget)`);
+      assert.deepEqual(pidsWithMarker(hung.marker), [], "no process of the hung namespace (sudo, unshare, its init) is left running");
     }
   }
 

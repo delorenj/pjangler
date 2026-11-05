@@ -76,12 +76,14 @@ export function agentCli(exe: string, argv: string): string | null {
   if (byName) return byName;
   const tokens = argv.split(" ").filter(Boolean);
   if (INTERPRETER.test(exe)) {
-    const program = interpretedProgram(tokens);
+    const program = interpretedProgram(exe, tokens);
     if (!program) return null;
     if (program.module) {
-      // a module is named by its top-level package: `hermes_cli.main` -> `hermes-cli`, which starts with `hermes`
+      // A module is named by its top-level package, matched EXACTLY or as the CLI plus an install
+      // suffix: `hermes_cli.main` -> `hermes-cli` = hermes + "-cli". `claude_monitor` is somebody
+      // else's package that merely starts with "claude".
       const top = (program.module.split(".")[0] ?? "").replace(/_/g, "-");
-      return AGENT_CLIS.find((pat) => top === pat || top.startsWith(pat)) ?? null;
+      return AGENT_CLIS.find((pat) => top === pat || PATH_SUFFIXES.some((suffix) => top === `${pat}-${suffix}`)) ?? null;
     }
     return PATH_PASS.find(([, re]) => re.test(program.script))?.[0] ?? null;
   }
@@ -92,13 +94,37 @@ export function agentCli(exe: string, argv: string): string | null {
 /** Programs that run another program named in their arguments. */
 const INTERPRETER = /^(?:node(?:js)?|bun|deno|tsx|python[\d.]*|ruby|perl|bash|sh|zsh|dash|fish|ksh)$/;
 
-/** The `-m` module or the script an interpreter runs: first non-option argument after argv[0]. */
-function interpretedProgram(tokens: string[]): { module?: string; script: string } | null {
+const SHELL = /^(?:bash|sh|zsh|dash|fish|ksh)$/;
+const PYTHON = /^python[\d.]*$/;
+
+/**
+ * Options that take their value as the NEXT argument, per interpreter family. The value is not the
+ * program: `node -r ./preload.js .../claude-code/cli.js` runs cli.js, `python3 -W ignore -m x` runs x.
+ * (`--opt=value` is one token and needs no entry.)
+ */
+const VALUE_OPTIONS: ReadonlyArray<readonly [RegExp, ReadonlySet<string>]> = [
+  [/^(?:node(?:js)?|bun|deno|tsx)$/, new Set(["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--inspect-port", "--debug-port", "--input-type", "--title", "--env-file", "--disable-warning", "--watch-path", "--stack-size", "--max-old-space-size", "--redirect-warnings", "--openssl-config", "--icu-data-dir", "--tls-cipher-list", "--secure-heap", "--diagnostic-dir", "--report-dir", "--cpu-prof-dir", "--heap-prof-dir"])],
+  [PYTHON, new Set(["-W", "-X", "-Q", "--check-hash-based-pycs"])],
+  [SHELL, new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"])],
+];
+
+/**
+ * The `-m` module or the script an interpreter runs: the first argument that is neither an option
+ * nor an option's value. null when the interpreter runs inline code (`-c`, `-e`, `-p`; a shell's
+ * `-c` may sit in a flag cluster: `bash -lc "..."`) or no program at all.
+ */
+function interpretedProgram(exe: string, tokens: string[]): { module?: string; script: string } | null {
+  const takesValue = VALUE_OPTIONS.find(([re]) => re.test(exe))?.[1] ?? new Set<string>();
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i] as string;
-    if (token === "-m") return tokens[i + 1] ? { module: tokens[i + 1] as string, script: "" } : null;
-    if (token === "-c" || token === "-e" || token === "-p" || token === "--eval" || token === "--print") return null; // inline code
-    if (token.startsWith("-")) continue;
+    if (token === "-m" || (PYTHON.test(exe) && /^-[BEIOPRSbdhiqsuvx]*m$/.test(token))) return tokens[i + 1] ? { module: tokens[i + 1] as string, script: "" } : null;
+    if (token === "-e" || token === "-p" || token === "-pe" || token === "-ep" || token === "--eval" || token === "--print") return null; // inline code
+    if (SHELL.test(exe) && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)) return null; // `bash -lc "..."`
+    if (PYTHON.test(exe) && /^-[BEIOPRSbdhiqsuvx]*c$/.test(token)) return null; // `python -Ic "..."`
+    if (token.startsWith("-") || token.startsWith("+")) {
+      if (takesValue.has(token)) i++; // skip the value
+      continue;
+    }
     return { script: token };
   }
   return null;
