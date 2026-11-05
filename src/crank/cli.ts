@@ -1,6 +1,6 @@
 // `pj crank` — commander wiring for the project-native crank switches.
 //
-// Five subcommands: enable, disable, list, log (PJAN-174) and tui (PJAN-182). Everything
+// Six subcommands: enable, disable, list, log (PJAN-174), tui (PJAN-182) and panes (PJAN-202). Everything
 // that knows about Redis keys, zellij tabs, or the project→tab mapping lives in ./index;
 // this file only argues with commander and prints. The Ink screens (./tui.tsx) are loaded
 // on demand, so every other pj command stays free of ink/react.
@@ -11,6 +11,7 @@ import { loadProjectRegistry, projectRegistryPath } from "../project/index";
 import { bold, cyan, dim, green, red, yellow, glyph } from "../utils/style";
 import { isInteractive, loadScreen, TuiUnavailableError } from "../tui/load";
 import { createCrankController } from "./controller";
+import { formatPaneTable, inventoryPanes } from "./panes";
 import {
   ZCRANK_INTERVALS,
   buildCrankContext,
@@ -103,6 +104,15 @@ export function registerCrankCli(program: Command): void {
     .description("Full-screen crank dashboard: toggle, interval, last runs, countdown to the next run, log")
     .action(async () => {
       await runTui();
+    });
+
+  crankCmd
+    .command("panes")
+    .description("Read-only inventory of the live agent panes in this zellij session: pane -> pid -> agent CLI -> session id/status (from /proc, not tab names)")
+    .option("--json", "Emit the inventory as JSON")
+    .option("--all", "Also list terminal panes that run no agent")
+    .action((options: { json?: boolean; all?: boolean }) => {
+      runPanes(options);
     });
 
   crankCmd
@@ -251,6 +261,31 @@ function runDisable(): void {
     }
   } catch (error) {
     fail(error, "crank");
+  }
+}
+
+/** PJAN-202: print the pane inventory. Touches no Redis and no zellij action but list-panes. */
+function runPanes(options: { json?: boolean; all?: boolean }): void {
+  try {
+    const inventory = inventoryPanes({ all: options.all === true });
+    if (inventory.unmappedPaneIds.length) {
+      console.error(`  ${dim(`ignored ${inventory.unmappedPaneIds.length} pane id(s) with agent processes that zellij does not list (stale daemon environment): ${inventory.unmappedPaneIds.join(", ")}`)}`);
+    }
+    if (options.json) {
+      console.log(JSON.stringify(inventory.panes, null, 2));
+      if (!inventory.zellijReadable) console.error(`zellij list-panes was unreadable for session "${inventory.session}": tab and title are null`);
+      return;
+    }
+    if (!inventory.zellijReadable) {
+      console.error(`  ${yellow(glyph.warn)} ${dim(`zellij list-panes was unreadable for session "${inventory.session}" — tab names are unknown`)}`);
+    }
+    if (!inventory.panes.length) {
+      console.log(`  ${dim(`no live agent panes in session ${inventory.session}`)}`);
+      return;
+    }
+    console.log(formatPaneTable(inventory));
+  } catch (error) {
+    fail(error, "crank panes");
   }
 }
 
