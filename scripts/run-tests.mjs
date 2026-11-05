@@ -158,6 +158,7 @@ const SUITES = [
   "tests/pjan-186-crank-error-replies.mjs",
   "tests/pjan-187-tui-load.mjs",
   "tests/pjan-191-pty-run-regressions.mjs",
+  "tests/pjan-202-crank-panes.mjs",
 ];
 
 const args = process.argv.slice(2);

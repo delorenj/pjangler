@@ -1,6 +1,6 @@
 // `pj crank` — commander wiring for the project-native crank switches.
 //
-// Five subcommands: enable, disable, list, log (PJAN-174) and tui (PJAN-182). Everything
+// Six subcommands: enable, disable, list, log (PJAN-174), tui (PJAN-182) and panes (PJAN-202). Everything
 // that knows about Redis keys, zellij tabs, or the project→tab mapping lives in ./index;
 // this file only argues with commander and prints. The Ink screens (./tui.tsx) are loaded
 // on demand, so every other pj command stays free of ink/react.
@@ -11,6 +11,7 @@ import { loadProjectRegistry, projectRegistryPath } from "../project/index";
 import { bold, cyan, dim, green, red, yellow, glyph } from "../utils/style";
 import { isInteractive, loadScreen, TuiUnavailableError } from "../tui/load";
 import { createCrankController } from "./controller";
+import { formatPaneTable, inventoryPanes } from "./panes";
 import {
   ZCRANK_INTERVALS,
   buildCrankContext,
@@ -103,6 +104,15 @@ export function registerCrankCli(program: Command): void {
     .description("Full-screen crank dashboard: toggle, interval, last runs, countdown to the next run, log")
     .action(async () => {
       await runTui();
+    });
+
+  crankCmd
+    .command("panes")
+    .description("Read-only inventory of the live agent panes in this zellij session: pane -> pid -> agent CLI -> session id/status (from /proc, not tab names)")
+    .option("--json", "Emit the inventory as JSON")
+    .option("--all", "Also list terminal panes that run no agent")
+    .action((options: { json?: boolean; all?: boolean }) => {
+      runPanes(options);
     });
 
   crankCmd
@@ -251,6 +261,47 @@ function runDisable(): void {
     }
   } catch (error) {
     fail(error, "crank");
+  }
+}
+
+/**
+ * PJAN-202: print the pane inventory. Touches no Redis and no zellij action but list-panes.
+ *
+ * `--json` is an ENVELOPE, not a bare array: `zellijReadable: false` means "unknown" (panes is
+ * then empty and means nothing), `zellijReadable: true` with `panes: []` means "none". The exit
+ * code says the same: 1 when zellij is unreadable or the session does not exist, in both modes.
+ */
+function runPanes(options: { json?: boolean; all?: boolean }): void {
+  try {
+    const inventory = inventoryPanes({ all: options.all === true });
+    const sessionNote =
+      inventory.sessionSource === "default"
+        ? `not inside zellij ($ZELLIJ_SESSION_NAME is unset): using the default session "${inventory.session}"`
+        : inventory.sessionSource === "ZELLIJ_SESSION_NAME"
+          ? `session "${inventory.session}" (from $ZELLIJ_SESSION_NAME)`
+          : `session "${inventory.session}"`;
+    if (options.json) {
+      console.log(JSON.stringify(inventory, null, 2));
+    }
+    if (!inventory.zellijReadable) {
+      console.error(`${xmark} ${inventory.error ?? "zellij is unreadable"} — ${sessionNote}`);
+      process.exit(1);
+    }
+    if (options.json) {
+      if (inventory.unmappedPaneIds.length) console.error(`  ${dim(`${inventory.unmappedPaneIds.length} pane id(s) with agent processes are not listed by zellij: ${inventory.unmappedPaneIds.join(", ")}`)}`);
+      return;
+    }
+    if (inventory.sessionSource === "default") console.error(`  ${yellow(glyph.warn)} ${dim(sessionNote)}`);
+    if (inventory.unmappedPaneIds.length) {
+      console.error(`  ${dim(`ignored ${inventory.unmappedPaneIds.length} pane id(s) with agent processes that zellij does not list (a closed pane, a pane that closed during the scan, or a stale daemon environment): ${inventory.unmappedPaneIds.join(", ")}`)}`);
+    }
+    if (!inventory.panes.length) {
+      console.log(`  ${dim(`no live agent panes in session ${inventory.session}`)}`);
+      return;
+    }
+    console.log(formatPaneTable(inventory));
+  } catch (error) {
+    fail(error, "crank panes");
   }
 }
 
