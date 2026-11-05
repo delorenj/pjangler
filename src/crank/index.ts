@@ -73,7 +73,8 @@ export type Shell = (command: string, args: string[]) => { stdout: string; statu
 
 export const defaultShell: Shell = (command, args) => {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 10_000 });
-  if (result.error) return { stdout: "", status: 127 };
+  // 127 = could not run it (not installed); 124 = the 10 s budget ran out (the shell convention `timeout` uses too)
+  if (result.error) return { stdout: "", status: (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? 124 : 127 };
   return { stdout: result.stdout ?? "", status: result.status ?? 1, stderr: result.stderr ?? "" };
 };
 
@@ -465,7 +466,7 @@ export function parseListPanes(stdout: string): ListedPane[] | null {
 }
 
 /** Run `list-panes --json --all` for `session` (read-only). Same command line for every caller. */
-export function runListPanes(session: string, shell: Shell): { stdout: string; status: number } {
+export function runListPanes(session: string, shell: Shell): { stdout: string; status: number; stderr?: string } {
   // `env -u ZELLIJ -u ZELLIJ_SESSION_NAME` is required (zellij refuses to act on itself from inside
   // a pane); list-panes takes ~4s (measured 2026-11-04), hence 8s like the engine, not 5s.
   return shell("env", ["-u", "ZELLIJ", "-u", "ZELLIJ_SESSION_NAME", "timeout", "8s", "zellij", "-s", session, "action", "list-panes", "--json", "--all"]);

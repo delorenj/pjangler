@@ -47,41 +47,74 @@ export const AGENT_CLIS: readonly string[] = [
 ];
 
 /**
- * Which agent CLI, if any, this process is. Two passes, because agents do not all keep their
- * identity in argv[0]: `claude` re-execs as `~/.local/share/claude/versions/2.1.235 --agent-...`,
- * so the basename is a version number and only the PATH still says `claude`.
+ * Which agent CLI, if any, this process is. A port of Deckard's `agent_cli` with its second pass
+ * made precise.
  *
- * An MCP server is a tool the agent launched, not an agent session (a lingering `codex mcp-server`
- * would otherwise keep a pane an agent pane forever; Deckard measured exactly that), so it is
- * never classified.
+ * Deckard's second pass greps ALL of argv for `/<cli>`. Measured on the operator box that
+ * classifies things that merely MENTION an agent's install dir: Claude's Bash-tool shells
+ * (`zsh -c source ~/.claude/shell-snapshots/...`) and the `tail -f ~/.claude/tmp/claude-1000/...`
+ * they run, `tail -f ~/.hermes/hermes-agent/logs/agent.log`, the hermes-agent venv's python
+ * running some unrelated script, and Claude Code's vendored ripgrep under `.../claude-code/vendor/`.
+ * Padding a pane with those makes it look busier than it is and can crown a helper as the pane's
+ * pid. So the rule is by KIND of process:
+ *
+ *  - an MCP server is a tool the agent launched, never an agent (Deckard: a lingering
+ *    `codex mcp-server` would keep a pane an agent pane forever);
+ *  - by NAME, as Deckard: argv[0]'s basename is (or starts with) a CLI name. This is how `claude`,
+ *    `codex`, `kimi`, ... are found, and how every non-interpreter is classified;
+ *  - a non-interpreter that re-execs through a versioned install path is found by that path alone:
+ *    `argv[0]` = `.../claude/versions/2.1.317`, whose basename is only a version number;
+ *  - an INTERPRETER (node, python, bun, deno, a shell, ...) is classified by the program it runs,
+ *    never by its other arguments: its `-m` module (`python -m hermes_cli.main chat`), or its script
+ *    (`node .../@anthropic-ai/claude-code/cli.js`, `node .../gemini-cli/dist/index.js`,
+ *    `python .../bin/openclaw`). `-c` / `-e` run inline code and name no program, so a `zsh -c ...`
+ *    command runner is never an agent.
  */
 export function agentCli(exe: string, argv: string): string | null {
   if (argv.includes("mcp-server") || argv.includes(" mcp ")) return null;
   const byName = AGENT_CLIS.find((pat) => exe === pat || exe.startsWith(pat));
   if (byName) return byName;
-  // The path pass. Deckard matches a bare `/<cli>` anywhere in argv; measured on this box that
-  // also matches things that merely MENTION an agent: Claude Code's Bash-tool shells
-  // (`zsh -c source ~/.claude/shell-snapshots/... tail -f ~/.claude/tmp/claude-1000/...`) and the
-  // `tail -f` they run. Counted as agents they would pad every busy pane with bogus nested
-  // "agents" and make an agent-less pane look like an agent pane. Two narrowings:
-  //  - a shell running `-c <command>` is a command runner, never the agent itself;
-  //  - `/<cli>` must END a path component: end, space, `/` or `.`, or one of the component
-  //    suffixes agents really install under (PATH_SUFFIXES). `/claude-1000` (a tmp dir) is not
-  //    `/claude`, while `.../claude/versions/2.1.235`, `.../gemini.js`, `.../claude-code/cli.js`,
-  //    `.../gemini-cli/dist/index.js` and `.../hermes-agent/.venv/bin/python` are.
-  if (SHELLS.has(exe) && argv.split(" ")[1] === "-c") return null;
-  return PATH_PASS.find(([, re]) => re.test(argv))?.[0] ?? null;
+  const tokens = argv.split(" ").filter(Boolean);
+  if (INTERPRETER.test(exe)) {
+    const program = interpretedProgram(tokens);
+    if (!program) return null;
+    if (program.module) {
+      // a module is named by its top-level package: `hermes_cli.main` -> `hermes-cli`, which starts with `hermes`
+      const top = (program.module.split(".")[0] ?? "").replace(/_/g, "-");
+      return AGENT_CLIS.find((pat) => top === pat || top.startsWith(pat)) ?? null;
+    }
+    return PATH_PASS.find(([, re]) => re.test(program.script))?.[0] ?? null;
+  }
+  const versioned = /\/([^/]+)\/versions\/[^/]+$/.exec(tokens[0] ?? "");
+  return versioned ? (AGENT_CLIS.find((pat) => versioned[1] === pat) ?? null) : null;
 }
 
-/** Install-directory suffixes an agent's path component may carry: claude-code, gemini-cli, hermes-agent. */
+/** Programs that run another program named in their arguments. */
+const INTERPRETER = /^(?:node(?:js)?|bun|deno|tsx|python[\d.]*|ruby|perl|bash|sh|zsh|dash|fish|ksh)$/;
+
+/** The `-m` module or the script an interpreter runs: first non-option argument after argv[0]. */
+function interpretedProgram(tokens: string[]): { module?: string; script: string } | null {
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i] as string;
+    if (token === "-m") return tokens[i + 1] ? { module: tokens[i + 1] as string, script: "" } : null;
+    if (token === "-c" || token === "-e" || token === "-p" || token === "--eval" || token === "--print") return null; // inline code
+    if (token.startsWith("-")) continue;
+    return { script: token };
+  }
+  return null;
+}
+
+/**
+ * A script's path names an agent when a component IS the CLI (`/claude`, `/gemini.js`,
+ * `/openclaw.mjs`) or is the CLI plus the suffix its install directory carries (`/claude-code/`,
+ * `/gemini-cli/`, `/kimi-cli/`, `/hermes-agent/`). `/claude-1000` (a tmp dir) is not one.
+ */
 const PATH_SUFFIXES = ["code", "cli", "agent"] as const;
 const PATH_PASS: ReadonlyArray<readonly [string, RegExp]> = AGENT_CLIS.map((pat) => {
   const name = pat.replace(/[-]/g, "\\-");
   const end = "(?=$|[ /.])";
   return [pat, new RegExp(`/${name}(?:${end}|-(?:${PATH_SUFFIXES.join("|")})${end})`)] as const;
 });
-
-const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh"]);
 
 // ---------------------------------------------------------------------------
 // The /proc walker (port of Deckard's `Scanner`)
@@ -96,6 +129,8 @@ export interface ProcStat {
   ppid: number;
   /** Process group of the process. */
   pgrp: number;
+  /** Field 7: the controlling terminal's device number; 0 when the process has none. */
+  ttyNr: number;
   /** Foreground process group of the controlling terminal; -1 when there is none. */
   tpgid: number;
   /** Field 22: clock ticks since boot at which the process started. A string, as Claude writes `procStart`. */
@@ -116,10 +151,11 @@ export function parseProcStat(text: string): ProcStat | null {
   const state = fields[0];
   const ppid = Number(fields[1]);
   const pgrp = Number(fields[2]);
+  const ttyNr = Number(fields[4]);
   const tpgid = Number(fields[5]);
   const startTime = fields[19];
-  if (!state || !startTime || ![ppid, pgrp, tpgid].every(Number.isInteger)) return null;
-  return { comm, state, ppid, pgrp, tpgid, startTime };
+  if (!state || !startTime || ![ppid, pgrp, ttyNr, tpgid].every(Number.isInteger)) return null;
+  return { comm, state, ppid, pgrp, ttyNr, tpgid, startTime };
 }
 
 /** Stat of a live pid, or null when it vanished or cannot be read. */
@@ -217,6 +253,18 @@ function readArgv(pid: number): { argv: string; exe: string } {
  */
 export class ProcScanner {
   private readonly known = new Map<number, { startTime: string; comm: string; tag: PaneTag | null; argv: string; exe: string }>();
+  private readonly enumerate: (() => Iterable<number>) | undefined;
+
+  /**
+   * `pids` replaces the enumeration of /proc: the scanner then looks at exactly those pids and no
+   * others. Production never passes it (the default reads every pid of the box, which is the
+   * point). A test that spawns its own processes passes its own pids, so that processes OTHER
+   * tests or agents have on the box (session-less tagged ones are visible to every scan by
+   * design) cannot change its answer.
+   */
+  constructor(options: { pids?: () => Iterable<number> } = {}) {
+    this.enumerate = options.pids;
+  }
 
   /** How many pids the cache holds (negatives included). For the cost report and tests. */
   cached(): number {
@@ -237,18 +285,20 @@ export class ProcScanner {
    * not agents, so classification discards them.
    */
   scan(session: string): TaggedProc[] {
-    let names: string[];
-    try {
-      names = readdirSync("/proc");
-    } catch {
-      // No /proc (not Linux, or a sandbox): zero evidence is a valid answer.
-      return [];
+    let pids: number[];
+    if (this.enumerate) {
+      pids = [...this.enumerate()];
+    } else {
+      try {
+        pids = readdirSync("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+      } catch {
+        // No /proc (not Linux, or a sandbox): zero evidence is a valid answer.
+        return [];
+      }
     }
     const alive = new Set<number>();
     const out: TaggedProc[] = [];
-    for (const name of names) {
-      if (!/^\d+$/.test(name)) continue;
-      const pid = Number(name);
+    for (const pid of pids) {
       alive.add(pid);
       const stat = readProcStat(pid);
       if (!stat) continue;
@@ -293,6 +343,8 @@ export type SessionReason =
   | "no-session-id"; // a valid file with no sessionId in it
 
 export interface ClaudeSessionInfo {
+  /** Claude's own `kind`: `interactive` for a terminal session, `bg` for a daemon-hosted one. */
+  kind: string | null;
   sessionId: string | null;
   reason: SessionReason | null;
   status: PaneStatus;
@@ -311,7 +363,7 @@ export function claudeSessionsDir(env: NodeJS.ProcessEnv = process.env): string 
  * different process since Claude wrote it, and a stale session id must never be attributed.
  */
 export function readClaudeSession(pid: number, stat: ProcStat | null, dir: string = claudeSessionsDir()): ClaudeSessionInfo {
-  const none = (reason: SessionReason): ClaudeSessionInfo => ({ sessionId: null, reason, status: "unknown", statusUpdatedAt: null });
+  const none = (reason: SessionReason): ClaudeSessionInfo => ({ kind: null, sessionId: null, reason, status: "unknown", statusUpdatedAt: null });
   let raw: string;
   try {
     raw = readFileSync(join(dir, `${pid}.json`), "utf8");
@@ -332,6 +384,7 @@ export function readClaudeSession(pid: number, stat: ProcStat | null, dir: strin
   const status = typeof file.status === "string" && PANE_STATUSES.includes(file.status) ? (file.status as PaneStatus) : "unknown";
   const at = Number(file.statusUpdatedAt);
   return {
+    kind: typeof file.kind === "string" ? file.kind : null,
     sessionId,
     reason: sessionId ? null : "no-session-id",
     status,
@@ -350,6 +403,15 @@ export interface PaneTableEntry {
   title: string | null;
 }
 
+/** What went wrong with a failed `list-panes`, in words that name the cause: not installed, wedged, or no such session. */
+function listPanesFailure(session: string, result: { status: number; stderr?: string }): string {
+  const said = (result.stderr ?? "").trim().split("\n")[0]?.trim();
+  if (result.status === 127) return `zellij is not installed or not on PATH (exit 127)${said ? `: ${said}` : ""}`;
+  if (result.status === 124) return `zellij list-panes for session "${session}" timed out (exit 124): the zellij server may be wedged`;
+  if (said && /not found|no active session|no session/i.test(said)) return `zellij has no session "${session}" (exit ${result.status}): ${said}`;
+  return `zellij list-panes for session "${session}" failed (exit ${result.status})${said ? `: ${said}` : ""}`;
+}
+
 /**
  * Terminal pane id -> tab id / tab name / title from `zellij action list-panes --json --all` for
  * `session`, through the same command line and the same parser as `livePanes` in ./index. Plugin
@@ -364,7 +426,7 @@ export interface PaneTableEntry {
 export function readPaneTable(session: string, shell: Shell = defaultShell): { ok: boolean; error: string | null; panes: Map<number, PaneTableEntry> } {
   const panes = new Map<number, PaneTableEntry>();
   const result = runListPanes(session, shell);
-  if (result.status !== 0) return { ok: false, error: `zellij list-panes failed for session "${session}" (exit ${result.status}): no such session, or zellij is not installed`, panes };
+  if (result.status !== 0) return { ok: false, error: listPanesFailure(session, result), panes };
   const listed = parseListPanes(result.stdout);
   if (!listed) return { ok: false, error: `zellij list-panes for session "${session}" printed no pane list`, panes };
   if (!listed.length) return { ok: false, error: `zellij list-panes for session "${session}" listed no panes at all: not a live session`, panes };
@@ -458,14 +520,42 @@ interface Candidate {
 }
 
 /**
+ * The terminal that IS pane `paneId`: the controlling tty of the pane's root process, or null when
+ * it cannot be named exactly.
+ *
+ * Foreground-ness is a property of a terminal, so it has to be judged on the PANE's terminal, not
+ * on each process's own: a process on some other pty that merely inherited this pane's
+ * ZELLIJ_PANE_ID (Claude's background daemon keeps the tag of the pane that first started it, and
+ * hosts its sessions on ptys of its own: pid 2763809 on /dev/pts/13 carries pane 50's tag) has a
+ * foreground group of its own, and must not be mistaken for the pane's.
+ *
+ * The pane root is the tagged process whose parent is the zellij SERVER (`zellij --server ...`):
+ * zellij forks each pane's shell from it and gives it the pane's pty. Failing that (a zellij whose
+ * server is not recognisable), the tagged processes with no tagged parent in the pane are the
+ * roots. Exactly one distinct tty among the roots names the pane; none or several is ambiguous, and
+ * ambiguity means "nothing is provably foreground", never a guess.
+ */
+function paneTerminal(inPane: TaggedProc[], serverParent: (pid: number) => boolean): number | null {
+  const live = inPane.filter((p) => p.stat.state !== "Z");
+  const pidsInPane = new Set(live.map((p) => p.pid));
+  const roots = live.filter((p) => !pidsInPane.has(p.stat.ppid));
+  const underServer = roots.filter((p) => serverParent(p.stat.ppid));
+  const ttys = new Set((underServer.length ? underServer : roots).map((p) => p.stat.ttyNr).filter((tty) => tty > 0));
+  return ttys.size === 1 ? ([...ttys][0] as number) : null;
+}
+
+/**
  * The one candidate that speaks for its pane.
  *
- * 1. The agent in the terminal's FOREGROUND process group (stat pgrp == tpgid) wins: it is the one
- *    the operator is looking at and typing to.
- * 2. When several share that group (a wrapper and the real agent it exec'd, or an agent and a
- *    helper it spawned under the same path), the one with a TRUSTED Claude session file wins,
- *    because that is the only candidate we can name a session for; then the newest.
- * 3. When NONE is foreground (a backgrounded agent, or the shell is waiting on something else) the
+ * 1. The agent in the PANE's terminal foreground (on the pane's tty, pgrp == tpgid) wins: it is the
+ *    one the operator is looking at and typing to.
+ * 2. A Claude session of `kind: "bg"` (hosted by Claude's daemon, no operator at its keyboard)
+ *    ranks below any other candidate, whatever its group or age: a second guard for when the
+ *    pane's tty cannot be named, or a daemon session shares it.
+ * 3. When several remain in the foreground (a wrapper and the real agent it exec'd, or an agent
+ *    and a helper under the same path), the one with a TRUSTED Claude session file wins, because
+ *    that is the only candidate we can name a session for; then the newest.
+ * 4. When NONE is foreground (a backgrounded agent, or the shell is waiting on something else) the
  *    NEWEST by starttime wins. A pane's agents are started one after another from its shell, so
  *    the latest start is the one most recently put there by the operator; an older survivor is
  *    typically a leftover. That is a heuristic, which is why it only applies when the kernel gives
@@ -474,9 +564,11 @@ interface Candidate {
 function chooseCandidate(candidates: Candidate[]): Candidate {
   const start = (c: Candidate): number => Number(c.proc.stat.startTime);
   const trusted = (c: Candidate): number => (c.claude?.sessionId ? 1 : 0);
+  const background = (c: Candidate): number => (c.claude?.kind === "bg" ? 1 : 0);
   return [...candidates].sort(
     (a, b) =>
       Number(b.foreground) - Number(a.foreground) ||
+      background(a) - background(b) ||
       (a.foreground && b.foreground ? trusted(b) - trusted(a) : 0) ||
       start(b) - start(a) ||
       b.proc.pid - a.proc.pid,
@@ -507,16 +599,36 @@ export function inventoryPanes(options: DiscoverOptions = {}): PaneInventory {
   }
 
   // Live (non-zombie) agent processes, grouped by pane. A zombie is not a working agent.
-  const byPane = new Map<number, Candidate[]>();
+  const taggedByPane = new Map<number, TaggedProc[]>();
   for (const proc of procs) {
-    if (proc.stat.state === "Z") continue;
-    const agent = agentCli(proc.exe, proc.argv);
-    if (!agent) continue;
-    const claude = agent === "claude" ? readClaudeSession(proc.pid, proc.stat, sessionsDir) : null;
-    const candidate: Candidate = { proc, agent, foreground: proc.stat.tpgid > 0 && proc.stat.pgrp === proc.stat.tpgid, claude };
-    const list = byPane.get(proc.paneId);
-    if (list) list.push(candidate);
-    else byPane.set(proc.paneId, [candidate]);
+    const list = taggedByPane.get(proc.paneId);
+    if (list) list.push(proc);
+    else taggedByPane.set(proc.paneId, [proc]);
+  }
+  const serverMemo = new Map<number, boolean>();
+  const isZellijServer = (pid: number): boolean => {
+    let known = serverMemo.get(pid);
+    if (known === undefined) {
+      const { exe, argv } = readArgv(pid);
+      known = exe === "zellij" && argv.includes(" --server");
+      serverMemo.set(pid, known);
+    }
+    return known;
+  };
+  const byPane = new Map<number, Candidate[]>();
+  for (const [paneId, inPane] of taggedByPane) {
+    const tty = paneTerminal(inPane, isZellijServer);
+    for (const proc of inPane) {
+      if (proc.stat.state === "Z") continue;
+      const agent = agentCli(proc.exe, proc.argv);
+      if (!agent) continue;
+      const claude = agent === "claude" ? readClaudeSession(proc.pid, proc.stat, sessionsDir) : null;
+      const foreground = tty !== null && proc.stat.ttyNr === tty && proc.stat.tpgid > 0 && proc.stat.pgrp === proc.stat.tpgid;
+      const candidate: Candidate = { proc, agent, foreground, claude };
+      const list = byPane.get(paneId);
+      if (list) list.push(candidate);
+      else byPane.set(paneId, [candidate]);
+    }
   }
 
   const rows: { row: AgentPane; position: number }[] = [];
@@ -534,7 +646,7 @@ export function inventoryPanes(options: DiscoverOptions = {}): PaneInventory {
     // `unresolved`: guessing (newest file in some dir, a matching cwd) would attribute the wrong
     // session to a pane, which is worse than saying nothing.
     const info: ClaudeSessionInfo =
-      chosen.claude ?? { sessionId: null, reason: "unresolved", status: "unknown", statusUpdatedAt: null };
+      chosen.claude ?? { kind: null, sessionId: null, reason: "unresolved", status: "unknown", statusUpdatedAt: null };
     rows.push({
       position: entry?.tabPosition ?? Number.MAX_SAFE_INTEGER,
       row: {
@@ -594,37 +706,41 @@ function tilde(path: string | null): string {
 }
 
 /**
- * Terminal display width of `text` in columns: wide (CJK) and emoji code points take 2, combining
- * marks, variation selectors, ZWJ and zero-width characters take 0. Counting code points instead
- * misaligns every tab named `ipm 🟢`. A small local function rather than the `string-width`
- * package: that one sits in node_modules only transitively (Ink brings its own, a different
- * major), and pjangler does not declare it.
+ * Terminal display width of `text` in columns, by grapheme cluster: an emoji (presentation emoji,
+ * a text-style pictograph made emoji by VS16 like `⚠️` `❤️` `▶️`, a keycap `1️⃣`, a ZWJ sequence, a
+ * regional-indicator FLAG PAIR) is 2 however many code points it takes; a wide (CJK) character is
+ * 2; combining marks, variation selectors and other zero-width characters add nothing. Counting
+ * code points instead misaligns every tab named `ipm 🟢`. A small local function rather than the
+ * `string-width` package: that one sits in node_modules only transitively (Ink brings its own, a
+ * different major), and pjangler does not declare it.
  */
 export function displayWidth(text: string): number {
   let width = 0;
-  let joined = false; // the previous code point was a ZWJ: this one fuses into the same emoji
-  for (const ch of text) {
-    const cp = ch.codePointAt(0) as number;
-    if (joined && /^\p{Extended_Pictographic}$/u.test(ch)) {
-      joined = false;
-      continue;
-    }
-    joined = cp === 0x200d;
-    if (/^[\p{Mn}\p{Me}\p{Cf}]$/u.test(ch) || cp === 0x200b || (cp >= 0xfe00 && cp <= 0xfe0f)) continue; // zero width
-    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) continue; // control
-    const wide =
-      /^\p{Emoji_Presentation}$/u.test(ch) || // 🟢 🔴 and friends
-      (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
-      (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) || // CJK, kana, Yi
-      (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
-      (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility
-      (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK compatibility forms
-      (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
-      (cp >= 0xffe0 && cp <= 0xffe6) ||
-      (cp >= 0x20000 && cp <= 0x3fffd);
-    width += wide ? 2 : 1;
-  }
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) width += clusterWidth(segment);
   return width;
+}
+
+const EMOJI_PRESENTATION = /^\p{Emoji_Presentation}/u;
+const EMOJI_BASE = /^\p{Emoji}/u;
+const REGIONAL_INDICATOR = /^\p{Regional_Indicator}/u;
+const ZERO_WIDTH_ONLY = /^[\p{Mn}\p{Me}\p{Cf}\p{Cc}]+$/u;
+
+function clusterWidth(cluster: string): number {
+  if (ZERO_WIDTH_ONLY.test(cluster)) return 0;
+  const cp = cluster.codePointAt(0) as number;
+  if (REGIONAL_INDICATOR.test(cluster)) return [...cluster].length >= 2 ? 2 : 1; // a flag is a PAIR; a lone indicator is a letter
+  if (EMOJI_PRESENTATION.test(cluster)) return 2;
+  if (cluster.includes("\ufe0f") && EMOJI_BASE.test(cluster)) return 2; // VS16 asks for the emoji form
+  const wide =
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) || // CJK, kana, Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility
+    (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK compatibility forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x20000 && cp <= 0x3fffd);
+  return wide ? 2 : 1;
 }
 
 /**
