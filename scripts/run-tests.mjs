@@ -45,6 +45,8 @@ const QUARANTINED = new Map([
 const GATES = [
   ["check:lock", "scripts/check-package-lock-parity.mjs"],
   ["check:submodules", "scripts/check-submodule-contract.mjs"],
+  // W4-2 I-7: the CommonProject-backed suites need the template checked out.
+  ["check:submodule-checkout", "scripts/check-submodule-checkout.mjs"],
   ["check:tracked-secrets", "scripts/check-tracked-secrets.mjs"],
   // PJAN-193: no test file hands a child the operator env (see SUITE_ENV below).
   // PJAN-196: and every registered suite starts from the hermetic-suite preamble.

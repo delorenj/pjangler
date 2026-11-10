@@ -252,7 +252,8 @@ export class ManifestIndex {
         if (read.hash !== row.content_hash || row.status !== 'ok' || !equal(row.snapshot, recordFromManifest(read.manifest, read.path))) await this.persist(client, read, row.project_id);
       } catch (error) {
         if (!(error instanceof RegistryError) && !['ENOENT', 'ENOTDIR', 'ELOOP', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-        await client.query('UPDATE pjangler_index.projects SET status=$2,error=$3 WHERE project_id=$1', [row.project_id, ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '') ? 'missing' : 'invalid', String(error)]);
+        // Read path stays side-effect free at steady state: only write when the status or error actually changes.
+        await client.query('UPDATE pjangler_index.projects SET status=$2,error=$3 WHERE project_id=$1 AND (status IS DISTINCT FROM $2 OR error IS DISTINCT FROM $3)', [row.project_id, ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '') ? 'missing' : 'invalid', String(error)]);
       }
     }
   }

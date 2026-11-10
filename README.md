@@ -10,9 +10,16 @@ Requires Node 24 or newer. Project skills use `@delorenj/skillex` 0.1.2; see
 [the integration contract](docs/skillex-integration.md).
 
 ```bash
+git submodule update --init --recursive   # templates/commonproject; a plain clone leaves it empty
 npm install
 npm run build
 ```
+
+`npm test` (scripts/run-tests.mjs) needs that submodule: the `check:submodule-checkout`
+gate fails with the init command when `templates/commonproject` is empty. The
+Postgres-backed suites read the standard `PG*` variables; point them at a
+disposable server (CI uses a `postgres:16` service). `PJANGLER_REQUIRE_DISPOSABLE_POSTGRES=1`
+makes a missing postgres/psql/bun fail instead of skip, as CI does.
 
 ## CLI usage
 

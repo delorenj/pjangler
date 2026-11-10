@@ -140,6 +140,10 @@ try {
   registry.projects.alpha.description = 'cannot overwrite invalid manifest';
   assert.equal((await request('/v1/registry', 'PUT', registry)).status, 422); assert.equal(readFileSync(alpha, 'utf8'), '{bad');
   rmSync(alpha); registry = await ok(); assert.equal(registry.__registry_status.alpha.status, 'missing');
+  // A repeated read of an unchanged missing manifest must not rewrite its row (W4-2 I-6: GET is side-effect free).
+  const missingXmin = (await db.query("SELECT xmin::text AS x FROM pjangler_index.projects WHERE project_id='alpha'")).rows[0].x;
+  registry = await ok(); assert.equal(registry.__registry_status.alpha.status, 'missing');
+  assert.equal((await db.query("SELECT xmin::text AS x FROM pjangler_index.projects WHERE project_id='alpha'")).rows[0].x, missingXmin, 'a steady-state GET must not UPDATE a missing row');
   writeFileSync(alpha, valid); registry = await ok('/v1/reindex', 'POST', {}); assert.equal(registry.__registry_status.alpha.status, 'ok');
   const beta = manifest('beta', { project_id: 'beta', project_name: 'Beta' });
   registry = await ok('/v1/index', 'POST', { manifest_path: beta });
