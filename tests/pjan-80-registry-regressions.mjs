@@ -1,6 +1,6 @@
-import "./helpers/hermetic-suite.mjs";
+import { SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, renameSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -12,8 +12,29 @@ import { hermeticEnv } from './helpers/hermetic-env.mjs';
 const root = resolve(import.meta.dirname, '..');
 const temp = mkdtempSync(join(tmpdir(), 'pjan-80-registry-'));
 const database = `pjan80_${process.pid}_${Date.now()}`;
-// The registry service reaches the same Postgres this suite does: PG* connection settings are passed by name.
-const env = hermeticEnv({ PGHOST: process.env.PGHOST ?? '/var/run/postgresql', PGDATABASE: database, PJ_REGISTRY_PORT: '0' }, { pass: ['PGPORT', 'PGUSER', 'PGPASSWORD'] });
+// The registry service reaches the same Postgres this suite does: this suite's
+// SUITE_PASSTHROUGH grants (the PG* connection settings) are forwarded from the
+// one registry (PJAN-198); the fixture pins the host and the database.
+const env = hermeticEnv({ PGHOST: process.env.PGHOST ?? '/var/run/postgresql', PGDATABASE: database, PJ_REGISTRY_PORT: '0' }, { pass: SUITE_GRANTS });
+
+// PJAN-198 (acceptance 3): the PG settings must reach the service CHILD, not
+// just this suite — proven with planted, non-secret sentinels read back from
+// inside a spawned child, through an env built exactly the way the service's
+// env above is built (same helper, same SUITE_GRANTS). A name the registry
+// does not grant must not survive the same construction.
+{
+  const planted = { PGPORT: '55987', PGUSER: 'pjan198_sentinel_user', PGPASSWORD: 'pjan198-sentinel-not-a-credential', PJAN198_UNGRANTED: 'pjan-198-ungranted-sentinel' };
+  const saved = {};
+  for (const [name, value] of Object.entries(planted)) { saved[name] = process.env[name]; process.env[name] = value; }
+  const probeEnv = hermeticEnv({}, { pass: SUITE_GRANTS });
+  for (const name of Object.keys(planted)) { if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name]; }
+  const probe = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify({ PGPORT: process.env.PGPORT ?? null, PGUSER: process.env.PGUSER ?? null, PGPASSWORD: process.env.PGPASSWORD ?? null, PJAN198_UNGRANTED: process.env.PJAN198_UNGRANTED ?? null }))'], { env: probeEnv, encoding: 'utf8' });
+  assert.equal(probe.status, 0, probe.stderr);
+  const received = JSON.parse(probe.stdout);
+  for (const name of ['PGPORT', 'PGUSER', 'PGPASSWORD']) assert.equal(received[name], planted[name], `${name} must reach a service child`);
+  assert.equal(received.PJAN198_UNGRANTED, null, 'an ungranted name must not reach a service child');
+  console.log('ok   PG sentinels reach a spawned service child; ungranted names do not');
+}
 const admin = new pg.Client({ host: env.PGHOST, database: process.env.PJ_TEST_ADMIN_DATABASE ?? 'postgres' });
 let child;
 let db;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { hermeticEnv } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, suiteGrants } from "./helpers/hermetic-env.mjs";
 import {
   appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
@@ -56,12 +56,33 @@ delete process.env.BMAD_EXTERNAL_MODULES_CACHE;
 for (const dir of [home, process.env.XDG_CONFIG_HOME, process.env.TMPDIR]) mkdirSync(dir!, { recursive: true });
 /**
  * The real installer's env: the oracle's own isolation above, named key by key
- * (PJAN-193), plus the npm cache and GitHub token the launcher hands this suite.
+ * (PJAN-193), plus exactly what SUITE_PASSTHROUGH grants this suite's launcher
+ * (PJAN-198, one source of truth): the GitHub token and the TLS trust anchors
+ * (SSL_CERT_FILE / NODE_EXTRA_CA_CERTS, the PJAN-196 TLS decision). npm's cache
+ * is $HOME/.npm, i.e. the scratch home above, cold like a CI runner.
  */
 const installerEnv = () => hermeticEnv({
   HOME: home, XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
   TMPDIR: process.env.TMPDIR, GIT_CEILING_DIRECTORIES: "/tmp", CI: "true", FORCE_COLOR: "0", NO_COLOR: "1",
-}, { pass: ["GITHUB_TOKEN", "npm_config_cache", "npm_config_update_notifier", "npm_config_fund"] });
+  npm_config_update_notifier: "false", npm_config_fund: "false",
+}, { pass: suiteGrants("tests/pjan-180-surface-oracle.mjs", { required: true }) });
+
+// PJAN-198 (acceptance 3): a cheap probe mode that skips the 30-minute network
+// run and answers one question through the REAL env chain — launcher preamble
+// -> launcher's SUITE_GRANTS forwarding -> this bundled child -> installerEnv()
+// — namely which names the installer child would actually receive.
+// tests/pjan-198-installer-env-sentinel.mjs plants sentinel trust anchors and
+// reads them back from a grandchild spawned with exactly installerEnv().
+if (argv.includes("--probe-env")) {
+  const probe = spawnSync(
+    process.execPath,
+    ["-e", "process.stdout.write(JSON.stringify({ SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null, HTTP_PROXY: process.env.HTTP_PROXY ?? null, PJAN198_UNGRANTED: process.env.PJAN198_UNGRANTED ?? null }))"],
+    { env: installerEnv(), encoding: "utf8" },
+  );
+  if (probe.status !== 0) throw new Error(`PJAN-180 env probe child failed: ${probe.stderr}`);
+  console.log(`PROBE_ENV ${probe.stdout.trim()}`);
+  process.exit(0);
+}
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 const TOOLS = [...SUPPORTED_BMAD_TOOLS];
 const put = (path: string, text: string) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };

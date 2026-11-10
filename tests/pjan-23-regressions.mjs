@@ -11,10 +11,11 @@ import "./helpers/hermetic-suite.mjs";
 // here touches Plane, Trello, or Linear.
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
+import { findTpAdapters, tpAdaptersFailure } from "./helpers/tp-adapters.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
@@ -35,6 +36,20 @@ const CONTRACT_OPS = [
   "transition",
 ];
 
+/**
+ * Provider-specific ops beyond the shared contract, declared per provider.
+ * plane.sh dispatches `list_labels` — the scope-label catalog behind the PM
+ * scaffold's label stamping (Krebs bd4bb40, mirrored from
+ * hermes-agent-template) — ahead of trello/linear. Keep an entry per provider,
+ * even an empty one: adding an op to one adapter must force an explicit
+ * decision here — extend the contract, declare the extension, or revert.
+ */
+const PROVIDER_EXTENSION_OPS = {
+  plane: ["list_labels"],
+  linear: [],
+  trello: [],
+};
+
 const BOARD = "board-uuid-1";
 const WORKSPACE = "testws";
 const KEY = "plane-api-key-do-not-echo-4b2a9c";
@@ -50,29 +65,14 @@ function makeDir(label) {
 // ---------------------------------------------------------------------------
 
 /**
- * The canonical adapter directory, resolved the way
- * `resolveTicketProviderAdapter` resolves it: the env override first, then a
- * walk up from this repo, then the canonical 33GOD checkout. Krebs owns these
- * files; pjangler only reads and runs them.
+ * The canonical adapter directory, resolved by the shared helper in
+ * tests/helpers/tp-adapters.mjs (PJAN-198): the env override first, then a
+ * walk up from this repo. The src `homedir()/code/33GOD/krebs` fallback is
+ * product behaviour for a real HOME and deliberately not used here — under
+ * the preamble homedir() is the suite's scratch home.
  */
-function resolveAdapters() {
-  const candidates = [];
-  const override = process.env.PJ_TICKET_PROVIDER_ADAPTERS;
-  if (override) candidates.push(override);
-  let dir = root;
-  for (let depth = 0; depth < 8; depth += 1) {
-    candidates.push(join(dir, "krebs", "adapters", "tp"));
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  candidates.push(join(homedir(), "code", "33GOD", "krebs", "adapters", "tp"));
-  const found = candidates.find((candidate) => existsSync(join(candidate, "plane.sh")));
-  assert.ok(found, "no tp adapters found; point PJ_TICKET_PROVIDER_ADAPTERS at a directory holding <provider>.sh");
-  return found;
-}
-
-const ADAPTERS = resolveAdapters();
+const { found: ADAPTERS, candidates: ADAPTER_CANDIDATES } = findTpAdapters({ startDir: root });
+assert.ok(ADAPTERS, tpAdaptersFailure(ADAPTER_CANDIDATES));
 
 function adapterPath(provider) {
   return join(ADAPTERS, `${provider}.sh`);
@@ -252,25 +252,40 @@ function plane(args, responses, env = PLANE_ENV) {
 
 try {
   // ------------------------------------------------------------------------
-  // 1. create_issue is part of the dispatch contract.
+  // 1. create_issue is part of the dispatch contract. Each provider dispatches
+  //    exactly the contract ops plus its DECLARED extensions — a quiet new op
+  //    and a quiet omission both fail here.
   // ------------------------------------------------------------------------
   for (const provider of PROVIDERS) {
     const ops = dispatchedOps(adapterPath(provider));
     assert.ok(ops.includes("create_issue"), `${provider}.sh must dispatch create_issue`);
-    assert.deepEqual(ops, CONTRACT_OPS, `${provider}.sh must dispatch exactly the contract ops`);
+    const extensions = PROVIDER_EXTENSION_OPS[provider];
+    assert.deepEqual(
+      ops.filter((op) => !extensions.includes(op)),
+      CONTRACT_OPS,
+      `${provider}.sh must dispatch exactly the contract ops plus its declared extensions`,
+    );
+    assert.deepEqual(
+      ops.filter((op) => !CONTRACT_OPS.includes(op)),
+      [...extensions].sort(),
+      `${provider}.sh dispatches an extension op not declared in PROVIDER_EXTENSION_OPS`,
+    );
   }
 
   // ------------------------------------------------------------------------
-  // 2. Every provider implements the same op set — no provider may quietly
-  //    omit an op from the contract.
+  // 2. Every provider implements the same contract op set — no provider may
+  //    quietly omit an op from the contract. Extensions are per-provider and
+  //    declared above, so parity is judged on the shared core.
   // ------------------------------------------------------------------------
   {
+    const coreOps = (provider) =>
+      dispatchedOps(adapterPath(provider)).filter((op) => !PROVIDER_EXTENSION_OPS[provider].includes(op));
     const [reference, ...rest] = PROVIDERS;
     for (const provider of rest) {
       assert.deepEqual(
-        dispatchedOps(adapterPath(provider)),
-        dispatchedOps(adapterPath(reference)),
-        `${provider}.sh must implement the same ops as ${reference}.sh`,
+        coreOps(provider),
+        coreOps(reference),
+        `${provider}.sh must implement the same contract ops as ${reference}.sh (extensions are declared in PROVIDER_EXTENSION_OPS)`,
       );
     }
   }
@@ -287,6 +302,10 @@ try {
       key: "42",
       issue_url: `https://plane.delo.sh/${WORKSPACE}/projects/${BOARD}/issues/issue-uuid-1`,
       created: true,
+      // plane.sh always reports the scope it stamped; with no --scope, no
+      // role.yaml board_scope and no ticket_provider.scope_label in the staged
+      // binding, that is explicitly none.
+      scope_label: null,
     });
     assert.equal(run.requests.length, 1, "the default path must not read the board before writing");
     const [request] = run.requests;
@@ -339,6 +358,7 @@ try {
       key: "7",
       issue_url: `https://plane.delo.sh/${WORKSPACE}/projects/${BOARD}/issues/existing-uuid`,
       created: false,
+      scope_label: null,
     });
     assert.deepEqual(
       reused.requests.map((entry) => entry.method),
@@ -468,6 +488,32 @@ try {
     const bare = runOp({ adapter, args: [], env: CREDENTIALS[provider] });
     assert.notEqual(bare.status, 0, `${provider}.sh must reject a bare invocation`);
     assert.equal(bare.stdout, "", `${provider}.sh must print nothing for a bare invocation`);
+  }
+
+  // ------------------------------------------------------------------------
+  // 9. Adapter resolution (PJAN-198/A5): the env override beats the walk-up,
+  //    and a failed lookup fails loudly naming every searched path.
+  // ------------------------------------------------------------------------
+  {
+    const staged = join(makeDir("override"), "adapters");
+    mkdirSync(staged, { recursive: true });
+    writeFileSync(join(staged, "plane.sh"), "#!/bin/sh\n");
+    assert.equal(
+      findTpAdapters({ env: { PJ_TICKET_PROVIDER_ADAPTERS: staged }, startDir: root }).found,
+      staged,
+      "PJ_TICKET_PROVIDER_ADAPTERS must win over the checkout walk-up",
+    );
+
+    const nowhere = makeDir("nowhere");
+    const miss = findTpAdapters({ env: {}, startDir: nowhere });
+    assert.equal(miss.found, null, "a bare directory tree must not resolve adapters");
+    const message = tpAdaptersFailure(miss.candidates);
+    assert.ok(
+      message.includes(join(nowhere, "krebs", "adapters", "tp")),
+      "the failure must list the searched paths",
+    );
+    assert.match(message, /PJ_TICKET_PROVIDER_ADAPTERS/, "the failure must name the way out");
+    assert.doesNotMatch(message, /not inside a 33GOD tree/, "the failure must not assert a cause the lookup cannot know");
   }
 
   console.log("PJAN-23 regressions: passed");

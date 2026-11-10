@@ -65,11 +65,23 @@
 // run-tests.mjs stops registering this gate or the canaries that prove the
 // guards dynamically (REQUIRED_REGISTRATIONS); the PJAN-196 canary suite
 // checks the same registrations from the other side.
+//
+// PJAN-198 tightens it:
+// - "registered" also covers `node ./tests/x.mjs`, any spacing and node flags,
+//   and suites run from a .github/workflows/*.yml run step or a mise.toml task
+//   (which bypass both the runner and npm run);
+// - a hand-written `pass: [...]` list in a test file is a finding: forwarded
+//   operator names come from SUITE_PASSTHROUGH only (PASS_LIST_EXCEPTIONS);
+// - a registered suite reading a process.env name the preamble deletes (not
+//   PASSTHROUGH, not pinned, not granted to it, never set by it) is a finding:
+//   that read is silently always undefined.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
+import YAML from "yaml";
+import { PASSTHROUGH, suiteGrants } from "../tests/helpers/hermetic-env.mjs";
 
 /**
  * Files allowed to let a child inherit the operator env, each at marked sites
@@ -137,6 +149,7 @@ export const REQUIRED_REGISTRATIONS = Object.freeze({
     "tests/pjan-193-env-allowlist-regressions.mjs",
     "tests/pjan-196-suite-env-probe.mjs",
     "tests/pjan-196-suite-env-canary.mjs",
+    "tests/pjan-198-operator-home-guard.mjs",
   ]),
 });
 
@@ -171,16 +184,46 @@ export function readRunnerRegistry(root) {
 }
 
 /**
- * Every file that runs as a SUITE PROCESS: the runner's SUITES plus every
+ * `node [flags] tests/<x>.mjs` invocations in shell text: `./tests/x.mjs`,
+ * any spacing, shell line continuations (`\` + newline), quoted paths, and
+ * node flags (`--flag`, `--flag=value`, and the loader flags that take a
+ * separate value) before the script. Returns the repo-relative suite paths.
+ */
+export function nodeSuiteInvocations(text) {
+  // A wrapped command is still one invocation: treat `\` + newline as spacing.
+  const gap = String.raw`(?:\s|\\\r?\n)+`;
+  const flag = String.raw`(?:(?:--import|--require|-r|--loader|--experimental-loader)${gap}\S+|--?[\w-]+(?:=\S+)?)`;
+  const pattern = new RegExp(String.raw`(?<![\w./-])node(?:${gap}${flag})*${gap}["']?(?:\./)?(tests/[\w./-]+?\.mjs)(?=["'\s;&|)\\]|$)`, "gm");
+  return [...String(text).matchAll(pattern)].map((match) => match[1]);
+}
+
+/** Every `run` string of every step of every job in a GitHub Actions workflow. */
+export function workflowRunSteps(text) {
+  const doc = YAML.parse(text) ?? {};
+  return Object.values(doc.jobs ?? {}).flatMap((job) => (job?.steps ?? []).map((step) => step?.run).filter((run) => typeof run === "string"));
+}
+
+/**
+ * Every file that runs as a SUITE PROCESS: the runner's SUITES, every
  * `node tests/<x>.mjs` in a package.json script (the network-backed installer
- * contracts run only from there, in publish.yml).
+ * contracts run only from there, in publish.yml), and (PJAN-198) every one in
+ * a .github/workflows/*.yml run step or a mise.toml task, which bypass both
+ * the runner and npm run.
  */
 export function registeredSuites(root) {
   const suites = new Set(readRunnerRegistry(root).suites);
+  const add = (text) => { for (const suite of nodeSuiteInvocations(text)) suites.add(suite); };
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  for (const command of Object.values(pkg.scripts ?? {})) {
-    for (const match of String(command).matchAll(/\bnode\s+(tests\/[\w./-]+\.mjs)\b/g)) suites.add(match[1]);
+  for (const command of Object.values(pkg.scripts ?? {})) add(command);
+  const workflows = join(root, ".github", "workflows");
+  let entries = [];
+  try { entries = readdirSync(workflows); } catch { /* no workflows */ }
+  for (const name of entries.filter((entry) => /\.ya?ml$/.test(entry)).sort()) {
+    for (const run of workflowRunSteps(readFileSync(join(workflows, name), "utf8"))) add(run);
   }
+  let mise = "";
+  try { mise = readFileSync(join(root, "mise.toml"), "utf8"); } catch { /* no mise.toml */ }
+  add(mise.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n"));
   return [...suites].sort();
 }
 
@@ -209,7 +252,7 @@ export function firstModuleRequest(text, fileName = "suite.mjs") {
  * request is ./helpers/hermetic-suite.mjs) unless PREAMBLE_EXCEPTIONS lists it,
  * and the guards above stay registered in scripts/run-tests.mjs.
  */
-export function checkSuitePreambles(root, exceptions = PREAMBLE_EXCEPTIONS) {
+export function checkSuitePreambles(root, exceptions = PREAMBLE_EXCEPTIONS, { passListExceptions = PASS_LIST_EXCEPTIONS } = {}) {
   const violations = [];
   const registry = readRunnerRegistry(root);
   for (const [name, script] of REQUIRED_REGISTRATIONS.gates) {
@@ -238,15 +281,19 @@ export function checkSuitePreambles(root, exceptions = PREAMBLE_EXCEPTIONS) {
     if (!suites.includes(suite)) violations.push(`${suite}  stale preamble exception: not a registered suite`);
   }
   violations.push(...checkOperatorHomeReads(root));
+  violations.push(...checkPassLists(root, passListExceptions));
+  violations.push(...checkDeletedEnvReads(root, suites));
   return { violations, suites };
 }
 
 /**
- * Files allowed to call os.userInfo() directly: the preamble (operatorHome()
- * lives there, gated by OPERATOR_HOME_READERS) and the PJAN-196 probe (which
- * compares against it to prove the real home is NOT what in-process code sees).
+ * Files allowed to call os.userInfo() directly: the operator-home guard (it
+ * wraps os.userInfo and keeps the unwrapped one that operatorHome() in the
+ * preamble reads through, gated by OPERATOR_HOME_READERS) and the PJAN-196
+ * probe (which compares against it to prove the real home is NOT what
+ * in-process code sees; it is listed in OPERATOR_HOME_READERS too).
  */
-const USER_INFO_FILES = new Set(["tests/helpers/hermetic-suite.mjs", "tests/pjan-196-suite-env-probe.mjs"]);
+const USER_INFO_FILES = new Set(["tests/helpers/operator-home-guard.mjs", "tests/pjan-196-suite-env-probe.mjs"]);
 
 /** Lines of `text` that reach os.userInfo: an import of it from os/node:os, or a `.userInfo` member. */
 export function userInfoSites(text, fileName = "suite.mjs") {
@@ -277,6 +324,130 @@ export function checkOperatorHomeReads(root) {
     if (USER_INFO_FILES.has(rel)) continue;
     for (const line of userInfoSites(readFileSync(path, "utf8"), path)) {
       violations.push(`${rel}:${line}  os.userInfo() reads the operator's real home: use operatorHome() from tests/helpers/hermetic-suite.mjs and list the suite in OPERATOR_HOME_READERS`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * Files allowed a hand-written `pass: [...]` list, each with the reason
+ * (PJAN-198). Everyone else forwards names from the one registry,
+ * SUITE_PASSTHROUGH: `pass: SUITE_GRANTS` in a suite, or
+ * `pass: suiteGrants("tests/<launcher>.mjs", { required: true })` in a bundled
+ * child.
+ */
+export const PASS_LIST_EXCEPTIONS = new Map([
+  ["tests/pjan-193-env-allowlist-regressions.mjs", "tests hermeticEnv()'s own `pass` semantics (HOME/XDG_* refused, absent names never invented, a granted name forwarded) with synthetic names; it forwards nothing real"],
+]);
+
+/** Lines of `text` where an object literal's `pass` is a non-empty array literal (directly or through a same-file binding). */
+export function passListSites(text, fileName = "suite.mjs") {
+  const kind = fileName.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
+  const arrays = new Set();
+  const collect = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+      && ts.isArrayLiteralExpression(unwrap(node.initializer)) && unwrap(node.initializer).elements.length) arrays.add(node.name.text);
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+  const lines = [];
+  const visit = (node) => {
+    if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && ts.isObjectLiteralExpression(node.parent)
+      && node.name && (ts.isIdentifier(node.name) || ts.isStringLiteralLike(node.name)) && node.name.text === "pass") {
+      const value = unwrap(ts.isPropertyAssignment(node) ? node.initializer : node.name);
+      const literal = value && ts.isArrayLiteralExpression(value) && value.elements.length > 0;
+      const bound = value && ts.isIdentifier(value) && arrays.has(value.text);
+      if (literal || bound) lines.push(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return lines;
+}
+
+/**
+ * PJAN-198: one source of truth for the operator variables a suite forwards.
+ * A literal list of names beside SUITE_PASSTHROUGH drifts from it (the surface
+ * oracle's installer child kept a list without the TLS anchors the registry
+ * grants), so every `pass: [...]` in a test file is a finding unless
+ * PASS_LIST_EXCEPTIONS lists the file.
+ */
+export function checkPassLists(root, exceptions = PASS_LIST_EXCEPTIONS) {
+  const violations = [];
+  const used = new Set();
+  for (const path of listTestFiles(join(root, "tests")).sort()) {
+    const rel = relative(root, path).split(sep).join("/");
+    if (ALLOWED_FILES.has(rel)) continue;
+    for (const line of passListSites(readFileSync(path, "utf8"), path)) {
+      if (exceptions.has(rel)) { used.add(rel); continue; }
+      violations.push(`${rel}:${line}  hand-written pass list: forward SUITE_GRANTS, or suiteGrants("tests/<launcher>.mjs", { required: true }) in a bundled child, from SUITE_PASSTHROUGH in tests/helpers/hermetic-env.mjs`);
+    }
+  }
+  for (const file of exceptions.keys()) if (!used.has(file)) violations.push(`${file}  stale pass-list exception: no hand-written pass list remains; delete its PASS_LIST_EXCEPTIONS entry`);
+  return violations;
+}
+
+/** What the preamble leaves in a suite's env besides its grants. */
+const PREAMBLE_KEEPS = new Set([...Object.keys(PASSTHROUGH), "HOME", "TMPDIR", "PYTHONDONTWRITEBYTECODE"]);
+
+/**
+ * Names a suite READS from process.env (`process.env.X`, `process.env["X"]`,
+ * `const { X } = process.env`) and names it WRITES (`process.env.X = ...`,
+ * `delete process.env.X`). Text inside template literals and strings (fixture
+ * scripts) is not code and is not read.
+ */
+export function envAccesses(text, fileName = "suite.mjs") {
+  const kind = fileName.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
+  const isProcessEnv = (node) => {
+    const n = unwrap(node);
+    return n && ts.isPropertyAccessExpression(n) && n.name.text === "env" && ts.isIdentifier(unwrap(n.expression)) && unwrap(n.expression).text === "process";
+  };
+  const reads = new Map();
+  const writes = new Set();
+  const visit = (node) => {
+    if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && isProcessEnv(node.expression)) {
+      const name = memberName(node);
+      if (name) {
+        const parent = node.parent;
+        const written = (ts.isBinaryExpression(parent) && parent.left === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+          || ts.isDeleteExpression(parent);
+        if (written) writes.add(name);
+        else if (!reads.has(name)) reads.set(name, source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+      }
+    } else if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer && isProcessEnv(node.initializer)) {
+      for (const element of node.name.elements) {
+        const key = element.propertyName ?? element.name;
+        if (!element.dotDotDotToken && key && (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) && !reads.has(key.text)) {
+          reads.set(key.text, source.getLineAndCharacterOfPosition(element.getStart(source)).line + 1);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { reads, writes };
+}
+
+/**
+ * PJAN-198: a registered suite that reads a variable the preamble deletes reads
+ * `undefined`, always, with no error. That is how PJAN75_CLI_SRC, a documented
+ * operator knob, silently stopped working under PJAN-196. A read of a name
+ * outside PASSTHROUGH, the pins and the suite's SUITE_PASSTHROUGH grants, that
+ * the suite does not set itself, is a finding: grant it (with the reason) or
+ * stop reading it.
+ */
+export function checkDeletedEnvReads(root, suites = registeredSuites(root)) {
+  const violations = [];
+  for (const suite of suites) {
+    let text;
+    try { text = readFileSync(join(root, suite), "utf8"); } catch { continue; }
+    const { reads, writes } = envAccesses(text, suite);
+    const granted = new Set(suiteGrants(suite));
+    for (const [name, line] of reads) {
+      if (PREAMBLE_KEEPS.has(name) || /^LC_[A-Z]+$/.test(name) || granted.has(name) || writes.has(name)) continue;
+      violations.push(`${suite}:${line}  reads process.env.${name}, which the hermetic-suite preamble deletes (not in PASSTHROUGH, not granted to this suite in SUITE_PASSTHROUGH, never set here): it is always undefined`);
     }
   }
   return violations;

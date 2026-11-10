@@ -1,10 +1,9 @@
-import "./helpers/hermetic-suite.mjs";
+import { SUITE_HOME, operatorHome } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
+import { hermeticDefaultHome, hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import { createSkillPackFixture } from "./helpers/pack-fixture.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -88,12 +87,26 @@ function miseEnv(repo) {
 }
 
 /**
- * The trust store mise would use if this suite forgot to isolate itself --
- * i.e. the one that must never gain an entry pointing at a fixture.
+ * Every trust store mise would write to if one of this suite's invocations
+ * forgot miseEnv(repo) -- i.e. the stores that must never gain an entry
+ * pointing at a fixture. Since PJAN-196 the suite process runs with a scratch
+ * HOME and no MISE_* variables (the preamble deletes them), so `homedir()` and
+ * `process.env.MISE_STATE_DIR` no longer name the operator's store; each
+ * reachable store is named explicitly instead (PJAN-198):
+ *
+ * - the OPERATOR's real store, under the passwd home from operatorHome()
+ *   (read-only; this suite is in OPERATOR_HOME_READERS for exactly this). A
+ *   child env without HOME makes mise fall back to the passwd entry, which
+ *   HOME isolation cannot hide, so this is still the store the guard was
+ *   written to protect;
+ * - the suite process's own scratch home (a child that inherited the suite env);
+ * - hermeticDefaultHome() (a bare hermeticEnv() child);
+ * - parityHome (a childEnv() child, the CLI env, used for mise by mistake).
  */
-function realTrustStore() {
-  const stateDir = process.env.MISE_STATE_DIR ?? join(homedir(), ".local", "state", "mise");
-  return join(stateDir, "trusted-configs");
+function realTrustStores() {
+  const stores = [operatorHome(), SUITE_HOME, hermeticDefaultHome(), parityHome]
+    .map((home) => join(home, ".local", "state", "mise", "trusted-configs"));
+  return [...new Set(stores)];
 }
 
 /**
@@ -104,27 +117,28 @@ function realTrustStore() {
  * never a concurrent one's.
  */
 function assertRealTrustStoreUnpolluted() {
-  const store = realTrustStore();
-  let entries;
-  try {
-    entries = readdirSync(store);
-  } catch {
-    return; // no store on this host: nothing to pollute
-  }
   const leaked = [];
-  for (const name of entries) {
-    let target;
+  for (const store of realTrustStores()) {
+    let entries;
     try {
-      target = readlinkSync(join(store, name));
+      entries = readdirSync(store);
     } catch {
-      continue; // not a symlink, or vanished mid-scan
+      continue; // no store there: nothing to pollute
     }
-    if (miseTouchedRepos.has(target)) leaked.push(`${name} -> ${target}`);
+    for (const name of entries) {
+      let target;
+      try {
+        target = readlinkSync(join(store, name));
+      } catch {
+        continue; // not a symlink, or vanished mid-scan
+      }
+      if (miseTouchedRepos.has(target)) leaked.push(`${store}/${name} -> ${target}`);
+    }
   }
   assert.deepEqual(
     leaked,
     [],
-    `mise isolation leaked ${leaked.length} fixture(s) into the real trust store (${store}).\n` +
+    `mise isolation leaked ${leaked.length} fixture(s) into a trust store outside the fixture.\n` +
       `Every mise invocation in this suite must pass env: miseEnv(repo).\n${leaked.join("\n")}`,
   );
 }

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
-import { SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
+import { BUNDLED_CHILD_GUARD, SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
 
 /**
  * A bundled TypeScript suite is a child like any other: hermeticEnv() plus the
@@ -40,8 +40,10 @@ export function runTypescriptRegression(sourceName, { pass = SUITE_GRANTS } = {}
       maxBuffer: 20 * 1024 * 1024,
     });
     assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-    const run = spawnSync(process.execPath, [output], { cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024,
-      env: hermeticEnv({}, { pass }) });
+    // PJAN-198: the child runs suite code in-process without the preamble, so
+    // it carries the operator-home guard, judged as this launcher.
+    const run = spawnSync(process.execPath, [...BUNDLED_CHILD_GUARD.execArgv, output], { cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024,
+      env: hermeticEnv({ ...BUNDLED_CHILD_GUARD.env }, { pass }) });
     assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
     process.stdout.write(run.stdout);
   } finally {

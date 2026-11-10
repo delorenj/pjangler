@@ -17,10 +17,11 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
+import { findTpAdapters, tpAdaptersFailure } from "./helpers/tp-adapters.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
@@ -37,28 +38,13 @@ function tempDir(label) {
 }
 
 /**
- * The canonical adapter directory, resolved the way
- * `resolveTicketProviderAdapter` resolves it: the env override first, then a
- * walk up from this repo, then the canonical 33GOD checkout.
+ * The canonical adapter directory, resolved by the shared helper in
+ * tests/helpers/tp-adapters.mjs (PJAN-198). The resolution contract — env
+ * override first, then the checkout walk-up, never the scratch-home fallback —
+ * is documented there and exercised by tests/pjan-23-regressions.mjs §9.
  */
-function resolveAdapters() {
-  const candidates = [];
-  const override = process.env.PJ_TICKET_PROVIDER_ADAPTERS;
-  if (override) candidates.push(override);
-  let dir = root;
-  for (let depth = 0; depth < 8; depth += 1) {
-    candidates.push(join(dir, "krebs", "adapters", "tp"));
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  candidates.push(join(homedir(), "code", "33GOD", "krebs", "adapters", "tp"));
-  const found = candidates.find((candidate) => existsSync(join(candidate, "plane.sh")));
-  assert.ok(found, "no tp adapters found; point PJ_TICKET_PROVIDER_ADAPTERS at a directory holding <provider>.sh");
-  return found;
-}
-
-const ADAPTERS = resolveAdapters();
+const { found: ADAPTERS, candidates: ADAPTER_CANDIDATES } = findTpAdapters({ startDir: root });
+assert.ok(ADAPTERS, tpAdaptersFailure(ADAPTER_CANDIDATES));
 
 /**
  * Adapters resolve their board binding from the nearest .project.json ABOVE
@@ -163,7 +149,11 @@ const issue = {
   name: "Plane hydration",
   description_html: "<p>Inspect <strong>attachments</strong> first.</p>",
   state: "state-cancelled",
+  // get_issue resolves the issue's label IDs against the project label
+  // catalog it fetches alongside the states map (Krebs bd4bb40).
+  labels: ["label-scope-pm"],
 };
+const labelsCatalog = [{ id: "label-scope-pm", name: "scope:pm" }];
 const comments = [
   { id: "comment-1", comment_html: "<p>List response</p>" },
   { id: "comment-2", comment_html: "<p>Second note</p>" },
@@ -212,6 +202,9 @@ try {
   const issueResponses = (commentBody, attachmentBody) => [
     // State collections may also be bare lists; exercise that response shape.
     response("GET", `projects/${BOARD}/states/`, states),
+    // get_issue fetches the label catalog unconditionally (no failure
+    // fallback, unlike comments/attachments), so every success case needs it.
+    response("GET", `projects/${BOARD}/labels/`, { results: labelsCatalog }),
     response("GET", `projects/${BOARD}/issues/${ISSUE}/`, issue),
     response("GET", `projects/${BOARD}/issues/${ISSUE}/comments/`, commentBody),
     response("GET", `projects/${BOARD}/issues/${ISSUE}/issue-attachments/`, attachmentBody),
@@ -224,6 +217,7 @@ try {
     const hydrated = JSON.parse(run.stdout);
     assert.equal(hydrated.state, "Cancelled");
     assert.equal(hydrated.state_type, "cancelled");
+    assert.deepEqual(hydrated.labels, ["scope:pm"], "get_issue must resolve label IDs against the project catalog");
     assert.deepEqual(hydrated.comments.map(({ id, body }) => ({ id, body })), [
       { id: "comment-1", body: "List response" },
       { id: "comment-2", body: "Second note" },
@@ -241,9 +235,10 @@ try {
         is_uploaded: true,
       },
     ]);
-    assert.equal(
-      run.requests[3].url,
-      `${BASE}/projects/${BOARD}/issues/${ISSUE}/issue-attachments/`,
+    assert.ok(
+      run.requests.some(
+        (entry) => entry.url === `${BASE}/projects/${BOARD}/issues/${ISSUE}/issue-attachments/`,
+      ),
       "get_issue must hydrate Plane attachment metadata",
     );
   }
@@ -262,8 +257,12 @@ try {
 
   // Attachment hydration is additive: an unavailable optional endpoint must
   // leave the core issue readable with an explicit empty attachment list.
+  // Only the attachments fixture is dropped — comments and labels carry their
+  // own availability contract (tolerated and required, respectively).
   {
-    const withoutAttachmentFixture = issueResponses({ results: comments }, []).slice(0, 3);
+    const withoutAttachmentFixture = issueResponses({ results: comments }, []).filter(
+      ({ url }) => !url.endsWith("issue-attachments/"),
+    );
     const run = runPlane(["get_issue", ISSUE], withoutAttachmentFixture);
     assert.equal(run.status, 0, run.stderr);
     assert.deepEqual(JSON.parse(run.stdout).attachments, []);

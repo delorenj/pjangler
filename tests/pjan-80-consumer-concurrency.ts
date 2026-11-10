@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { hermeticEnv } from "./helpers/hermetic-env.mjs";
+import { hermeticEnv, suiteGrants } from "./helpers/hermetic-env.mjs";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -28,8 +28,10 @@ try {
   const entry = join(temporary, "service.mjs");
   buildSync({ entryPoints: [join(root, "src/project-registry-service.ts")], outfile: entry, bundle: true, platform: "node", format: "esm", packages: "external" });
   symlinkSync(join(root, "node_modules"), join(temporary, "node_modules"), "dir");
-  // The service reaches the same Postgres this suite does: PG* connection settings are passed by name.
-  service = spawn(process.execPath, [entry], { env: hermeticEnv({ PGHOST: host, PGDATABASE: database, PJ_REGISTRY_PORT: "0" }, { pass: ["PGPORT", "PGUSER", "PGPASSWORD"] }), stdio: ["ignore", "pipe", "pipe"] });
+  // The service reaches the same Postgres this suite does: the launcher's
+  // SUITE_PASSTHROUGH grants (the PG* connection settings) are forwarded from
+  // the one registry (PJAN-198); the fixture pins the host and the database.
+  service = spawn(process.execPath, [entry], { env: hermeticEnv({ PGHOST: host, PGDATABASE: database, PJ_REGISTRY_PORT: "0" }, { pass: suiteGrants("tests/pjan-80-consumer-concurrency.mjs", { required: true }) }), stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   service.stdout!.on("data", chunk => { output += chunk; });
   service.stderr!.on("data", chunk => { output += chunk; });

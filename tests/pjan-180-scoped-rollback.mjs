@@ -1,4 +1,4 @@
-import "./helpers/hermetic-suite.mjs";
+import { BUNDLED_CHILD_GUARD } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,8 +14,8 @@ const scratch = mkdtempSync(join(tmpdir(), "pjan-180-scoped-rollback-build-"));
 try {
   const output = join(scratch, "scoped-rollback.mjs");
   await buildHermeticSuite({ root, entry: join(root, "tests", "pjan-180-scoped-rollback.ts"), output, });
-  const result = spawnSync(process.execPath, [output], { cwd: root, encoding: "utf8", timeout: 300_000,
-    env: hermeticEnv({ NO_COLOR: "1", GIT_CEILING_DIRECTORIES: "/tmp" }), maxBuffer: 20 * 1024 * 1024 });
+  const result = spawnSync(process.execPath, [...BUNDLED_CHILD_GUARD.execArgv, output], { cwd: root, encoding: "utf8", timeout: 300_000,
+    env: hermeticEnv({ ...BUNDLED_CHILD_GUARD.env, NO_COLOR: "1", GIT_CEILING_DIRECTORIES: "/tmp" }), maxBuffer: 20 * 1024 * 1024 });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   process.stdout.write(result.stdout);
 } finally { rmSync(scratch, { recursive: true, force: true }); }

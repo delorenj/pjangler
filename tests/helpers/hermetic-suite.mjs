@@ -41,9 +41,9 @@
 // by node before any module runs. And c8's NODE_V8_COVERAGE is read by node at
 // startup; it stays in the env (PASSTHROUGH) so children keep reporting.
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { userInfo } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { HERMETIC_TMP_BASE, OPERATOR_HOME_READERS, hermeticEnv, suiteGrants } from "./hermetic-env.mjs";
+import { GUARD_SUITE_ENV, accountUserInfo, installOperatorHomeGuard } from "./operator-home-guard.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 
@@ -68,6 +68,22 @@ const next = hermeticEnv({ HOME: SUITE_HOME }, { pass: SUITE_GRANTS });
 for (const name of Object.keys(process.env)) if (!Object.hasOwn(next, name)) delete process.env[name];
 Object.assign(process.env, next);
 
+// PJAN-198: os.userInfo().homedir (the passwd home, which HOME cannot hide)
+// throws for a suite OPERATOR_HOME_READERS does not list, and fails the run at
+// exit even if the caller swallowed the throw. See ./operator-home-guard.mjs.
+installOperatorHomeGuard(SUITE);
+
+/**
+ * How a launcher carries that guard into a bundled TypeScript suite's CHILD
+ * (which never loads this preamble): put `execArgv` before the bundle path and
+ * spread `env` into the child's hermeticEnv fixture. The child is judged as
+ * this launcher.
+ */
+export const BUNDLED_CHILD_GUARD = Object.freeze({
+  execArgv: Object.freeze(["--import", join(import.meta.dirname, "operator-home-guard-preload.mjs")]),
+  env: Object.freeze({ [GUARD_SUITE_ENV]: SUITE }),
+});
+
 /** Marks the process as shielded; tests/pjan-196-suite-env-canary.mjs and helpers can check it. */
 globalThis[Symbol.for("pjangler.hermeticSuite")] = Object.freeze({ suite: SUITE, home: SUITE_HOME, grants: SUITE_GRANTS });
 
@@ -80,5 +96,5 @@ export function operatorHome() {
   if (!OPERATOR_HOME_READERS.has(SUITE)) {
     throw new Error(`${SUITE || "this process"} may not read the operator's real home: add it to OPERATOR_HOME_READERS in tests/helpers/hermetic-env.mjs with the reason`);
   }
-  return userInfo().homedir;
+  return accountUserInfo().homedir;
 }

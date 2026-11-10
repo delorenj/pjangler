@@ -1,7 +1,7 @@
-import { SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
+import { BUNDLED_CHILD_GUARD, SUITE_GRANTS } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
@@ -16,13 +16,13 @@ const scratch = mkdtempSync(join(tmpdir(), "pjan-180-surface-oracle-build-"));
 try {
   const output = join(scratch, "surface-oracle.mjs");
   await buildHermeticSuite({ root, entry: join(root, "tests", "pjan-180-surface-oracle.ts"), output, });
-  const result = spawnSync(process.execPath, [output, ...process.argv.slice(2)], { cwd: root, encoding: "utf8", timeout: 30 * 60_000,
+  const result = spawnSync(process.execPath, [...BUNDLED_CHILD_GUARD.execArgv, output, ...process.argv.slice(2)], { cwd: root, encoding: "utf8", timeout: 30 * 60_000,
     env: hermeticEnv({
-      NO_COLOR: "1", GIT_CEILING_DIRECTORIES: "/tmp",
-      // An npm cache the operator configured explicitly is kept (granted in
-      // SUITE_PASSTHROUGH); otherwise npx caches under the isolated suite home,
-      // cold like a CI runner, and the real ~/.npm is never written (PJAN-196).
-      npm_config_cache: process.env.npm_config_cache || join(homedir(), ".npm"),
+      ...BUNDLED_CHILD_GUARD.env, NO_COLOR: "1", GIT_CEILING_DIRECTORIES: "/tmp",
+      // No npm_config_cache (PJAN-198): the oracle's npx caches under the
+      // oracle's own scratch HOME, cold like a CI runner. `npm run` injects
+      // npm_config_cache=~/.npm; the preamble deletes it (it is granted to no
+      // suite), so the operator's real ~/.npm is not written however this runs.
       npm_config_update_notifier: "false", npm_config_fund: "false",
     }, { pass: SUITE_GRANTS }),
     maxBuffer: 64 * 1024 * 1024 });

@@ -96,6 +96,9 @@ const SUITES = [
   "tests/pjan-193-env-allowlist-regressions.mjs",
   "tests/pjan-196-suite-env-probe.mjs",
   "tests/pjan-196-suite-env-canary.mjs",
+  "tests/pjan-198-operator-home-guard.mjs",
+  "tests/pjan-198-pjan75-cli-src.mjs",
+  "tests/pjan-198-installer-env-sentinel.mjs",
   "tests/pjan-167-enrollment.mjs",
   "tests/pjan-177-g33-enrollment.mjs",
   "tests/pjan-178-g33-scoped-contract.mjs",
@@ -135,9 +138,9 @@ const SUITES = [
   "tests/project-registry-regressions.mjs",
   "tests/shared-board-scope-regressions.mjs",
   "tests/init-board-ingress-regressions.mjs",
-  "tests/project-identity-regressions.mjs",
   "tests/pjan-199-project-rename.mjs",
   "tests/pjan-199-project-rename-unit.mjs",
+  "tests/project-identity-regressions.mjs",
   "tests/project-identity-implicit-regressions.mjs",
   "tests/pg-registry-regressions.mjs",
   "tests/momo-lifecycle-plane-regressions.mjs",
@@ -249,6 +252,10 @@ if (!skipBuild) {
  * pjangler code a suite calls IN-PROCESS (inspectStatus, syncOptions, the
  * notebook module, Recipe.ts's homedir() default, ...) and anything that code
  * spawns see what a child sees, and os.homedir() is scratch, never the real ~.
+ * The one read HOME cannot hide, os.userInfo().homedir (the passwd home that
+ * src/lifecycle/preflight.ts anchors the Copier trust root to, on purpose), is
+ * guarded instead (PJAN-198): it throws and fails the run for any suite, or
+ * bundled child of one, that OPERATOR_HOME_READERS does not list.
  *
  * Why the runner does not build that env itself: the preamble makes
  * `node tests/<suite>.mjs` from the operator shell and this runner
@@ -267,7 +274,8 @@ if (!skipBuild) {
  * inside a real pj child; tests/pjan-196-suite-env-canary.mjs proves the
  * suite-process boundary from inside real src code running in a suite,
  * standalone and under this runner, against planted credentials and a decoy
- * HOME.
+ * HOME; tests/pjan-198-operator-home-guard.mjs proves the userInfo() guard
+ * against real src.
  *
  * c8: NODE_V8_COVERAGE stays in the suite env (PASSTHROUGH) and node reads it
  * at startup anyway, so the suite process and its children keep reporting.

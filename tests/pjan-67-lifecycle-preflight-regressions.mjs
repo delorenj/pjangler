@@ -1,4 +1,4 @@
-import "./helpers/hermetic-suite.mjs";
+import { BUNDLED_CHILD_GUARD } from "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -17,10 +17,13 @@ try {
     `--outfile=${output}`,
   ], { cwd: root, encoding: "utf8", env: hermeticEnv() });
   assert.equal(build.status, 0, `${build.stdout}${build.stderr}`);
-  const run = spawnSync(process.execPath, [output], {
+  // PJAN-198: the bundled child carries the operator-home guard, judged as this
+  // launcher, which OPERATOR_HOME_READERS lists for the live UV Copier
+  // attestation (preflightTrustedCopier without homeDir, the production anchor).
+  const run = spawnSync(process.execPath, [...BUNDLED_CHILD_GUARD.execArgv, output], {
     cwd: root,
     encoding: "utf8",
-    env: hermeticEnv(),
+    env: hermeticEnv({ ...BUNDLED_CHILD_GUARD.env }),
     maxBuffer: 20 * 1024 * 1024,
   });
   assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);

@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { PASSTHROUGH, SUITE_PASSTHROUGH, OPERATOR_HOME_READERS, hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import {
   PREAMBLE, PREAMBLE_EXCEPTIONS, REQUIRED_REGISTRATIONS, checkSuitePreambles, firstModuleRequest, readRunnerRegistry, registeredSuites, userInfoSites,
+  nodeSuiteInvocations, workflowRunSteps, passListSites, checkPassLists, PASS_LIST_EXCEPTIONS, envAccesses, checkDeletedEnvReads,
 } from "../scripts/check-hermetic-test-env.mjs";
 
 // PJAN-196 canary: the SUITE PROCESS itself is hermetic, standalone and under
@@ -137,6 +138,9 @@ try {
   assert.equal(firstModuleRequest("const x = 1;"), undefined);
 
   const tree = join(scratch, "tree");
+  // A synthetic tree has none of the real tree's hand-written pass lists, so
+  // the real PASS_LIST_EXCEPTIONS would all read as stale there.
+  const treePreambles = (dir, exceptions) => checkSuitePreambles(dir, exceptions, { passListExceptions: new Map() });
   const runnerSource = (gates, suites) => `const GATES = [\n${gates.map(([n, s]) => `  [${JSON.stringify(n)}, ${JSON.stringify(s)}],`).join("\n")}\n];\nconst SUITES = [\n${suites.map((s) => `  ${JSON.stringify(s)},`).join("\n")}\n];\n`;
   const required = [...REQUIRED_REGISTRATIONS.suites];
   const writeTree = ({ gates = REQUIRED_REGISTRATIONS.gates, suites = [...required, "tests/plain.mjs"], scripts = {} } = {}) => {
@@ -146,21 +150,21 @@ try {
     for (const suite of [...required, "tests/plain.mjs", "tests/network.mjs"]) put(join(tree, suite), `import "${PREAMBLE}";\nimport x from "../dist/x.js";\n`);
   };
   writeTree();
-  assert.deepEqual(checkSuitePreambles(tree, new Map()).violations, [], "a tree whose suites all start from the preamble is clean");
+  assert.deepEqual(treePreambles(tree, new Map()).violations, [], "a tree whose suites all start from the preamble is clean");
   put(join(tree, "tests", "plain.mjs"), `import x from "../dist/x.js";\nimport "${PREAMBLE}";\n`);
-  assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /tests\/plain\.mjs {2}first import is "\.\.\/dist\/x\.js"/);
-  assert.deepEqual(checkSuitePreambles(tree, new Map([["tests/plain.mjs", "why"]])).violations, [], "a listed exception may skip the preamble");
+  assert.match(treePreambles(tree, new Map()).violations.join("\n"), /tests\/plain\.mjs {2}first import is "\.\.\/dist\/x\.js"/);
+  assert.deepEqual(treePreambles(tree, new Map([["tests/plain.mjs", "why"]])).violations, [], "a listed exception may skip the preamble");
   writeTree();
-  assert.match(checkSuitePreambles(tree, new Map([["tests/plain.mjs", "why"]])).violations.join("\n"), /stale preamble exception: it imports the preamble/);
-  assert.match(checkSuitePreambles(tree, new Map([["tests/gone.mjs", "why"]])).violations.join("\n"), /tests\/gone\.mjs {2}stale preamble exception: not a registered suite/);
+  assert.match(treePreambles(tree, new Map([["tests/plain.mjs", "why"]])).violations.join("\n"), /stale preamble exception: it imports the preamble/);
+  assert.match(treePreambles(tree, new Map([["tests/gone.mjs", "why"]])).violations.join("\n"), /tests\/gone\.mjs {2}stale preamble exception: not a registered suite/);
   writeTree({ scripts: { "test:network": "node tests/network.mjs" } });
   put(join(tree, "tests", "network.mjs"), 'import x from "../dist/x.js";\n');
-  assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /tests\/network\.mjs {2}first import/, "a suite run only from package.json counts as registered");
+  assert.match(treePreambles(tree, new Map()).violations.join("\n"), /tests\/network\.mjs {2}first import/, "a suite run only from package.json counts as registered");
   writeTree({ gates: [["check:lock", "scripts/check-package-lock-parity.mjs"]] });
-  assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /gate check:hermetic-test-env .* is not registered in GATES/);
+  assert.match(treePreambles(tree, new Map()).violations.join("\n"), /gate check:hermetic-test-env .* is not registered in GATES/);
   for (const suite of required) {
     writeTree({ suites: required.filter((name) => name !== suite) });
-    assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), new RegExp(`${suite.replaceAll(".", "\\.")} is not registered in SUITES`));
+    assert.match(treePreambles(tree, new Map()).violations.join("\n"), new RegExp(`${suite.replaceAll(".", "\\.")} is not registered in SUITES`));
   }
   // The real home only through operatorHome(): a direct os.userInfo() is a finding.
   assert.deepEqual(userInfoSites('import { userInfo } from "node:os";\nconst h = userInfo().homedir;'), [1]);
@@ -170,10 +174,69 @@ try {
   assert.deepEqual(userInfoSites('import { operatorHome } from "./helpers/hermetic-suite.mjs";\nconst h = operatorHome();'), []);
   writeTree();
   put(join(tree, "tests", "plain.mjs"), `import "${PREAMBLE}";\nimport { userInfo } from "node:os";\n`);
-  assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /tests\/plain\.mjs:2 {2}os\.userInfo\(\) reads the operator's real home/);
+  assert.match(treePreambles(tree, new Map()).violations.join("\n"), /tests\/plain\.mjs:2 {2}os\.userInfo\(\) reads the operator's real home/);
   writeTree({ suites: [...required, "tests/missing.mjs"] });
-  assert.match(checkSuitePreambles(tree, new Map()).violations.join("\n"), /tests\/missing\.mjs {2}registered but missing/);
+  assert.match(treePreambles(tree, new Map()).violations.join("\n"), /tests\/missing\.mjs {2}registered but missing/);
   checkpoint("checkSuitePreambles: first import, exceptions both ways, package.json suites, guard registration, no direct os.userInfo()");
+
+  // PJAN-198 (7): a suite is registered however it is invoked: package.json in
+  // any spelling, a workflow run step that bypasses npm run, a mise task.
+  assert.deepEqual(nodeSuiteInvocations("node tests/a.mjs"), ["tests/a.mjs"]);
+  assert.deepEqual(nodeSuiteInvocations("node ./tests/a.mjs --version 6"), ["tests/a.mjs"]);
+  assert.deepEqual(nodeSuiteInvocations("node \t  tests/a.mjs"), ["tests/a.mjs"]);
+  assert.deepEqual(nodeSuiteInvocations("node \\\n  tests/a.mjs"), ["tests/a.mjs"], "a shell line continuation still registers");
+  assert.deepEqual(nodeSuiteInvocations("node \\\n  --max-old-space-size=4096 \\\n  tests/a.mjs"), ["tests/a.mjs"], "continuations around flags still register");
+  assert.deepEqual(nodeSuiteInvocations('FOO=1 node --max-old-space-size=4096 --import ./x.mjs "./tests/a.mjs"'), ["tests/a.mjs"]);
+  assert.deepEqual(nodeSuiteInvocations("npm ci && node tests/a.mjs && node ./tests/b.mjs"), ["tests/a.mjs", "tests/b.mjs"]);
+  assert.deepEqual(nodeSuiteInvocations("c8 node scripts/run-tests.mjs pjan-67"), [], "the runner itself is not a suite");
+  assert.deepEqual(nodeSuiteInvocations("nodemon tests/a.mjs; mynode tests/b.mjs; node tests/helpers/x.ts"), [], "only node, only .mjs");
+  assert.deepEqual(workflowRunSteps("jobs:\n  a:\n    steps:\n      - uses: x\n      - run: node tests/a.mjs\n  b:\n    steps:\n      - name: multi\n        run: |\n          echo hi\n          node ./tests/b.mjs\n"), ["node tests/a.mjs", "echo hi\nnode ./tests/b.mjs\n"]);
+  const unshieldedSuite = 'import x from "../dist/x.js";\n';
+  const shape = (label, setup, suite) => {
+    writeTree();
+    setup();
+    put(join(tree, suite), unshieldedSuite);
+    assert.ok(registeredSuites(tree).includes(suite), `${label}: ${suite} counts as registered`);
+    assert.match(treePreambles(tree, new Map()).violations.join("\n"), new RegExp(`${suite.replaceAll(".", "\\.")} {2}first import`), `${label}: an unshielded ${suite} is a finding`);
+  };
+  shape("package.json ./tests", () => put(join(tree, "package.json"), JSON.stringify({ scripts: { a: "node ./tests/dot.mjs" } })), "tests/dot.mjs");
+  shape("package.json spacing and flags", () => put(join(tree, "package.json"), JSON.stringify({ scripts: { a: "CI=1 node  --max-old-space-size=8192   tests/spaced.mjs --x" } })), "tests/spaced.mjs");
+  shape("package.json line continuation", () => put(join(tree, "package.json"), JSON.stringify({ scripts: { a: "node \\\n  tests/wrapped.mjs" } })), "tests/wrapped.mjs");
+  shape("workflow run step", () => put(join(tree, ".github", "workflows", "ci.yml"), "jobs:\n  t:\n    steps:\n      - run: |\n          npm ci\n          node tests/ci-only.mjs\n"), "tests/ci-only.mjs");
+  shape("mise task", () => put(join(tree, "mise.toml"), "[tasks.x]\nrun = 'node ./tests/mise-only.mjs --version {{arg(name=\"v\")}}'\n"), "tests/mise-only.mjs");
+  writeTree();
+  put(join(tree, "mise.toml"), "# run = 'node tests/commented.mjs'\n");
+  assert.equal(registeredSuites(tree).includes("tests/commented.mjs"), false, "a commented-out mise line registers nothing");
+  checkpoint("registeredSuites: ./tests, any spacing, node flags, workflow run steps and mise tasks, each enforced");
+
+  // PJAN-198 (4): one source of truth for forwarded names.
+  assert.deepEqual(passListSites('hermeticEnv({}, { pass: ["PGPORT"] });'), [1]);
+  assert.deepEqual(passListSites('const PG = ["PGPORT", "PGUSER"];\nspawn(x, [], { env: hermeticEnv({}, { pass: PG }) });', "x.ts"), [2], "a list bound to a name is still a list");
+  assert.deepEqual(passListSites('hermeticEnv({}, { pass: SUITE_GRANTS });\nhermeticEnv({}, { pass: suiteGrants("tests/a.mjs", { required: true }) });\nhermeticEnv({}, { pass: [] });\nconst t = { pass: 0 };'), []);
+  writeTree();
+  put(join(tree, "tests", "plain.mjs"), `import "${PREAMBLE}";\nimport { hermeticEnv } from "./helpers/hermetic-env.mjs";\nhermeticEnv({}, { pass: ["GITHUB_TOKEN"] });\n`);
+  assert.match(treePreambles(tree, new Map()).violations.join("\n"), /tests\/plain\.mjs:3 {2}hand-written pass list/);
+  put(join(tree, "tests", "child.ts"), 'const installerEnv = () => hermeticEnv({}, { pass: ["GITHUB_TOKEN", "npm_config_cache"] });\n');
+  assert.match(checkPassLists(tree, new Map([["tests/plain.mjs", "why"]])).join("\n"), /tests\/child\.ts:1 {2}hand-written pass list/, "a bundled .ts child is checked too");
+  assert.deepEqual(checkPassLists(tree, new Map([["tests/plain.mjs", "why"], ["tests/child.ts", "why"]])), [], "a listed file may keep its list");
+  writeTree();
+  assert.match(checkPassLists(tree, new Map([["tests/plain.mjs", "why"]])).join("\n"), /tests\/plain\.mjs {2}stale pass-list exception/);
+  assert.deepEqual([...PASS_LIST_EXCEPTIONS.keys()], ["tests/pjan-193-env-allowlist-regressions.mjs"], "only the suite that tests hermeticEnv's own pass semantics keeps a literal list");
+  checkpoint("hand-written pass lists are findings (directly, through a binding, in a bundled .ts child); SUITE_GRANTS / suiteGrants() are not");
+
+  // PJAN-198 (2): a read of a name the preamble deletes is always undefined.
+  const accesses = envAccesses('const a = process.env.KNOB;\nconst { OTHER, PATH } = process.env;\nprocess.env.SET = "1";\nconst b = process.env.SET;\ndelete process.env.GONE;\nconst c = `${process.env.IN_TEMPLATE}`;\nconst d = "process.env.IN_STRING";');
+  assert.deepEqual([...accesses.reads.keys()].sort(), ["IN_TEMPLATE", "KNOB", "OTHER", "PATH", "SET"]);
+  assert.deepEqual([...accesses.writes].sort(), ["GONE", "SET"]);
+  writeTree();
+  put(join(tree, "tests", "plain.mjs"), `import "${PREAMBLE}";\nconst entry = process.env.PJAN198_UNGRANTED_KNOB || "src/index.ts";\nconst tz = process.env.TZ;\nprocess.env.MINE = "1";\nconst mine = process.env.MINE;\nconst p = process.env.PJ_PROPERTY_SEED;\n`);
+  const deleted = checkDeletedEnvReads(tree, ["tests/plain.mjs"]);
+  assert.equal(deleted.length, 2, deleted.join("\n"));
+  assert.match(deleted[0], /tests\/plain\.mjs:2 {2}reads process\.env\.PJAN198_UNGRANTED_KNOB, which the hermetic-suite preamble deletes/);
+  assert.match(deleted[1], /process\.env\.PJ_PROPERTY_SEED/, "a name granted to ANOTHER suite is still deleted here");
+  assert.deepEqual(checkDeletedEnvReads(root, ["tests/pjan-75-regressions.mjs"]), [], "PJAN75_CLI_SRC is granted to pjan-75, so its documented procedure works");
+  assert.ok(SUITE_PASSTHROUGH.PJAN75_CLI_SRC?.suites.includes("tests/pjan-75-regressions.mjs"));
+  checkpoint("a registered suite reading a variable the preamble deletes is a finding; pjan-75's PJAN75_CLI_SRC is granted");
 
   const real = checkSuitePreambles(root);
   assert.deepEqual(real.violations, [], `the real tree must be clean:\n${real.violations.join("\n")}`);

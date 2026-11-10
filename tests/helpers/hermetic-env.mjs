@@ -198,33 +198,83 @@ export const SUITE_PASSTHROUGH = Object.freeze({
   PJ_TEST_ADMIN_DATABASE: grant("the database the Postgres suites connect to in order to CREATE/DROP their disposable databases", POSTGRES_SUITES),
   PJANGLER_REQUIRE_DISPOSABLE_POSTGRES: grant("publish.yml sets it so a missing postgres/psql/bun fails the job instead of skipping (pg-registry also sets it for its own strict-mode self-test child)", POSTGRES_SUITES),
   PJAN21_PG_HARNESS_SELF_TEST: grant("operator switch for pg-registry's harness self-test mode; the suite re-runs itself with it", ["tests/pg-registry-regressions.mjs"]),
-  PJ_TICKET_PROVIDER_ADAPTERS: grant("publish.yml fetches the Krebs tp adapters and points here; on a workstation the suites find them as a sibling checkout instead", ["tests/pjan-23-regressions.mjs", "tests/pjan-50-regressions.mjs"]),
+  PJ_TICKET_PROVIDER_ADAPTERS: grant("publish.yml fetches the Krebs tp adapters and points here; on a workstation inside the 33GOD tree the suites find them by walking up from the checkout instead. src's last fallback, homedir()/code/33GOD/krebs/adapters/tp, is dead under the preamble (homedir() is the scratch suite home), so a checkout anywhere else needs this (PJAN-198)", ["tests/pjan-23-regressions.mjs", "tests/pjan-50-regressions.mjs"]),
   PJ_PROPERTY_ITERATIONS: grant("operator knob: a longer property run", ["tests/pjan-135-skill-roots-property.mjs"]),
   PJ_PROPERTY_SEED: grant("operator knob: reproduce a property-run failure", ["tests/pjan-135-skill-roots-property.mjs"]),
   PJ_SKILLEX_TEST_TARBALL: grant("operator knob: test a local @delorenj/skillex tarball", ["tests/skillex-init-regressions.mjs"]),
+  PJAN75_CLI_SRC: grant("operator knob, not a credential: bundle the CLI from another src/index.ts to watch the suite FAIL against the pre-fix tree (the procedure documented at the top of the suite). Without the grant the preamble deletes it and the procedure silently tests the current src (PJAN-198)", ["tests/pjan-75-regressions.mjs"]),
   GITHUB_TOKEN: grant("the real BMAD installer resolves module tags through the GitHub API; publish.yml passes the job's read-only token so a shared runner IP does not exhaust the anonymous 60 requests/hour. The ONE deliberate credential passthrough", NETWORK_CONTRACTS),
   SSL_CERT_FILE: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", NETWORK_CONTRACTS),
   NODE_EXTRA_CA_CERTS: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", NETWORK_CONTRACTS),
-  npm_config_cache: grant("the surface oracle's npx keeps the operator's chosen npm cache when one is configured", ["tests/pjan-180-surface-oracle.mjs"]),
 });
 
-/** The SUITE_PASSTHROUGH names granted to `suite` (a repo-relative path). */
-export function suiteGrants(suite) {
-  return Object.keys(SUITE_PASSTHROUGH).filter((name) => SUITE_PASSTHROUGH[name].suites.includes(suite));
+/*
+ * Not granted, on purpose (PJAN-198): npm_config_cache. PJAN-196 granted it to
+ * the surface oracle "so an operator-configured cache is kept", and claimed the
+ * real ~/.npm was never written. Both were wrong under `npm run
+ * test:bmad-rollback-surface`: npm run injects npm_config_cache=~/.npm into
+ * every script it runs, so the grant forwarded the operator's REAL cache and the
+ * oracle's npx wrote the installer into it. A grant cannot tell an operator's
+ * choice from npm's injection, so there is none: the preamble deletes the name,
+ * and the oracle's npx caches under the oracle's own scratch HOME, cold like a
+ * CI runner, however it is started (node, npm run, mise run).
+ */
+
+/**
+ * The SUITE_PASSTHROUGH names granted to `suite` (a repo-relative path).
+ *
+ * This is also how a bundled TypeScript suite's child forwards its launcher's
+ * grants to its own children: `hermeticEnv(fixture, { pass:
+ * suiteGrants("tests/<launcher>.mjs", { required: true }) })`. A hand-written
+ * list of names is a second source of truth and a finding of
+ * scripts/check-hermetic-test-env.mjs (PJAN-198); `required` turns a mistyped
+ * launcher, which would otherwise forward nothing, into an error.
+ */
+export function suiteGrants(suite, { required = false } = {}) {
+  const names = Object.keys(SUITE_PASSTHROUGH).filter((name) => SUITE_PASSTHROUGH[name].suites.includes(suite));
+  if (required && !names.length) throw new Error(`suiteGrants: SUITE_PASSTHROUGH grants nothing to ${suite}; check the launcher path`);
+  return names;
 }
 
 /**
  * Suites allowed to resolve the operator's REAL home (the passwd entry, which
- * HOME isolation cannot hide) through `operatorHome()` in hermetic-suite.mjs,
- * each with the reason. Read-only uses only. Empty is the steady state.
- * scripts/check-hermetic-test-env.mjs fails a test file that calls
- * os.userInfo() itself instead of going through operatorHome().
+ * HOME isolation cannot hide), each with the reason. Read-only uses only.
+ *
+ * The product rule this list exists for (PJAN-67/PJAN-150, PJAN-198):
+ * src/lifecycle/preflight.ts's preflightTrustedCopier anchors the Copier trust
+ * root to the OS ACCOUNT home, `options.homeDir ?? userInfo().homedir`, and
+ * never to $HOME, MISE_DATA_DIR or XDG_*: an ambient HOME must not be able to
+ * redirect which Copier an MCP apply trusts. Tests inject a synthetic account
+ * home through `homeDir`; production MCP callers (preflightMcpLifecycle) cannot.
+ * That is deliberate and src does not change for tests. So a test that calls
+ * preflightTrustedCopier without `homeDir`, or any other in-process code that
+ * reads os.userInfo().homedir, reads the operator's real account, and must be
+ * listed here with its reason.
+ *
+ * Enforced three ways:
+ * - dynamically, by tests/helpers/operator-home-guard.mjs: in every registered
+ *   suite process (installed by the preamble) and in the bundled TypeScript
+ *   children their launchers start (BUNDLED_CHILD_GUARD, judged as the
+ *   launcher), reading os.userInfo().homedir from an unlisted suite throws and
+ *   fails the run, however deep in src or a dependency the read happens;
+ * - statically, by scripts/check-hermetic-test-env.mjs: a test file calling
+ *   os.userInfo() itself instead of operatorHome() (tests/helpers/
+ *   hermetic-suite.mjs) is a finding;
+ * - operatorHome() refuses a suite not listed here.
+ *
+ * Keys are registered suites (for a bundled .ts suite, its launcher).
  */
 export const OPERATOR_HOME_READERS = new Map([
   ["tests/pjan-182-crank-interval-regressions.mjs",
     "engine parity: runs the operator's installed zcrank engine (~/.agents/tools/jev-clairic/bin/zcrank.py, read-only) against the same throwaway redis; skipped when it is not installed (CI)"],
   ["tests/pjan-67-trusted-lifecycle-regressions.mjs",
     "locates the UV-tool Copier under the OS account home (~/.local/share/uv/tools/copier, read-only), the same anchor src/lifecycle/preflight.ts trusts via userInfo(); a PATH or HOME lookup would find a different, untrusted copier"],
+  ["tests/pjan-67-lifecycle-preflight-regressions.mjs",
+    "its bundled child's live attestation calls preflightTrustedCopier WITHOUT homeDir on purpose: it proves the production anchor (the account home's UV Copier, read-only, never executed) is accepted while HOME points elsewhere; every other call in that suite passes a synthetic homeDir"],
+  ["tests/parity-migrate-regressions.mjs",
+    "assertRealTrustStoreUnpolluted lists the operator's real mise trust store (~/.local/state/mise/trusted-configs, read-only) to prove no fixture leaked into it: a child env without HOME makes mise fall back to the passwd home, which HOME isolation cannot hide"],
+  ["tests/pjan-196-suite-env-probe.mjs",
+    "compares os.homedir() with the passwd home to prove in-process code does NOT resolve the real home; reads the path only, never anything under it"],
 ]);
 
 /** Never passable: the suite must supply isolated values, not the operator's. */
