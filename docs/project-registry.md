@@ -169,7 +169,9 @@ node scripts/migrate-project-registry.mjs --repo /path/to/additional/repo --appl
 The installer writes a user systemd unit and uses the local PostgreSQL Unix
 socket with peer authentication. `registry:serve` honors normal PostgreSQL
 environment variables for other deployments. No credential values are written
-to the unit.
+to the unit. It binds `127.0.0.1:${PJ_REGISTRY_PORT:-8764}`; set
+`PJ_REGISTRY_HOST` (for example `0.0.0.0`) only on a host whose registry other
+machines must reach. Unset or empty means loopback.
 
 The one-way importer discovers existing manifests from the legacy YAML and any
 `--repo` arguments. Manifest values win; missing metadata is recovered from the

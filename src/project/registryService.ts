@@ -18,7 +18,35 @@ async function body(request: IncomingMessage): Promise<Record<string, any>> {
   return parsed;
 }
 
+/**
+ * The address the registry binds. Loopback unless the operator sets
+ * PJ_REGISTRY_HOST: a peer that serves its registry to other hosts on its
+ * network on purpose sets `0.0.0.0` (or one interface address). A host that
+ * sets nothing keeps the loopback-only service it always had; an empty value
+ * counts as unset, never as a wildcard.
+ */
+export const DEFAULT_REGISTRY_HOST = '127.0.0.1';
+export function registryBindHost(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PJ_REGISTRY_HOST?.trim() || DEFAULT_REGISTRY_HOST;
+}
+
+function isWildcardHost(host: string): boolean {
+  return host === '0.0.0.0' || host === '::';
+}
+
+/** The URL a client on this host uses; a wildcard bind is reached over loopback. */
+export function registryLocalUrl(host: string, port: number | undefined): string {
+  const name = isWildcardHost(host) ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host;
+  return `http://${name}:${port}`;
+}
+
+/** Startup line. Readiness probes match its `http://127.0.0.1:<port>` URL, so a wildcard bind names itself after it. */
+export function registryListeningMessage(service: { url: string; host: string }): string {
+  return `PJangler project registry listening at ${service.url}${isWildcardHost(service.host) ? ` (bind ${service.host})` : ''}`;
+}
+
 export async function createRegistryService(options: { pool?: Pool; port?: number; host?: string } = {}) {
+  const host = options.host ?? registryBindHost();
   const pool = options.pool ?? new Pool({ database: process.env.PGDATABASE ?? '33god', connectionTimeoutMillis: 5000, statement_timeout: 15000 });
   const index = new ManifestIndex(pool);
   try { await index.initialize(); } catch (error) { if (!options.pool) await pool.end(); throw error; }
@@ -71,11 +99,11 @@ export async function createRegistryService(options: { pool?: Pool; port?: numbe
   server.keepAliveTimeout = 1000;
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(options.port ?? Number(process.env.PJ_REGISTRY_PORT ?? 8764), options.host ?? '127.0.0.1', () => { server.off('error', reject); resolve(); });
+    server.listen(options.port ?? Number(process.env.PJ_REGISTRY_PORT ?? 8764), host, () => { server.off('error', reject); resolve(); });
   }).catch(async error => { if (!options.pool) await pool.end(); throw error; });
   const address = server.address();
   return {
-    server, pool, index, url: `http://127.0.0.1:${typeof address === 'object' ? address?.port : options.port}`,
+    server, pool, index, host, url: registryLocalUrl(host, typeof address === 'object' ? address?.port : options.port),
     async close() {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       if (!options.pool) await pool.end();
@@ -85,7 +113,7 @@ export async function createRegistryService(options: { pool?: Pool; port?: numbe
 
 export async function startRegistryService() {
   const service = await createRegistryService();
-  console.log(`PJangler project registry listening at ${service.url}`);
+  console.log(registryListeningMessage(service));
   const stop = () => { void service.close().then(() => process.exit(0), error => { console.error(error); process.exit(1); }); };
   process.once('SIGTERM', stop);
   process.once('SIGINT', stop);

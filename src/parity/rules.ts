@@ -1431,6 +1431,19 @@ function validateDeclaredAgent(ctx: Context, declared: DeclaredAgentEntry): { va
 }
 
 
+/**
+ * Whether a manifest's `repo_path` names this repo. The absolute path always
+ * does; so does a home-relative spelling (`~` or `~/…`) that expands to it under
+ * this host's home. Multi-peer repos commit `~/code/…` so one manifest is true
+ * on every host whose checkout sits at the same place under its own home.
+ */
+export function repoPathNamesRoot(value: unknown, repoRoot: string, homeDir: string): boolean {
+  if (typeof value !== "string") return false;
+  if (value === repoRoot) return true;
+  if (!homeDir || (value !== "~" && !value.startsWith("~/"))) return false;
+  return resolve(homeDir, value.slice(2)) === resolve(repoRoot);
+}
+
 function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[]; unprovisioned: string[] } {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
@@ -1511,7 +1524,9 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
     project_name: String(existing.project_name ?? titleCaseSlug(slug)),
     project_description: String(existing.project_description ?? ""),
     project_id: slug,
-    repo_path: ctx.repoRoot,
+    // A home-relative spelling that already names this repo is kept: rewriting
+    // it to this host's absolute path would make the manifest wrong on its peers.
+    repo_path: repoPathNamesRoot(existing.repo_path, ctx.repoRoot, ctx.homeDir) ? existing.repo_path : ctx.repoRoot,
     ticket_provider: ticketProvider,
     agents,
     ...(Object.keys(automation).length ? { automation } : {}),
@@ -1538,7 +1553,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
   }
   if ("project_slug" in data) details.push("legacy project_slug should be migrated to project_id");
   if (typeof data.project_id === "string" && data.project_id !== data.project_id.toLowerCase()) details.push("project_id must be lowercase");
-  if (data.repo_path !== ctx.repoRoot) details.push(`repo_path should be ${ctx.repoRoot}`);
+  if (!repoPathNamesRoot(data.repo_path, ctx.repoRoot, ctx.homeDir)) details.push(`repo_path should be ${ctx.repoRoot}`);
   const agents = (data.agents as Record<string, unknown> | undefined) ?? {};
   for (const role of roles) {
     const agent = agents[role.agentId] as Record<string, unknown> | undefined;

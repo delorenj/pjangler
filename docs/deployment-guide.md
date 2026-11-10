@@ -195,7 +195,13 @@ That writes `~/.config/systemd/user/pjangler-project-registry.service`
 (`Restart=on-failure`, the local PostgreSQL Unix socket, database `33god`, peer
 authentication, **no credential values in the unit**), verifies it with
 `systemd-analyze --user verify`, then enables and restarts it. `PJ_REGISTRY_URL`
-points a client somewhere else. Migration from the legacy YAML and the full
+points a client somewhere else.
+
+The service binds `127.0.0.1` and port `PJ_REGISTRY_PORT` (default `8764`). A
+peer that serves its registry to other hosts on purpose sets
+`PJ_REGISTRY_HOST=0.0.0.0` (or one interface address) in its service
+definition; an unset or empty value keeps the loopback-only default. The
+startup line still names the loopback URL and appends `(bind 0.0.0.0)`. Migration from the legacy YAML and the full
 endpoint contract are in [`project-registry.md`](./project-registry.md).
 
 ## Consuming pjangler from an agent (MCP)

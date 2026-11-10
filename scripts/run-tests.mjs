@@ -65,6 +65,8 @@ const SUITES = [
   "tests/pjan-80-consumer-concurrency.mjs",
   "tests/pjan-80-migration-regressions.mjs",
   "tests/pjan-80-registry-regressions.mjs",
+  "tests/registry-bind-host-regressions.mjs",
+  "tests/project-json-home-repo-path-regressions.mjs",
   "tests/package-lock-parity-regressions.mjs",
   "tests/portable-test-paths-regressions.mjs",
   "tests/release-regressions.mjs",
