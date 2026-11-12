@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import {
-  chmodSync, existsSync, lstatSync, lutimesSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, lutimesSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { changedTreePaths, excludedFromTreeSnapshot, snapshotTree } from "../src/utils/tree-diff";
@@ -26,6 +26,15 @@ process.env.GIT_CEILING_DIRECTORIES = "/tmp";
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 const put = (path: string, text: string, mode?: number) => {
   mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); if (mode !== undefined) chmodSync(path, mode);
+};
+// Node 24.6's rmSync leaves a dangling symlink in place without an error (every
+// option combination), so a scratch entry that may be a link is removed with
+// unlink; only a real directory goes through rmSync.
+const drop = (path: string) => {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return;
+  if (stat.isDirectory()) rmSync(path, { recursive: true, force: true });
+  else unlinkSync(path);
 };
 let seq = 0;
 const fresh = (label: string) => join(scratch, `${label}-${++seq}`);
@@ -162,10 +171,10 @@ try {
     // file entry, but a directory / symlink now occupies the path
     put(join(dir, "wasfile"), "was a file");
     const wasFile = captureTreeBackup(dir, join(dir, "wasfile"), new Map()).get("wasfile")!;
-    rmSync(join(dir, "wasfile")); mkdirSync(join(dir, "wasfile")); put(join(dir, "wasfile", "child"), "c");
+    drop(join(dir, "wasfile")); mkdirSync(join(dir, "wasfile")); put(join(dir, "wasfile", "child"), "c");
     restoreSingleEntry(dir, "wasfile", wasFile);
     assert.equal(readFileSync(join(dir, "wasfile"), "utf8"), "was a file", "a directory in the way of a file is removed");
-    rmSync(join(dir, "wasfile")); symlinkSync("same.txt", join(dir, "wasfile"));
+    drop(join(dir, "wasfile")); symlinkSync("same.txt", join(dir, "wasfile"));
     restoreSingleEntry(dir, "wasfile", wasFile);
     assert.ok(!lstatSync(join(dir, "wasfile")).isSymbolicLink() && readFileSync(join(dir, "wasfile"), "utf8") === "was a file", "a symlink in the way of a file is replaced, not written through");
     assert.equal(readFileSync(join(dir, "same.txt"), "utf8"), "same", "the symlink target was not written through");
@@ -176,30 +185,30 @@ try {
     lutimesSync(join(dir, "lnk"), past, past);
     restoreSingleEntry(dir, "lnk", link);
     assert.equal(mtime("lnk"), past.getTime(), "a matching symlink is left alone");
-    rmSync(join(dir, "lnk")); symlinkSync("target-b", join(dir, "lnk"));
+    drop(join(dir, "lnk")); symlinkSync("target-b", join(dir, "lnk"));
     restoreSingleEntry(dir, "lnk", link);
     assert.equal(readlinkSync(join(dir, "lnk")), "target-a", "a retargeted symlink is repointed");
-    rmSync(join(dir, "lnk")); put(join(dir, "lnk"), "now a file");
+    drop(join(dir, "lnk")); put(join(dir, "lnk"), "now a file");
     restoreSingleEntry(dir, "lnk", link);
     assert.equal(readlinkSync(join(dir, "lnk")), "target-a", "a file in the way of a symlink is replaced");
-    rmSync(join(dir, "lnk")); put(join(dir, "lnk", "child"), "now a dir");
+    drop(join(dir, "lnk")); put(join(dir, "lnk", "child"), "now a dir");
     restoreSingleEntry(dir, "lnk", link);
     assert.equal(readlinkSync(join(dir, "lnk")), "target-a", "a directory in the way of a symlink is replaced");
-    rmSync(join(dir, "lnk")); restoreSingleEntry(dir, "deep/er/lnk", link);
+    drop(join(dir, "lnk")); restoreSingleEntry(dir, "deep/er/lnk", link);
     assert.equal(readlinkSync(join(dir, "deep", "er", "lnk")), "target-a", "missing parents are created");
 
     // dir entry: a file or a symlink in the way is replaced by a real dir with the recorded mode
     mkdirSync(join(dir, "d")); chmodSync(join(dir, "d"), 0o750);
     const dirEntry = captureTreeBackup(dir, join(dir, "d"), new Map()).get("d")!;
-    rmSync(join(dir, "d", ""), { recursive: true }); put(join(dir, "d"), "a file");
+    drop(join(dir, "d", "")); put(join(dir, "d"), "a file");
     restoreSingleEntry(dir, "d", dirEntry);
     assert.ok(lstatSync(join(dir, "d")).isDirectory(), "a file in the way of a directory is replaced");
-    rmSync(join(dir, "d"), { recursive: true }); mkdirSync(join(dir, "real")); symlinkSync("real", join(dir, "d"));
+    drop(join(dir, "d")); mkdirSync(join(dir, "real")); symlinkSync("real", join(dir, "d"));
     restoreSingleEntry(dir, "d", dirEntry);
     assert.ok(lstatSync(join(dir, "d")).isDirectory() && !lstatSync(join(dir, "d")).isSymbolicLink(), "a symlink-to-dir is replaced by a real directory");
     assert.equal(statSync(join(dir, "d")).mode & 0o7777, 0o750);
     assert.ok(existsSync(join(dir, "real")), "the symlink's target is untouched");
-    chmodSync(join(dir, "d"), 0o700); rmSync(join(dir, "d"), { recursive: true }); restoreSingleEntry(dir, "d", dirEntry);
+    chmodSync(join(dir, "d"), 0o700); drop(join(dir, "d")); restoreSingleEntry(dir, "d", dirEntry);
     assert.equal(statSync(join(dir, "d")).mode & 0o7777, 0o750, "an absent directory is recreated with its mode");
     console.log("PASS tree-restore: restoreSingleEntry replaces obstructions, leaves matching entries untouched, keeps modes");
   }
@@ -218,9 +227,9 @@ try {
     try {
       // damage: edit, delete a read-only dir's file and the dir, add files/dirs/links, retarget a link
       writeFileSync(join(dir, "a.txt"), "edited");
-      rmSync(join(dir, "nested"), { recursive: true });
-      chmodSync(join(dir, "ro"), 0o700); rmSync(join(dir, "ro"), { recursive: true });
-      rmSync(join(dir, "alias")); symlinkSync("elsewhere", join(dir, "alias"));
+      drop(join(dir, "nested"));
+      chmodSync(join(dir, "ro"), 0o700); drop(join(dir, "ro"));
+      drop(join(dir, "alias")); symlinkSync("elsewhere", join(dir, "alias"));
       put(join(dir, "added", "deep", "new.txt"), "new"); symlinkSync("nope", join(dir, "added", "dangling"));
       put(join(dir, "added-top.txt"), "new");
       put(join(dir, "node_modules", "kept", "newer.js"), "a live daemon wrote this");

@@ -432,14 +432,35 @@ async function predictRootCollisions(ctx: Context, incoming: readonly SkillRootI
   return predictions;
 }
 
-export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
+/**
+ * PJAN-211: what the audit's detail lines ARE, so a summary can count problems
+ * instead of lines.
+ *
+ * `findings` are distinct problems: Skillex errors and warnings, CLI skills
+ * roots that need work, blocked collisions, stale exclusions. `pendingChanges`
+ * are the plan's operations (`create-link: ...`), the consequence of those
+ * problems, one per line. Everything else in `details` (remedies, "resolvable"
+ * annotations, advisories, an `info` diagnostic) is neither, and is counted as
+ * nothing. A repo with one drifted activation used to read "14 Skillex
+ * finding(s)": one finding and thirteen lines of the plan that fixes it.
+ */
+export interface ProjectSkillsAudit extends AuditFinding {
+  findings: number;
+  pendingChanges: number;
+}
+
+export async function auditProjectSkills(ctx: Context): Promise<ProjectSkillsAudit> {
   const result = await inspectStatus(skillCoreOptions(ctx));
   const details = skillDiagnostics(result.findings);
+  let findings = result.findings.filter((finding) => finding.severity !== "info").length;
   details.push(...(result.data?.changes ?? []).map((change) => `${change.action}: ${change.path}`));
+  const pendingChanges = (result.data?.changes ?? []).length;
   // status stops at the first conflict, so the CLI skills roots are planned
   // independently: every alias, every block, whatever skillex happened to hit.
   const plan = planSkillRoots(ctx.repoRoot);
-  details.push(...skillRootsSummary(plan));
+  const rootLines = skillRootsSummary(plan);
+  details.push(...rootLines);
+  findings += rootLines.length;
   const conflict = activationConflict(ctx, result.findings);
   let conflictResolvable = false;
   if (conflict?.kind === "alias") conflictResolvable = plan.clean;
@@ -449,6 +470,9 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
     const predictions = await predictRootCollisions(ctx, []);
     conflictResolvable = predictions.length > 0 && predictions.every(({ decision }) => decision.action !== "block");
     for (const { decision } of predictions) {
+      // A blocked collision is a problem of its own; a resolvable one only
+      // annotates the refusal skillex already reported.
+      if (decision.action === "block") findings += 1;
       details.push(decision.action === "block" ? `blocked: ${decision.detail}`
         : `resolvable root collision: ${decision.detail.replace(/^replaced/, "replace")}`);
     }
@@ -462,7 +486,10 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
   const installerOnly = errors.length > 0 && await installerRefusalsResolvable(ctx, errors, handoff);
   if (installerOnly) details.push("resolvable: every refusal is at a skill the bmad-method installer provides; migrate excludes the inherited selection and releases the replaced links");
   if (handoff.skipped) details.push(`installer skill handoff unavailable: ${handoff.skipped}`);
-  if (handoff.restored.length) details.push(...handoff.restored.map((name) => `stale exclusion: ${name} was excluded for the bmad-method installer's copy, which is gone; migrate restores the inherited catalog skill`));
+  if (handoff.restored.length) {
+    findings += handoff.restored.length;
+    details.push(...handoff.restored.map((name) => `stale exclusion: ${name} was excluded for the bmad-method installer's copy, which is gone; migrate restores the inherited catalog skill`));
+  }
   if (result.exit === 2 || result.exit === 3) details.push(migrationGuidance(ctx));
   // PJAN-141: the receipt records the catalog commit it was written against, so
   // ANY commit to all-skills leaves every project's receipt stale while every
@@ -484,6 +511,8 @@ export async function auditProjectSkills(ctx: Context): Promise<AuditFinding> {
       : receiptOnly ? "Skillex activation is in parity; its receipt predates the current catalog commit"
       : `Skillex inspection returned exit ${result.exit}`,
     details,
+    findings,
+    pendingChanges,
     fixable: result.exit === 0 || result.exit === 6 || conflictResolvable || installerOnly || staleHandoff
       || result.findings.some((finding) => finding.code === "E_NO_PROJECT_MANIFEST"),
   };

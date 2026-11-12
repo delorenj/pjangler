@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { excludedFromTreeSnapshot, type TreeSnapshot } from "./tree-diff";
 
@@ -100,6 +100,19 @@ export function backupToSnapshot(backup: TreeBackup): TreeSnapshot {
   return snapshot;
 }
 
+/**
+ * Remove an entry that is in the way of a restore.
+ *
+ * Only a real directory goes through rmSync. Node 24.6's rmSync leaves a
+ * DANGLING symlink in place without an error, for every option combination, so
+ * the following symlink/write then failed with EEXIST in the middle of a
+ * rollback. unlink removes a link (dangling or not), a file and a fifo alike.
+ */
+function removeEntry(full: string, stat: Stats): void {
+  if (stat.isDirectory() && !stat.isSymbolicLink()) rmSync(full, { recursive: true, force: true });
+  else unlinkSync(full);
+}
+
 export function restoreSingleEntry(root: string, rel: string, entry: TreeBackupEntry): void {
   const full = rel === "." ? root : join(root, rel);
   let currentStat;
@@ -109,7 +122,7 @@ export function restoreSingleEntry(root: string, rel: string, entry: TreeBackupE
   }
   if (entry.kind === "dir") {
     if (currentStat && (!currentStat.isDirectory() || currentStat.isSymbolicLink())) {
-      rmSync(full, { recursive: true, force: true });
+      removeEntry(full, currentStat);
       currentStat = undefined;
     }
     if (!currentStat) mkdirSync(full, { recursive: true });
@@ -120,7 +133,7 @@ export function restoreSingleEntry(root: string, rel: string, entry: TreeBackupE
   if (entry.kind === "link") {
     if (currentStat) {
       if (currentStat.isSymbolicLink() && readlinkSync(full) === entry.target) return;
-      rmSync(full, { recursive: true, force: true });
+      removeEntry(full, currentStat);
     }
     symlinkSync(entry.target, full);
     return;
@@ -132,7 +145,7 @@ export function restoreSingleEntry(root: string, rel: string, entry: TreeBackupE
     if ((currentStat.mode & 0o7777) === entry.mode && readFileSync(full).equals(entry.bytes)) return;
     unlinkSync(full);
   } else if (currentStat) {
-    rmSync(full, { recursive: true, force: true });
+    removeEntry(full, currentStat);
   }
   writeFileSync(full, entry.bytes);
   chmodSync(full, entry.mode);

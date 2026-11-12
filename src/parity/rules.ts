@@ -88,6 +88,13 @@ export interface MigrationRuleResult {
   changedFiles: string[];
   details: string[];
   bmadCompanion?: CompanionResult;
+  /**
+   * PJAN-211: set only by the init transaction, on a `blocked`/`partial` result
+   * whose rule's own audit does not gate the project (a `warn`, for example
+   * `bmad.version`'s withheld update). It is shown as a warning and does not
+   * fail init. Absent everywhere else, so `pj migrate` keeps its strict exit.
+   */
+  advisory?: boolean;
 }
 
 
@@ -3438,9 +3445,18 @@ return [
       // folded in the CLI skills-root plan and root-collision verdict.
       // A retired path that is a directory is never touched, so it still gates.
       const miseDrift = mise !== null && upsertLinkAgentfilesBlock(mise, ctx) !== mise;
-      return { ...finding, status: wiring.length || retired.length || registryBlocked.length ? "fail" as const : finding.status,
-        fixable: unsafe.length ? false : finding.fixable || wiring.length > 0 || retired.length > 0 || miseDrift,
-        summary: details.length ? `${details.length} Skillex finding(s)` : finding.summary, details };
+      // PJAN-211: count problems, not detail lines. The wiring, retired-script
+      // and registry-blocker lines are findings; the audit says how many of its
+      // own lines are, and how many are just the plan that would fix them.
+      const { findings: auditFindings, pendingChanges, ...audited } = finding;
+      const problems = auditFindings + wiring.length + registryBlocked.length + retired.length;
+      const summary = problems
+        ? `${problems} Skillex finding(s)${pendingChanges ? `, ${pendingChanges} pending change(s)` : ""}`
+        : pendingChanges && audited.status !== "pass" ? `${pendingChanges} pending Skillex change(s)`
+        : audited.summary;
+      return { ...audited, status: wiring.length || retired.length || registryBlocked.length ? "fail" as const : audited.status,
+        fixable: unsafe.length ? false : audited.fixable || wiring.length > 0 || retired.length > 0 || miseDrift,
+        summary, details };
     },
     migrate: async (ctx, finding) => {
       const changedFiles: string[] = [];
@@ -5103,15 +5119,18 @@ export function formatAuditReport(report: AuditReport): string {
 
 export function formatMigrationReport(report: MigrationReport): string {
   const idWidth = report.results.reduce((width, result) => Math.max(width, result.id.length), 0);
-  const blocked = report.results.filter((result) => result.status === "blocked").length;
-  const partial = report.results.filter((result) => result.status === "partial").length;
+  // An advisory result (PJAN-211) is unfinished but only warns: it is counted on
+  // its own and never makes the run read as blocked or incomplete.
+  const advisory = report.results.filter((result) => result.advisory).length;
+  const blocked = report.results.filter((result) => result.status === "blocked" && !result.advisory).length;
+  const partial = report.results.filter((result) => result.status === "partial" && !result.advisory).length;
 
   // PJAN-75: "Migration complete" is now a claim the run has verified, so the
   // not-ok case has to say WHICH kind of unfinished it is. A blocker means the
   // rule refused to act; a partial means it acted and still did not reach
   // parity, which is the state that used to be reported as success.
   const overall = report.ok
-    ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}`
+    ? `${green(glyph.pass)} ${bold(report.dryRun ? "Migration preview complete" : "Migration complete")}${advisory ? `  ${dim(glyph.dot)}  ${yellow(`${advisory} warning${advisory === 1 ? "" : "s"}`)}` : ""}`
     : blocked
       ? `${red(glyph.fail)} ${bold("Migration finished with blockers")}`
       : `${yellow(glyph.warn)} ${bold(`Migration incomplete  ${glyph.dot}  ${partial} rule${partial === 1 ? "" : "s"} still failing`)}`;
@@ -5122,7 +5141,7 @@ export function formatMigrationReport(report: MigrationReport): string {
   if (report.selectedRules.length) lines.push(`  ${dim(`rules: ${report.selectedRules.join(", ")}`)}`);
   lines.push("");
   for (const result of report.results) {
-    const style = statusStyle(result.status);
+    const style = result.advisory ? { ...statusStyle("warn"), label: `warning, ${result.status}` } : statusStyle(result.status);
     lines.push(`  ${style.color(style.glyph)}  ${style.color(result.id.padEnd(idWidth))}  ${result.summary}  ${dim(`[${style.label}]`)}`);
     for (const detail of result.details) lines.push(`     ${dim(glyph.arrow)} ${dim(detail)}`);
     for (const file of result.changedFiles) lines.push(`     ${green(glyph.add)} ${file}`);
@@ -5136,6 +5155,9 @@ export function formatMigrationReport(report: MigrationReport): string {
   if (unresolved) {
     lines.push("");
     lines.push(`  ${dim(`Run \`pjangler audit\` for the full detail on the ${unresolved} rule${unresolved === 1 ? "" : "s"} still failing.`)}`);
+  } else if (advisory) {
+    lines.push("");
+    lines.push(`  ${dim(`${advisory} rule${advisory === 1 ? "" : "s"} could not finish but only warn${advisory === 1 ? "s" : ""}; they do not block. \`pjangler audit\` has the detail.`)}`);
   }
   lines.push("");
   return lines.join("\n");

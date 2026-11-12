@@ -200,6 +200,7 @@ function projectPreflightFailure(
     plan,
     mode: plan.actions.some((action) => action.kind === "copier.copy.commonproject") ? "create" : "sync",
     audit,
+    warnings: [],
     selectedOperations: plan.actions.map((action) => action.kind),
     selectedParityRules: [],
   };

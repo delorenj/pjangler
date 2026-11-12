@@ -1,5 +1,5 @@
 import { validateGlobalNotebookConfig } from "./notebookSettingsValidation";
-import { recordFromManifest } from "./manifestIndex";
+import { recordFromManifest, validateManifestShape } from "./manifestIndex";
 import { spawnSync } from "node:child_process";
 import { isIP } from "node:net";
 import { chmodSync, closeSync, copyFileSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1285,12 +1285,73 @@ export function resolveSourceSkillPath(sourceSkill?: string, env: NodeJS.Process
   throw new Error(`Source skill not found: ${sourceSkill}.${hint}`);
 }
 
+/**
+ * The `kind` a legacy bare-path `source_artifacts` entry becomes.
+ *
+ * Nothing in pjangler or the registry acts on a source artifact's kind (only its
+ * path is checked, by `pj doctor`), so this is a label. "reference" is the one
+ * value that is always true of a path whose purpose was never recorded; "skill",
+ * "template" and "package" would each claim something the string never said.
+ */
+export const LEGACY_SOURCE_ARTIFACT_KIND = "reference";
+
+/** A string that is unambiguously a filesystem path, as opposed to some other bare token. */
+function looksLikePath(value: string): boolean {
+  return /^(?:\/|~\/|\.{1,2}\/)/.test(value);
+}
+
+export interface ManifestNormalization {
+  manifest: Record<string, unknown>;
+  /** One line per rewrite, shown on the plan so nothing is changed silently. */
+  notes: string[];
+}
+
+/**
+ * Bring an old, unambiguous `.project.json` shape up to the current schema.
+ *
+ * PJAN-211: a hand-written manifest listed `source_artifacts` as bare path
+ * strings. The registry only accepts `{kind, path}` objects, and pj init found
+ * that out after it had created the ticket board. A bare string that is plainly
+ * a path (absolute, `~/`, `./`, `../`) carries everything the object needs except
+ * a kind, so it is rewritten to `{kind: "reference", path}` and the plan says so.
+ *
+ * Nothing else is guessed. A bare string that is not a path, an empty string, or
+ * any other wrong shape is left exactly as written for `validateManifestShape` to
+ * refuse with the precise field, because a rewrite there would be an invention.
+ */
+export function normalizeLegacyManifest(manifest: Record<string, unknown>): ManifestNormalization {
+  const artifacts = manifest.source_artifacts;
+  if (!Array.isArray(artifacts)) return { manifest, notes: [] };
+  const notes: string[] = [];
+  const normalized = artifacts.map((artifact, index) => {
+    if (typeof artifact !== "string" || !looksLikePath(artifact)) return artifact;
+    notes.push(`.project.json source_artifacts.${index}: bare path normalized to {"kind": "${LEGACY_SOURCE_ARTIFACT_KIND}", "path": "${artifact}"}`);
+    return { kind: LEGACY_SOURCE_ARTIFACT_KIND, path: artifact };
+  });
+  return notes.length ? { manifest: { ...manifest, source_artifacts: normalized }, notes } : { manifest, notes };
+}
+
 export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (!input.name.trim()) throw new Error("Project name is required");
   const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
   const localManifestPath = join(targetDir, ".project.json");
   const localManifestContent = existsSync(localManifestPath) ? readFileSync(localManifestPath, "utf8") : undefined;
-  const localManifest = localManifestContent === undefined ? undefined : JSON.parse(localManifestContent) as Record<string, unknown>;
+  // PJAN-211: the manifest an adoption starts from is judged by the registry's
+  // own validator HERE, before any action exists, so a manifest the registry
+  // would refuse never gets as far as a ticket board or a parity write. The one
+  // old shape that can be fixed without guessing is rewritten and reported.
+  let localManifest: Record<string, unknown> | undefined;
+  const manifestNotes: string[] = [];
+  if (localManifestContent !== undefined) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(localManifestContent); }
+    catch { throw new Error(`Malformed JSON: ${localManifestPath}`); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Expected a JSON object: ${localManifestPath}`);
+    const normalized = normalizeLegacyManifest(parsed as Record<string, unknown>);
+    localManifest = normalized.manifest;
+    manifestNotes.push(...normalized.notes);
+    validateManifestShape(localManifest, localManifestPath);
+  }
   const localId = localManifest?.project_id ?? localManifest?.project_slug;
   const slug = normalizeProjectId(input.projectSlug ?? localId ?? slugifyProjectName(input.name));
   if (localId && normalizeProjectId(localId) !== slug) throw new Error(`Project ID ${slug} conflicts with authoritative manifest ${localId}`);
@@ -1445,6 +1506,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
 
   const pjanglerRoot = resolve(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
+  // The manifest this plan will WRITE must also be one the registry accepts (a
+  // new project's is wholly planned here, an adopted one's is merged from the
+  // repo's own).
+  validateManifestShape(manifest as Record<string, any>, localManifestPath);
   const apply = input.apply ?? false;
   const live = input.live ?? false;
   // Structured callers (notably MCP) pass explicit booleans so `live` alone
@@ -1524,7 +1589,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     project,
     manifest,
     actions,
-    ...(input.boardUrl !== undefined ? { warnings: [BOARD_URL_DEPRECATION_WARNING] } : {}),
+    ...(input.boardUrl !== undefined || manifestNotes.length
+      ? { warnings: [...(input.boardUrl !== undefined ? [BOARD_URL_DEPRECATION_WARNING] : []), ...manifestNotes] }
+      : {}),
   };
 }
 

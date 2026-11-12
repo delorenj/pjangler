@@ -55,6 +55,17 @@ records and existing event envelopes may retain `slug` as an equal-valued
 compatibility field while their callers migrate. There is no independent slug
 or provider-prefix lookup.
 
+`pj init` validates an existing `.project.json` against the registry's own
+manifest shape (`validateManifestShape`) while it is still planning, so a
+manifest the registry would refuse fails the dry run and `--apply` with the
+precise field error before a board is created or a rule writes. One old,
+unambiguous shape is normalized instead: a bare path string in
+`source_artifacts` becomes `{"kind": "reference", "path": ...}` and the plan
+prints a warning saying so. A rule that only warns or withholds (for example
+`bmad.version`, "update withheld") is reported as a warning and does not stop
+registration; a rule that fails the project audit still blocks. A second
+`pj init --apply` on an adopted repo converges with exit 0 and no changes.
+
 `pj info` reads the local manifest even if the registry is unavailable. Explicit
 global lookups require the service; they never silently use YAML. Registration
 does not assert that a provider board was contacted. Provider verification is

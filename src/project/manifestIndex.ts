@@ -27,7 +27,16 @@ function mergeMissing(current: any, fallback: any): any {
 }
 function hash(data: string): string { return createHash('sha256').update(data).digest('hex'); }
 
-function validateManifestFields(manifest: Json, path: string): void {
+/**
+ * The one definition of "a manifest the registry will accept".
+ *
+ * `readManifest` (every index, reindex and upsert) and `writeManifest` run this
+ * exact function, and `pj init` runs it BEFORE any live write (PJAN-211), so a
+ * manifest the registry would refuse is refused at plan time, with the same
+ * `<field> must be <shape>` message, instead of after the ticket board exists
+ * and the parity rules have written. Exported for that reason; do not fork it.
+ */
+export function validateManifestShape(manifest: Json, path: string): void {
   validateExecutionBinding(manifest);
   const fail = (field: string, shape: string): never => { throw new RegistryError(`Manifest ${path}: ${field} must be ${shape}`); };
   const strings = (value: Json, names: string[], prefix = '') => {
@@ -77,7 +86,7 @@ export async function readManifest(path: string) {
   let manifest: Json;
   try { manifest = JSON.parse(raw); } catch { throw new RegistryError(`Malformed JSON: ${path}`); }
   if (!object(manifest)) throw new RegistryError(`Expected a JSON object: ${path}`);
-  validateManifestFields(manifest, path);
+  validateManifestShape(manifest, path);
   const id = normalizeProjectId(manifest.project_id ?? manifest.project_slug);
   if (manifest.project_id && manifest.project_slug && normalizeProjectId(manifest.project_slug) !== id) {
     throw new RegistryError(`Conflicting project_id and project_slug: ${path}`, 409, 'identity_conflict');
@@ -104,7 +113,7 @@ export function recordFromManifest(manifest: Json, path: string): Json {
 }
 
 async function writeManifest(original: ReadManifest, manifest: Json): Promise<ReadManifest> {
-  validateManifestFields(manifest, original.path);
+  validateManifestShape(manifest, original.path);
   const serialized = serializedManifest(manifest);
   const temp = join(dirname(original.path), `.project.json.${randomUUID()}.tmp`);
   let committed = false;
@@ -341,7 +350,7 @@ export class ManifestIndex {
         else throw new RegistryError(`Missing concurrency baseline for ${id}; reload the registry and retry`, 409, 'stale_manifest');
         if (next.repo_path !== current.repo_path) throw new RegistryError(`Cannot move ${id} through a registry snapshot; register its canonical manifest path`, 409, 'identity_conflict');
         const manifest = applyRecord(read.manifest, current, next);
-        validateManifestFields(manifest, path);
+        validateManifestShape(manifest, path);
         serializedManifest(manifest);
         writes.push({ read, manifest, oldId: row?.project_id });
       }

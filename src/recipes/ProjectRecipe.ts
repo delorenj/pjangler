@@ -14,6 +14,7 @@ import {
   type ProjectTicketProvider,
 } from "../project/index";
 import { ticketScope } from "../project/ticketScope";
+import { validateManifestShape } from "../project/manifestIndex";
 import {
   BMAD_INSTALLER_VERSION,
   createProjectChecks,
@@ -52,6 +53,11 @@ export interface ProjectRecipeResult extends RecipeInitResult {
   mode: "create" | "sync";
   audit?: AuditReport;
   migrationReport?: MigrationReport;
+  /**
+   * PJAN-211: rules that did not finish but only WARN. They are reported here
+   * (and flagged `advisory` in `migrationReport`) and never fail the transaction.
+   */
+  warnings: string[];
   selectedOperations: readonly string[];
   selectedParityRules: readonly string[];
 }
@@ -128,6 +134,26 @@ export function unsafeToRemove(targetDir: string): string | null {
     cursor = parent;
   }
   return null;
+}
+
+/**
+ * Would the registry refuse the manifest that is on disk right now?
+ *
+ * Judged by the registry's own validator (PJAN-211). `undefined` when it accepts
+ * the manifest, and also when there is no manifest to judge. Used right before
+ * the ticket-provider phase, because nothing a parity rule or an operator's
+ * hand-edit wrote may reach the board step unless the registry will take it.
+ */
+function manifestRefusal(manifestPath: string): string | undefined {
+  if (!existsSync(manifestPath)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return `Expected a JSON object: ${manifestPath}`;
+    validateManifestShape(parsed as Record<string, any>, manifestPath);
+    return undefined;
+  } catch (error) {
+    return error instanceof SyntaxError ? `Malformed JSON: ${manifestPath}` : error instanceof Error ? error.message : String(error);
+  }
 }
 
 function publicAudit(report: Awaited<ReturnType<RecipeRegistry["auditRecipes"]>>): AuditReport {
@@ -303,6 +329,8 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       });
     };
     let migrationReport: MigrationReport | undefined;
+    let unfinishedMigrations: { result: MigrationReport["results"][number]; phase: RecipePhaseOutcome }[] = [];
+    const warnings: string[] = [];
     let audit: AuditReport | undefined;
     let notebookPlan: NotebookPlanV1 | undefined;
     let notebookRecipeForCommit: NotebookRecipe | undefined;
@@ -417,30 +445,57 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           normalized.selectedRuleIds,
         ));
         changedFiles.push(...migrationReport.changedFiles);
-        phases.push(...migrationReport.results.map((result) => ({
+        const migrationPhases = migrationReport.results.map((result) => ({
           id: result.id,
           status: result.status === "applied" ? "changed" : result.status === "noop" ? "unchanged" : result.status === "skipped" ? "skipped" : "failed",
           // A `partial` failed, but its writes really happened, so they stay
           // accounted for rather than vanishing from the transaction record.
           changedFiles: result.status === "applied" || result.status === "partial" ? result.changedFiles : [],
           message: result.summary,
-        } as RecipePhaseOutcome)));
-        errors.push(...migrationReport.results
-          .filter((result) => result.status === "blocked" || result.status === "partial")
-          .map((result) => describeFinding(result)));
+        } as RecipePhaseOutcome));
+        phases.push(...migrationPhases);
+        // PJAN-211: whether an unfinished rule fails the transaction is decided
+        // by the rule's own AUDIT, after the whole run, not by the migration's
+        // word for it. `blocked`/`partial` used to fail the transaction
+        // outright, so `bmad.version` ("update withheld: g33 companion adapter
+        // not configured", audit status `warn`) stopped the registry finalizer
+        // and made a re-apply of an already-adopted repo exit 1 with the
+        // project unregistered. Every other gate here already follows the same
+        // rule (`gatesProject`: a project-scoped `fail`); this one did not.
+        unfinishedMigrations = migrationReport.results
+          .map((result, index) => ({ result, phase: migrationPhases[index]! }))
+          .filter(({ result }) => result.status === "blocked" || result.status === "partial");
       }
 
       const eligibilityAudit = errors.length === 0
         ? publicAudit(await this.registry.auditRecipes({ ...transactionContext, dryRun: true }))
         : undefined;
       audit = eligibilityAudit;
+      // A rule with no gating audit finding only warns: report it, flag it, move on.
+      const gating = new Set((eligibilityAudit?.rules ?? []).filter((finding) => gatesProject(finding)).map((finding) => finding.id));
+      const reportedByMigration = new Set<string>();
+      for (const { result, phase } of unfinishedMigrations) {
+        if (!eligibilityAudit || gating.has(result.id)) {
+          errors.push(describeFinding(result));
+          reportedByMigration.add(result.id);
+        } else {
+          result.advisory = true;
+          phase.status = "skipped";
+          phase.message = `advisory (does not block init): ${result.summary}`;
+          warnings.push(`${result.id}: ${result.summary}`);
+        }
+      }
+      if (migrationReport && unfinishedMigrations.length && !unfinishedMigrations.some(({ result }) => !result.advisory)) {
+        // Every unfinished rule only warns: the run, as a whole, completed.
+        migrationReport.ok = true;
+      }
       if (eligibilityAudit && !eligibilityAudit.ok) {
         errors.push(...eligibilityAudit.rules
           // PJAN-84: only a PROJECT-scoped failure is this transaction's problem.
           // A host finding — a drifted ~/.agents symlink, a systemd unit, the
           // fleet registry — cannot be fixed by the repo being created, and
           // failing here used to delete it (see the rollback guard below).
-          .filter((finding) => gatesProject(finding))
+          .filter((finding) => gatesProject(finding) && !reportedByMigration.has(finding.id))
           .map((finding) => describeFinding(finding)));
       }
       phases.push({
@@ -490,6 +545,18 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
               phases.push({ id: "project.git", status: "changed", changedFiles: [gitPath], message: "Git repository initialized and committed" });
             }
           }
+        }
+      }
+      // PJAN-211: nothing below this line may run for a manifest the registry
+      // would refuse. The plan was validated before anything was written, but a
+      // parity rule, a deselected manifest write or a concurrent edit can change
+      // what is on disk since, and the ticket-provider phase is the first thing
+      // that cannot be taken back.
+      if (errors.length === 0) {
+        const refusal = manifestRefusal(join(targetDir, ".project.json"));
+        if (refusal) {
+          errors.push(`manifest refused before external effects: ${refusal}`);
+          phases.push({ id: "project.manifest:validate", status: "failed", changedFiles: [], message: refusal });
         }
       }
       registryFinalizerEligible = errors.length === 0;
@@ -719,6 +786,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       selectedOperations: normalized.selectedOperations ?? [],
       selectedParityRules: normalized.selectedRuleIds ?? [],
       migrationReport,
+      warnings,
       ...(bmadCompanion ? { bmadCompanion } : {}),
     };
   }
