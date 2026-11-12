@@ -122,7 +122,9 @@ test("core sync preserves installer real entries and correct foreign links witho
 // written before the sync and independently of its outcome (retiring dead
 // wiring no longer waits on skillex agreeing). A refused selection still writes
 // no manifest, no activation root and no core state.
-const CLIENT_ALIASES = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
+// `.kimi` is skillex's own alias for Kimi CLI's directory (skillex >= 0.4.3, PROJECT_CLI_ALIASES);
+// pjangler writes every alias the bundled core checks (tests/pjan-135-skill-roots-regressions.mjs).
+const CLIENT_ALIASES = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".kimi", ".zcode"];
 function refusedWithoutActivation(f, result, manifest) {
   assert.notEqual(result.exit, 0);
   assert.equal(result.report.results[0].status, "partial", JSON.stringify(result.report));

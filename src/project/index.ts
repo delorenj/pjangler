@@ -925,6 +925,23 @@ export interface TicketProviderBoardResult {
 }
 
 /**
+ * The name a provider board is created under.
+ *
+ * Plane rejects a project name holding anything but letters, digits, underscore
+ * and whitespace (HTTP 400 "Project name cannot contain special characters"), so
+ * `pj init pjtest-board` built the repo and the registry record and only then
+ * failed at the board, and could never succeed on a re-run (PJAN-209). Only the
+ * provider's copy of the name is cleaned: the project keeps its own name, and
+ * the adapter's link-by-name idempotence keys off this same string every run.
+ * A name that is already acceptable is returned untouched.
+ */
+export function providerBoardName(provider: string, name: string): string {
+  if (provider !== "plane") return name;
+  const cleaned = name.replace(/[^\p{L}\p{N}_\s]+/gu, " ").replace(/\s+/g, " ").trim();
+  return cleaned || name;
+}
+
+/**
  * Create (or link, the adapters are idempotent) the repo's ticket board by
  * invoking the same `create_board` op that
  * agents/hermes/pm/.scripts/42-ticket-provider.sh uses.
@@ -1484,7 +1501,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       workspace: project.ticket_provider.workspace ?? "33god",
       identifier,
       repoPath: targetDir,
-      boardName: project.name,
+      boardName: providerBoardName(project.ticket_provider.type, project.name),
       description: project.description || `Ticket board for ${project.slug}`,
       boardId: project.ticket_provider.board_id ?? "",
       state: project.ticket_provider.board_id ? "linked" : "planned",
@@ -1494,7 +1511,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
           ? "board already linked; no provider call"
           : !provisionTicketBoard
             ? "ticket-provider action requires explicit provisionTicketBoard=true"
-            : `create or link the ${project.ticket_provider.type} board "${project.name}" (${identifier}) via the ticket-provider adapter`,
+            : `create or link the ${project.ticket_provider.type} board "${providerBoardName(project.ticket_provider.type, project.name)}" (${identifier}) via the ticket-provider adapter`,
     },
   );
 

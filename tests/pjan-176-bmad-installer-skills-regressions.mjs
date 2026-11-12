@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
@@ -120,6 +120,12 @@ test("PJAN-176: an installer copy colliding with an inherited selection is exclu
     const result = await f.migrate();
     assert.equal(result.status, "applied", JSON.stringify(result.details));
     assert.deepEqual(f.manifest().exclude, ["bmad-alpha"]);
+    // PJAN-209: on a machine with no state yet the handoff record creates
+    // `$XDG_STATE_HOME/pjangler`, and the Project Notebook projector later refuses
+    // any state directory that is not mode 0700.
+    for (const dir of [join(process.env.XDG_STATE_HOME, "pjangler"), join(process.env.XDG_STATE_HOME, "pjangler", "skill-handoffs")]) {
+      assert.equal(statSync(dir).mode & 0o777, 0o700, `${dir} must be created private`);
+    }
     untouched(f);
     assert.ok(lstatSync(join(f.R, "beta")).isSymbolicLink(), "the remaining selection is activated");
     assert.equal((await f.audit()).status, "pass");

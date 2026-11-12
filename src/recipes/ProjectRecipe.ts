@@ -24,7 +24,7 @@ import {
 } from "../parity/rules";
 import { Recipe } from "./Recipe";
 import type { RecipeRegistry } from "./registry";
-import { gatesProject } from "./types";
+import { describeFinding, gatesProject } from "./types";
 import type {
   LifecycleContext,
   RecipeInitResult,
@@ -427,7 +427,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         } as RecipePhaseOutcome)));
         errors.push(...migrationReport.results
           .filter((result) => result.status === "blocked" || result.status === "partial")
-          .map((result) => `${result.id}: ${result.summary}`));
+          .map((result) => describeFinding(result)));
       }
 
       const eligibilityAudit = errors.length === 0
@@ -441,7 +441,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           // fleet registry — cannot be fixed by the repo being created, and
           // failing here used to delete it (see the rollback guard below).
           .filter((finding) => gatesProject(finding))
-          .map((finding) => `${finding.id}: ${finding.summary}`));
+          .map((finding) => describeFinding(finding)));
       }
       phases.push({
         id: "project.audit:eligibility",
@@ -550,7 +550,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
                 : null;
               transactionContext.notebookObservation = Object.freeze(await notebookRecipe.observeExternal(plan, notebookPlan));
               const candidateAudit = publicAudit(await this.registry.auditRecipes(transactionContext, ["notebook"]));
-              if (!candidateAudit.ok) errors.push(...candidateAudit.rules.filter((item) => item.status === "fail" || item.status === "warn").map((item) => `${item.id}: ${item.summary}`));
+              if (!candidateAudit.ok) errors.push(...candidateAudit.rules.filter((item) => item.status === "fail" || item.status === "warn").map((item) => describeFinding(item)));
             }
             phases.push({
               id: "project.external:notebook",
@@ -628,7 +628,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
           // fleet registry — cannot be fixed by the repo being created, and
           // failing here used to delete it (see the rollback guard below).
           .filter((finding) => gatesProject(finding))
-          .map((finding) => `${finding.id}: ${finding.summary}`));
+          .map((finding) => describeFinding(finding)));
       }
       phases.push({
         id: "project.audit",

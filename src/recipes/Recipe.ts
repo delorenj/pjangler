@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { Command } from "../commands/Command";
 import type { CommandContext, InvokeResult } from "../commands/Command";
 import { bold, cyan, dim, green, yellow, glyph } from "../utils/style";
-import { auditCheck } from "./types";
+import { auditCheck, describeFinding } from "./types";
 import type {
   LifecycleAuditFinding,
   LifecycleContext,
@@ -105,7 +105,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
       }
       if (!finding.fixable) {
         phases.push({ id: check.id, status: "failed", changedFiles: [], message: finding.summary });
-        errors.push(`${check.id}: ${finding.summary}`);
+        errors.push(describeFinding({ id: check.id, summary: finding.summary, details: finding.details }));
         break;
       }
       const migrated = await check.migrate(ctx, finding);
@@ -121,7 +121,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
       logs.push(`${check.id}: ${migrated.summary}`);
       changedFiles.push(...actualChanges);
       if (status === "failed") {
-        errors.push(`${check.id}: ${migrated.summary}`);
+        errors.push(describeFinding({ id: check.id, summary: migrated.summary, details: migrated.details }));
         break;
       }
       if (!ctx.dryRun) {

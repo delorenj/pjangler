@@ -134,7 +134,11 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   const globalIgnore = join(home, ".config", "git", "ignore");
   mkdirSync(join(home, ".config", "git"), { recursive: true });
   const SUPPORTED = [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"];
-  writeFileSync(globalIgnore, `${SUPPORTED.map((clientRoot) => `${clientRoot}/`).join("\n")}\n`);
+  // skillex (>=0.4.3) also aliases Kimi CLI's own `.kimi/skills` in every project.
+  // No BMAD tool backs it, so it is not a supported CLI projection, but it is not
+  // the deluge this check hunts either: it is one symlink skillex itself owns.
+  const SKILLEX_ALIAS_ROOTS = [".kimi"];
+  writeFileSync(globalIgnore, `${[...SUPPORTED, ...SKILLEX_ALIAS_ROOTS].map((clientRoot) => `${clientRoot}/`).join("\n")}\n`);
 
   const isolatedEnv = hermeticEnv({
     PATH: `${skillexBin}:${process.env.PATH}`, PJ_SKILLS_REGISTRY_ROOT: join(workspace, "catalog"), PJ_BMAD_INSTALLER: bmadInstaller,
@@ -188,7 +192,7 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   const ALLOWED_OTHER = [".agents", ".github", ".mise", ".git", ".gitignore", ".env.op", ".project.json", ".copier-answers.yml"];
   const unexpected = readdirSync(target)
     .filter((name) => name.startsWith("."))
-    .filter((name) => !SUPPORTED.includes(name) && !ALLOWED_OTHER.includes(name));
+    .filter((name) => !SUPPORTED.includes(name) && !SKILLEX_ALIAS_ROOTS.includes(name) && !ALLOWED_OTHER.includes(name));
   assert.deepEqual(unexpected, [], `bmad-method emitted unsupported CLI root(s): ${unexpected.join(", ")}`);
   for (const supported of SUPPORTED) {
     assert.ok(existsSync(join(target, supported)), `supported CLI root ${supported} was not created`);

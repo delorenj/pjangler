@@ -197,7 +197,12 @@ function readHandoffRecord(ctx: Context): string[] {
 
 function writeHandoffRecord(ctx: Context, names: readonly string[]): void {
   const path = handoffRecordPath(ctx);
-  mkdirSync(dirname(path), { recursive: true });
+  // 0700, because on a machine with no state yet THIS call creates
+  // `$XDG_STATE_HOME/pjangler`, and the Project Notebook projector later insists
+  // that directory is private ("state directory must be a current-user mode 0700
+  // directory"). A default-mode mkdir made the first `pj init` on a fresh
+  // machine fail at project-hooks (PJAN-209).
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify({ project: realpathOf(ctx.repoRoot) ?? resolve(ctx.repoRoot), excluded: [...new Set(names)].sort() }, null, 2)}\n`);
   renameSync(temporary, path);

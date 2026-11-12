@@ -61,7 +61,7 @@
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.4.0",
-    "@delorenj/skillex": "0.3.0",
+    "@delorenj/skillex": "0.4.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.2",
     "ink": "^8.0.0",

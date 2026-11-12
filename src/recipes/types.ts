@@ -190,6 +190,28 @@ export function gatesProject(finding: Pick<LifecycleAuditFinding, "status" | "sc
   return finding.status === "fail" && !isHostScoped(finding);
 }
 
+/** How many detail lines one failing finding contributes to an error string. */
+const FINDING_DETAIL_LIMIT = 20;
+
+/**
+ * One finding as an error string: `id: summary`, then its details underneath.
+ *
+ * A bare `id: summary` is not an error message when the summary is a count.
+ * `skills.project-manifest` summarises as "9 Skillex finding(s)", and a fresh
+ * `pj init` that failed on it rolled the whole target back while printing only
+ * that count (PJAN-209): the one thing the operator needed, which finding, was
+ * in `details` and went nowhere. Every transaction error built from a finding
+ * goes through here so a failing check always says why.
+ */
+export function describeFinding(finding: { id: string; summary: string; details?: readonly string[] }): string {
+  const details = (finding.details ?? []).map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  if (details.length === 0) return `${finding.id}: ${finding.summary}`;
+  const shown = details.slice(0, FINDING_DETAIL_LIMIT).map((line) => `      - ${line.replace(/\r?\n/g, "\n        ")}`);
+  const omitted = details.length - shown.length;
+  if (omitted > 0) shown.push(`      - (+${omitted} more; run pj audit --rules ${finding.id} for the full list)`);
+  return [`${finding.id}: ${finding.summary}`, ...shown].join("\n");
+}
+
 export interface LifecycleRecipe<TInput = unknown> {
   readonly metadata: RecipeMetadata;
   readonly checks: readonly RecipeCheck[];

@@ -78,7 +78,7 @@ try {
   if (process.env.PJ_SKILLEX_TEST_TARBALL) args.push(process.env.PJ_SKILLEX_TEST_TARBALL);
   run("npm", args);
   const installed = join(install, "node_modules", "@delorenj", "pjangler");
-  assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).dependencies["@delorenj/skillex"], "0.3.0");
+  assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).dependencies["@delorenj/skillex"], "0.4.4");
   const results = [];
   for (const [label, cli] of [["source", join(root, "dist", "index.js")], ["installed", join(installed, "dist", "index.js")]]) {
     const project = join(tmp, `${label} project`);

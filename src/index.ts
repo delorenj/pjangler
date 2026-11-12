@@ -210,10 +210,22 @@ async function promptTextValue(message: string, initialValue?: string): Promise<
  *
  * Returns true when the ingress delivered what it promised.
  */
-function reportBoardDelivery(board: BoardDelivery, slug: string, skipRequested: boolean): boolean {
+function reportBoardDelivery(board: BoardDelivery, slug: string, skipRequested: boolean, reached = true): boolean {
   if (board.confirmed) {
     console.log(`  ${green(glyph.pass)} ${bold("Board linked")}  ${dim(glyph.dot)}  ${cyan(`${board.provider}/${board.workspace}/${board.identifier}`)}  ${dim(board.boardId)}`);
     return true;
+  }
+  if (!reached && !skipRequested) {
+    // The transaction failed BEFORE the ticket-provider phase, so no adapter was
+    // ever called. Saying "the board was not confirmed ... once the provider
+    // credential resolves" here blamed the credential for a failure that was
+    // somewhere else entirely (PJAN-209). The errors above are the problem.
+    console.error("");
+    console.error(`  ${xmark} ${bold("Board step not reached")}  ${dim(glyph.dot)}  ${cyan(slug)}`);
+    console.error(`     ${dim("project init failed before the ticket-provider phase; no board was created or looked up")}`);
+    console.error(`     ${dim("fix the error(s) above, then re-run the same command. The provider credential is not the cause.")}`);
+    console.error("");
+    return false;
   }
   const mark = skipRequested ? `${yellow(glyph.warn)}` : xmark;
   const title = skipRequested ? "No ticket board (--skip-board)" : "No ticket board";
@@ -837,8 +849,11 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
       const board = boardDelivery({ ...result.plan, actions: plan.actions });
       const skipRequested = Boolean(options.skipBoard);
       const boardDelivered = board.confirmed || skipRequested;
+      // Did the transaction get as far as the ticket-provider adapter? Only then
+      // is "the board was not confirmed" a statement about the provider.
+      const boardStepReached = result.phases.some((phase) => phase.id === "project.external:ticket-provider");
       if (options.json) {
-        console.log(JSON.stringify({ ...result, ok: result.ok && boardDelivered, board }, null, 2));
+        console.log(JSON.stringify({ ...result, ok: result.ok && boardDelivered, board: { ...board, reached: boardStepReached } }, null, 2));
       } else {
         console.log(formatProjectInitPlan(selectedPlan));
         for (const line of result.logs) console.log(line);
@@ -846,7 +861,7 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         if (result.migrationReport) console.log(formatMigrationReport(result.migrationReport));
         if (result.ok && result.changedFiles.length) console.log(`  ${green(glyph.pass)} ${bold("Project synchronized")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}`);
         if (result.ok && result.changedFiles.length === 0) console.log(`  ${green(glyph.pass)} ${dim("Already in parity")}  ${dim(glyph.dot)}  ${cyan(plan.project.slug)}`);
-        reportBoardDelivery(board, plan.project.slug, skipRequested);
+        reportBoardDelivery(board, plan.project.slug, skipRequested, boardStepReached || result.ok);
         const rendered = selectedPlan.actions.find((action) => action.kind === "copier.copy.commonproject");
         if (result.ok && rendered?.kind === "copier.copy.commonproject" && rendered.data.project_type === "obsidian-plugin") {
           console.log(`  ${bold("Next")}  ${dim(`cd ${target.targetDir}`)}`);

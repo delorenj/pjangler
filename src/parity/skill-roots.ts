@@ -78,8 +78,20 @@ import { attestBmadInstallerFiles, bmadCliProjectionInventory } from "./bmad-att
 /** The alias text pjangler writes for a CLI skills root it creates or converts. */
 export const CANONICAL_CLI_SKILLS_ALIAS = "../.agents/skills";
 
-/** The six project aliases skillex checks, in CLI policy order. */
-export const SUPPORTED_SKILLS_ALIASES: readonly string[] = SUPPORTED_CLIS.map((cli) => cli.skillsRoot);
+/**
+ * Project skills roots skillex aliases that no BMAD installer tool backs, keyed
+ * by the supported CLI root they follow in skillex's policy order. skillex
+ * 0.4.3 added `.kimi/skills` (Kimi CLI's own dir, next to `.kimi-code`), and its
+ * sync creates the alias in every project, so pjangler must own it too or the
+ * skills rule reports a root nobody planned.
+ */
+const SKILLEX_ONLY_ALIASES_AFTER: Readonly<Record<string, string>> = { ".kimi-code/skills": ".kimi/skills" };
+
+/** The project aliases skillex checks, in skillex's policy order (`PROJECT_CLI_ALIASES`). */
+export const SUPPORTED_SKILLS_ALIASES: readonly string[] = SUPPORTED_CLIS.flatMap((cli) => {
+  const follower = SKILLEX_ONLY_ALIASES_AFTER[cli.skillsRoot];
+  return follower ? [cli.skillsRoot, follower] : [cli.skillsRoot];
+});
 
 /** `.agents/<this>`: where a run parks everything it would otherwise remove. */
 export const SKILL_ROOTS_QUARANTINE = ".pjangler-quarantine";
