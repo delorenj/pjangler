@@ -609,6 +609,28 @@ function lstatIfPresent(path: string): ReturnType<typeof lstatSync> | undefined 
 }
 
 
+/**
+ * A mobile-deploy-hub app declares itself with `tools/ci/mobile-deploy.json`
+ * (the hub's per-app contract, schema 2). For such a repo the HUB is the one
+ * version authority: it reads and bumps the version through the hooks in that
+ * file and mints the release tag itself (`mise run deploy`). Operator policy is
+ * that a mobile app's version moves only through the hub, so pjangler must never
+ * author a `version:bump*` / `version:sync` task, a `gittag` manifest or its own
+ * `version` task there (PJAN-210). Adopting shortwave would have replaced its
+ * hub-backed `version` task and added exactly those.
+ */
+export const MOBILE_DEPLOY_HUB_CONTRACT = join("tools", "ci", "mobile-deploy.json");
+
+function mobileDeployHubContract(repoRoot: string): { summary: string } | undefined {
+  const path = join(repoRoot, MOBILE_DEPLOY_HUB_CONTRACT);
+  if (!existsSync(path)) return undefined;
+  const schema = record(tryParseJson(safeReadText(path))).schema;
+  return {
+    summary: `mobile-deploy-hub app (${MOBILE_DEPLOY_HUB_CONTRACT}${typeof schema === "number" ? `, schema ${schema}` : ""}): the hub is the version authority, so pjangler authors no version tasks, versioning script or version-files manifest here`,
+  };
+}
+
+
 function templateVersionFilesConf(ctx: Context, repoRoot: string): string {
   // PJAN-169: an Obsidian plugin releases from a bare `X.Y.Z` tag whose tree
   // carries that version in manifest.json, with versions.json mapping it to its
@@ -3118,6 +3140,8 @@ return [
     id: "mise.versioning",
     title: "managed mise versioning block",
     audit: (ctx) => {
+      const hub = mobileDeployHubContract(ctx.repoRoot);
+      if (hub) return { id: "mise.versioning", title: "managed mise versioning block", status: "skip", summary: hub.summary, details: [], fixable: false };
       const details: string[] = [];
       const misePath = join(ctx.repoRoot, "mise.toml");
       const versioningPath = join(ctx.repoRoot, ".mise", "scripts", "versioning.sh");
@@ -3145,6 +3169,9 @@ return [
       };
     },
     migrate: (ctx, finding) => {
+      // Even when asked by id: a hub app's versions are not pjangler's to write.
+      const hub = mobileDeployHubContract(ctx.repoRoot);
+      if (hub) return { id: finding.id, title: finding.title, status: "skipped", summary: hub.summary, changedFiles: [], details: [] };
       const changedFiles: string[] = [];
       const details: string[] = [];
       const misePath = join(ctx.repoRoot, "mise.toml");

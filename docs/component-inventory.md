@@ -54,7 +54,7 @@ blocked | skipped | partial`. 19 rules are registered:
 | --- | --- | --- |
 | `secrets.env-op` | `.env.op` + gitignore secrets contract | A nonempty `.env.op`, the managed `materialize-env.sh` hook in `mise.toml`, and `.env` ignored |
 | `mise.config-root` | mise config_root + AGENTS link hooks | `mise.toml` with the owned enter hooks and `_.path` entries, preserving complete foreign hook records |
-| `mise.versioning` | managed mise versioning block | The managed `mise-versioning` task block + `.mise/scripts/versioning.sh` |
+| `mise.versioning` | managed mise versioning block | The managed `mise-versioning` task block + `.mise/scripts/versioning.sh`. Stands down (`skip`, writes nothing) for a mobile-deploy-hub app, one with `tools/ci/mobile-deploy.json`: the hub is its version authority |
 | `skills.project-manifest` | Skillex project skills | The project's Skillex declaration and its activation (see [`skillex-integration.md`](./skillex-integration.md)) |
 | `sot.agent-symlinks` | AGENTS/CLAUDE/GEMINI symlink contract | `CLAUDE.md` & `GEMINI.md` are symlinks → `AGENTS.md` (skips if `AGENTS.md` absent) |
 | `bmad.scaffold` | BMAD modules/docs scaffold | BMAD `bmm,bmb,cis` installed from source inputs |

@@ -100,7 +100,7 @@ Representative checks — 19 rules are registered; use `pjangler audit --json` /
 | --- | --- |
 | `sot.project-json` | Canonical `.project.json` shape (keys, `repo_path`, agents, `ticket_provider`, `automation`); removes legacy `.plane.json` / `board_url` |
 | `mise.config-root` | `mise.toml` present with owned hooks and paths while preserving complete foreign hook records |
-| `mise.versioning` | The managed `mise-versioning` task block + `.mise/scripts/versioning.sh` |
+| `mise.versioning` | The managed `mise-versioning` task block + `.mise/scripts/versioning.sh`. Stands down (`skip`, writes nothing) for a mobile-deploy-hub app, one with `tools/ci/mobile-deploy.json`: the hub is its version authority |
 | `sot.agent-symlinks` | `CLAUDE.md`/`GEMINI.md` are symlinks to `AGENTS.md` |
 | `secrets.env-op` | `.env.op` and the canonical atomic materialization script |
 | `provenance.copier` | copier answers/provenance present |
