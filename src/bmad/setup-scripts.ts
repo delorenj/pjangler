@@ -43,7 +43,7 @@ function manifestRows(text: string): string[][] {
 }
 
 function sameIdentity(a: import("node:fs").Stats | undefined, b: import("node:fs").Stats): boolean {
-  return !!a && a.dev === b.dev && a.ino === b.ino && a.isDirectory() && !a.isSymbolicLink();
+  return !!a && a.dev === b.dev && a.ino === b.ino && a.isDirectory();
 }
 
 
@@ -300,7 +300,7 @@ export function applyBmadSetupScripts(repoRoot: string, pkg: BmadInstallerPackag
   let ambiguousPublication: string | undefined;
   const matchesPayload = (path: string, owned: { dev: number; ino: number; bytes: Buffer; mode: number }): boolean => {
     const stat = entryStat(path);
-    return !!stat?.isFile() && !stat.isSymbolicLink() && stat.dev === owned.dev && stat.ino === owned.ino
+    return !!stat?.isFile() && stat.dev === owned.dev && stat.ino === owned.ino
       && (stat.mode & 0o7777) === owned.mode && readFileSync(path).equals(owned.bytes);
   };
   let madeDir = false;
@@ -403,7 +403,7 @@ export function applyBmadSetupScripts(repoRoot: string, pkg: BmadInstallerPackag
         for (const [name, owned] of stagedIdentities) {
           const staged = join(anchoredStage, name);
           const stat = entryStat(staged);
-          if (stat?.isFile() && !stat.isSymbolicLink() && stat.dev === owned.dev && stat.ino === owned.ino) unlinkSync(staged);
+          if (stat?.isFile() && stat.dev === owned.dev && stat.ino === owned.ino) unlinkSync(staged);
           else cleanupErrors.push(`Staged file replaced, modified or absent: ${name}`);
         }
         const stagePath = join(`/proc/self/fd/${parentFd}`, basename(stage!));
