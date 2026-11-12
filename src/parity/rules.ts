@@ -1909,6 +1909,25 @@ export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION): B
 }
 
 
+/**
+ * bmad.setup-scripts declines (skip, never fail, never write) when it has nothing
+ * to attest against: a pre-manifest install with no files-manifest.csv (absence
+ * is not this rule's concern, as with bmad.version), or an explicit
+ * PJ_BMAD_INSTALLER that is not a bmad-method package (a fake or wrapper
+ * installer) and so has no pinned package to restore from. Every other refusal
+ * (symlinked manifest, drift, unverified fingerprint) stays a visible failure.
+ */
+function bmadSetupScriptsResolution(repoRoot: string): { decline: string } | { pkg: BmadInstallerPackage } {
+  try { lstatSync(join(repoRoot, "_bmad", "_config", "files-manifest.csv")); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { decline: "Setup script recovery unavailable: _bmad/_config/files-manifest.csv is absent, so recovered scripts cannot be attested" };
+  }
+  const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+  if (!pkg.root && process.env.PJ_BMAD_INSTALLER?.trim()) return { decline: `Setup script recovery unavailable: ${pkg.reason ?? "installer is not a bmad-method package"}` };
+  return { pkg };
+}
+
+
 export function bmadInstallerArgs(repoRoot: string, modules = selectedBmadModules(repoRoot), extraArgs: string[] = []): string[] {
   // bmad-method treats a missing/falsy --modules under --yes as "installed +
   // defaults", which can silently add bmm. The installer-supported explicit
@@ -4103,7 +4122,12 @@ return ([
         id: "bmad.setup-scripts", title: "BMAD ignored installer setup scripts", status: "skip",
         summary: "No installed BMAD project", details: [], fixable: false,
       };
-      const plan = planBmadSetupScripts(ctx.repoRoot, resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION), BMAD_INSTALLER_VERSION);
+      const resolved = bmadSetupScriptsResolution(ctx.repoRoot);
+      if ("decline" in resolved) return {
+        id: "bmad.setup-scripts", title: "BMAD ignored installer setup scripts", status: "skip",
+        summary: resolved.decline, details: [], fixable: false,
+      };
+      const plan = planBmadSetupScripts(ctx.repoRoot, resolved.pkg, BMAD_INSTALLER_VERSION);
       return {
         id: "bmad.setup-scripts", title: "BMAD ignored installer setup scripts",
         status: plan.files.length || plan.error ? "fail" : "pass",
@@ -4115,7 +4139,9 @@ return ([
     migrate: (ctx, finding) => {
       const title = finding.title, id = finding.id;
       if (finding.status === "skip") return { id, title, status: "skipped", summary: finding.summary, details: [], changedFiles: [] };
-      const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+      const resolved = bmadSetupScriptsResolution(ctx.repoRoot);
+      if ("decline" in resolved) return { id, title, status: "skipped", summary: resolved.decline, details: [], changedFiles: [] };
+      const pkg = resolved.pkg;
       const plan = planBmadSetupScripts(ctx.repoRoot, pkg, BMAD_INSTALLER_VERSION);
       if (plan.error) return { id, title, status: "blocked", summary: plan.error, details: [plan.error], changedFiles: [] };
       if (!plan.files.length) return { id, title, status: "noop", summary: "Pinned BMAD installer scripts already present", details: [], changedFiles: [] };

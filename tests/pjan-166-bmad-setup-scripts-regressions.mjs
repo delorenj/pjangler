@@ -418,3 +418,56 @@ test("PJAN-166: failed publish leaves no partial scripts or staging and retains 
     assert.equal(readdirSync(join(project, "_bmad")).some((n) => n.startsWith(".scripts-stage-")), false);
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
+
+test("PJAN-166: an explicit non-package PJ_BMAD_INSTALLER makes the rule skip visibly, never fail or write", async () => {
+  const project = fixture();
+  const fakeDir = mkdtempSync(join(tmpdir(), "pjan-166-fake-installer-"));
+  const fake = join(fakeDir, "fake-bmad-installer");
+  writeFileSync(fake, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const saved = process.env.PJ_BMAD_INSTALLER;
+  process.env.PJ_BMAD_INSTALLER = fake;
+  try {
+    const finding = await setup.audit(ctx(project, false));
+    assert.equal(finding.status, "skip", JSON.stringify(finding));
+    assert.equal(finding.fixable, false);
+    assert.match(finding.summary, /Setup script recovery unavailable: PJ_BMAD_INSTALLER is not a bmad-method package/);
+    for (const dryRun of [true, false]) {
+      const result = await setup.migrate(ctx(project, dryRun), finding);
+      assert.equal(result.status, "skipped", JSON.stringify(result));
+      assert.deepEqual(result.changedFiles, []);
+    }
+    // Even handed a stale failing finding, migrate re-resolves and declines without writing.
+    const stale = await setup.migrate(ctx(project, false), { ...finding, status: "fail", fixable: true });
+    assert.equal(stale.status, "skipped", JSON.stringify(stale));
+    assert.deepEqual(stale.changedFiles, []);
+    assert.equal(existsSync(join(project, "_bmad", "scripts")), false);
+  } finally {
+    if (saved === undefined) delete process.env.PJ_BMAD_INSTALLER; else process.env.PJ_BMAD_INSTALLER = saved;
+    rmSync(fakeDir, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("PJAN-166: a pre-manifest install (no files-manifest.csv) makes the rule skip visibly, never fail or write", async () => {
+  const project = fixture();
+  try {
+    rmSync(join(project, "_bmad", "_config", "files-manifest.csv"));
+    const finding = await setup.audit(ctx(project, false));
+    assert.equal(finding.status, "skip", JSON.stringify(finding));
+    assert.equal(finding.fixable, false);
+    assert.match(finding.summary, /files-manifest\.csv is absent/);
+    for (const dryRun of [true, false]) {
+      const result = await setup.migrate(ctx(project, dryRun), finding);
+      assert.equal(result.status, "skipped", JSON.stringify(result));
+      assert.deepEqual(result.changedFiles, []);
+    }
+    const stale = await setup.migrate(ctx(project, false), { ...finding, status: "fail", fixable: true });
+    assert.equal(stale.status, "skipped", JSON.stringify(stale));
+    assert.equal(existsSync(join(project, "_bmad", "scripts")), false);
+    // A symlinked manifest is not "absent": it still refuses visibly rather than being skipped.
+    symlinkSync(join(project, "elsewhere.csv"), join(project, "_bmad", "_config", "files-manifest.csv"));
+    const refused = await setup.audit(ctx(project, false));
+    assert.equal(refused.status, "fail", JSON.stringify(refused));
+    assert.equal(existsSync(join(project, "_bmad", "scripts")), false);
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
