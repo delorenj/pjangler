@@ -250,7 +250,7 @@ try {
   const suites = new Set(registeredSuites(root));
   const credentials = Object.keys(SUITE_PASSTHROUGH).filter((name) => CREDENTIAL.test(name)).sort();
   assert.deepEqual(credentials, ["GITHUB_TOKEN", "PGPASSWORD"], "the only credentials a suite may keep are the installer contracts' GITHUB_TOKEN and the disposable test database's PGPASSWORD");
-  assert.deepEqual([...SUITE_PASSTHROUGH.GITHUB_TOKEN.suites].sort(), ["tests/bmad-installer-contract-regressions.mjs", "tests/pjan-180-surface-oracle.mjs"], "GITHUB_TOKEN goes to the network-backed installer contracts only");
+  assert.deepEqual([...SUITE_PASSTHROUGH.GITHUB_TOKEN.suites].sort(), ["tests/bmad-installer-contract-regressions.mjs", "tests/pjan-166-bmb-setup-contract.mjs", "tests/pjan-180-surface-oracle.mjs"], "GITHUB_TOKEN goes to the network-backed installer contracts only");
   for (const [name, { reason, suites: granted }] of Object.entries(SUITE_PASSTHROUGH)) {
     assert.ok(reason && reason.length > 20, `${name} needs a reason`);
     assert.ok(granted.length > 0, `${name} is granted to nobody`);

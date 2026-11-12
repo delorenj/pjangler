@@ -148,6 +148,13 @@ for (const moduleName of modules) {
   mkdirSync(join(bmadRoot, moduleName), { recursive: true });
   writeFileSync(join(bmadRoot, moduleName, "config.yaml"), "project_name: " + JSON.stringify(projectName) + "\\n");
 }
+// The real installer also writes the config resolver (PJAN-166: bmad.scaffold
+// audits for it, since every config-reading BMAD skill runs through it). Presence
+// is the whole contract here; the content is never executed.
+mkdirSync(join(bmadRoot, "scripts"), { recursive: true });
+for (const script of ["resolve_config.py", "config_utils.py"]) {
+  writeFileSync(join(bmadRoot, "scripts", script), "# hermetic BMAD installer fixture\\n");
+}
 writeFileSync(
   join(bmadRoot, "config.toml"),
   "[core]\\nproject_name = " + JSON.stringify(projectName) + "\\n\\n" +

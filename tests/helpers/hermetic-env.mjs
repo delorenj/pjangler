@@ -186,6 +186,7 @@ const POSTGRES_SUITES = Object.freeze([
 const NETWORK_CONTRACTS = Object.freeze([
   "tests/bmad-installer-contract-regressions.mjs",
   "tests/pjan-180-surface-oracle.mjs",
+  "tests/pjan-166-bmb-setup-contract.mjs",
 ]);
 const grant = (reason, suites) => Object.freeze({ reason, suites: Object.freeze([...suites]) });
 const POSTGRES = "Postgres connection settings: publish.yml's service container (PGHOST=localhost, PGUSER=postgres, trust auth) or the operator's local server. The Postgres-backed suites and the bundled suites they launch connect with them";

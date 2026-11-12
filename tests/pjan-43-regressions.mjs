@@ -46,6 +46,13 @@ function makeRepo(name) {
   return repo;
 }
 
+// PJAN-166: bmad.scaffold also requires the config resolver the installer writes.
+const RUNTIME_SCRIPTS = ["resolve_config.py", "config_utils.py"];
+function writeRuntimeScripts(repo) {
+  mkdirSync(join(repo, "_bmad", "scripts"), { recursive: true });
+  for (const script of RUNTIME_SCRIPTS) writeFileSync(join(repo, "_bmad", "scripts", script), "# fixture\n");
+}
+
 function command(args, { cwd = root, home = makeHome("default"), extraEnv = {} } = {}) {
   return spawnSync("node", [cli, ...args], {
     cwd,
@@ -244,6 +251,7 @@ try {
     mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
     mkdirSync(join(repo, "_bmad", "core"), { recursive: true });
     writeFileSync(join(repo, "_bmad", "core", "config.yaml"), `project_name: ${projectName}\ncore: true\n`);
+    writeRuntimeScripts(repo);
     writeFileSync(join(repo, "_bmad", "config.toml"), `[core]\nproject_name = "${projectName}"\n\n[modules.tea]\ntest_artifacts = "out"\n`);
     writeFileSync(
       join(repo, "_bmad", "_config", "manifest.yaml"),
@@ -355,7 +363,9 @@ done
     );
     const manifestBefore = readFileSync(manifestPath, "utf8");
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
-    assert.deepEqual(finding(audit, "bmad.scaffold").details, ["_bmad/core/config.yaml"]);
+    // Core-only has no per-module config to demand (core/config.yaml is no longer a sentinel, PJAN-166),
+    // so the work the installer is asked to do is the missing config resolver.
+    assert.deepEqual(finding(audit, "bmad.scaffold").details, RUNTIME_SCRIPTS.map((script) => `_bmad/scripts/${script}`));
 
     const fakeBin = mkdtempSync(join("/tmp", `pjan-43-${selection.name}-npx-`));
     cleanup.push(fakeBin);
@@ -376,8 +386,9 @@ while (( $# )); do
   esac
 done
 [[ "$modules" == "core" ]] || { printf 'expected explicit core-only selection, got %s\\n' "$modules" >&2; exit 91; }
-mkdir -p "$repo/_bmad/core"
+mkdir -p "$repo/_bmad/core" "$repo/_bmad/scripts"
 printf 'project_name: ${projectName}\\ncore: true\\n' > "$repo/_bmad/core/config.yaml"
+for script in ${RUNTIME_SCRIPTS.join(" ")}; do printf '# fixture\\n' > "$repo/_bmad/scripts/$script"; done
 `,
     );
     chmodSync(fakeNpx, 0o755);
@@ -419,6 +430,7 @@ printf 'project_name: ${projectName}\\ncore: true\\n' > "$repo/_bmad/core/config
     mkdirSync(join(repo, "_bmad", "_config"), { recursive: true });
     mkdirSync(join(repo, "_bmad", "core"), { recursive: true });
     writeFileSync(join(repo, "_bmad", "core", "config.yaml"), "project_name: HeyMa Fixture\ncore: true\n");
+    writeRuntimeScripts(repo);
     writeFileSync(join(repo, "_bmad", "config.toml"), '[core]\nproject_name = "HeyMa Fixture"\n');
     writeFileSync(
       join(repo, "_bmad", "_config", "manifest.yaml"),

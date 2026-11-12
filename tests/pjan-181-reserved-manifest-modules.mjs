@@ -190,7 +190,7 @@ try {
   {
     const { target } = project("scaffold-real");
     // Make the scaffold rule find work to do: drop a sentinel file the installer rewrites.
-    rmSync(join(target, "_bmad", "core", "config.yaml"), { force: true });
+    rmSync(join(target, "_bmad", "scripts", "resolve_config.py"), { force: true });
     const result = run(target, ["migrate", "bmad.scaffold"], undefined, recording);
     assert.equal(result.results[0].status, "applied", JSON.stringify(result.results[0]));
     assert.equal(recorded().manifest, WITHOUT_CUSTOM(false));

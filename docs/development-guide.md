@@ -50,6 +50,7 @@ node tests/pjan-57-lifecycle-recipes-regressions.mjs # registry/dispatch + audit
 node tests/pjan-57-dogfood-regressions.mjs           # real mise/fake-op + TOML/provenance
 node tests/generated-project-lifecycle-regressions.mjs # packed CLI + actual Copier + hermetic BMAD lifecycle
 npm run test:bmad-installer-contract                 # actual immutable BMAD package; network/cache required
+npm run test:bmad-config-authority                   # PJAN-166: real install + real bmad-bmb-setup scripts + audit/repair; network, uv/PyYAML required
 npm test                                             # all regression and package gates
 ```
 

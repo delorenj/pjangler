@@ -1707,13 +1707,96 @@ function selectedBmadModules(repoRoot: string): string[] {
 }
 
 
-function requiredBmadSentinels(repoRoot: string, modules = selectedBmadModules(repoRoot)): string[] {
-  return [
-    join("core", "config.yaml"),
-    join("config.toml"),
-    join("_config", "manifest.yaml"),
-    ...modules.map((module) => join(module, "config.yaml")),
-  ];
+/** The runtime scripts every config-reading BMAD skill resolves its settings through. */
+const BMAD_RUNTIME_SCRIPT_SENTINELS = ["resolve_config.py", "config_utils.py"] as const;
+
+/** A sentinel the `_bmad/` tree is missing: where the installer rewrites it, and the audit line. */
+interface BmadSentinelGap {
+  /** Relative to `_bmad/`. The file the installer is expected to (re)create. */
+  path: string;
+  detail: string;
+}
+
+type ConsolidatedBmadConfig =
+  | { status: "absent" }
+  | { status: "unusable"; reason: string }
+  | { status: "mapping"; sections: ReadonlySet<string> };
+
+/**
+ * `_bmad/config.yaml`: the consolidated config BMB's setup writes (a section per
+ * module at the top level) and bmb's own skills read before the per-module file.
+ */
+function consolidatedBmadConfig(repoRoot: string): ConsolidatedBmadConfig {
+  const path = join(repoRoot, "_bmad", "config.yaml");
+  if (!existsSync(path)) return { status: "absent" };
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(readText(path));
+  } catch (error) {
+    return { status: "unusable", reason: `could not be parsed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}` };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { status: "unusable", reason: "is not a YAML mapping" };
+  }
+  return { status: "mapping", sections: new Set(Object.keys(parsed)) };
+}
+
+/**
+ * PJAN-166 (Contract A): what a healthy `_bmad/` tree must hold, judged by what
+ * the 6.12.1 runtime and BMB's setup actually read and delete (see
+ * _bmad-output/implementation-artifacts/issue-evidence/PJAN-166-config-authority-trace.md).
+ *
+ * - `config.toml` and `scripts/{resolve_config,config_utils}.py`: the config
+ *   resolver's only hard requirements. BMB's setup never touches them.
+ * - `_config/manifest.yaml`: the installer's install record (version, module
+ *   selection, pins). BMB's `--also-remove _config` cleanup deletes it, so its
+ *   loss names that cause and the repair.
+ * - per selected module, `<m>/config.yaml` OR a `<m>` section in the consolidated
+ *   `config.yaml`, the two places bmb's skills look. BMB's setup folds `bmb/` and
+ *   `core/` into the second and deletes the first.
+ * - `core/config.yaml` is not required: nothing in 6.12.1 reads it, `[core]` in
+ *   `config.toml` carries the same values, and BMB's setup deletes it by design.
+ */
+function bmadSentinelGaps(repoRoot: string, modules = selectedBmadModules(repoRoot)): BmadSentinelGap[] {
+  const bmad = join(repoRoot, "_bmad");
+  const gaps: BmadSentinelGap[] = [];
+  const absent = (...segments: string[]): boolean => !existsSync(join(bmad, ...segments));
+  if (absent("config.toml")) gaps.push({ path: "config.toml", detail: "_bmad/config.toml" });
+  for (const script of BMAD_RUNTIME_SCRIPT_SENTINELS) {
+    if (absent("scripts", script)) gaps.push({ path: join("scripts", script), detail: `_bmad/scripts/${script}` });
+  }
+  if (absent("_config", "manifest.yaml")) {
+    // The BMB-setup hint only fits a tree that was installed once: with no `_bmad/` at all
+    // the install record is missing because nothing was installed, not because it was deleted.
+    gaps.push({
+      path: join("_config", "manifest.yaml"),
+      detail: existsSync(bmad)
+        ? "_bmad/_config/manifest.yaml (the installer's install record). BMB setup's `--also-remove _config` cleanup is the likely cause: it deletes all of _bmad/_config. Restore it with: pj migrate bmad.scaffold"
+        : "_bmad/_config/manifest.yaml",
+    });
+  }
+  let consolidated: ConsolidatedBmadConfig | undefined;
+  for (const module of modules) {
+    if (!absent(module, "config.yaml")) continue;
+    consolidated ??= consolidatedBmadConfig(repoRoot);
+    if (consolidated.status === "mapping" && consolidated.sections.has(module)) continue;
+    const why = consolidated.status === "absent" ? ""
+      : consolidated.status === "unusable" ? ` (and _bmad/config.yaml ${consolidated.reason}, so it cannot supply a ${module} section)`
+        : ` (and _bmad/config.yaml has no ${module} section)`;
+    gaps.push({ path: join(module, "config.yaml"), detail: `_bmad/${module}/config.yaml${why}` });
+  }
+  return gaps;
+}
+
+
+function bmadScaffoldIssues(repoRoot: string, modules: string[]): {
+  gaps: BmadSentinelGap[];
+  nameIssues: ReturnType<typeof bmadProjectNameIssues>;
+  details: string[];
+} {
+  const gaps = bmadSentinelGaps(repoRoot, modules);
+  const nameIssues = bmadProjectNameIssues(repoRoot);
+  return { gaps, nameIssues, details: [...gaps.map((gap) => gap.detail), ...nameIssues.details] };
 }
 
 
@@ -3924,6 +4007,37 @@ function withInstallerSkillHandoff(check: RecipeOwnedCheck): RecipeOwnedCheck {
   };
 }
 
+/**
+ * PJAN-166: bmad.scaffold's migrate re-derives its own result from disk.
+ *
+ * What it reports as changed is the sentinel paths that existed after the
+ * installer ran, which says nothing about whether the tree now satisfies the
+ * audit: the sentinel rule has alternatives (a module's config may live in the
+ * consolidated `_bmad/config.yaml`) and a deleted-by-BMB install record is only
+ * restored if the installer actually rewrites it. Run after the installer and
+ * the skills handoff, so a claimed success the audit still rejects is demoted to
+ * `partial` with the audit's own account, exactly as RecipeRegistry.verifyMigration
+ * does for the CLI path (this covers a direct caller of the rule).
+ */
+function withScaffoldPostcondition(check: RecipeOwnedCheck): RecipeOwnedCheck {
+  if (check.id !== "bmad.scaffold") return check;
+  return {
+    ...check,
+    migrate: async (ctx, finding) => {
+      const result = await check.migrate(ctx, finding);
+      if (ctx.dryRun || (result.status !== "applied" && result.status !== "noop")) return result;
+      const after = await check.audit(ctx);
+      if (after.status === "pass" || after.status === "skip") return result;
+      return {
+        ...result,
+        status: "partial",
+        summary: after.summary,
+        details: [...result.details, `still failing after the install: ${after.summary}`, ...after.details],
+      };
+    },
+  };
+}
+
 export function createBmadChecks(): RecipeOwnedCheck[] {
 return ([
   {
@@ -3941,17 +4055,10 @@ return ([
           fixable: false,
         };
       }
-      const targetRoot = join(ctx.repoRoot, "_bmad");
       const selectedModules = manifestSelection.status === "valid"
         ? manifestSelection.modules
         : configuredBmadModuleSelection(ctx.repoRoot)?.modules ?? [...DEFAULT_BMAD_MODULES];
-      const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
-      const missing = sentinels.filter((file) => !existsSync(join(targetRoot, file)));
-      const projectNameIssues = bmadProjectNameIssues(ctx.repoRoot);
-      const details = [
-        ...missing.map((file) => `_bmad/${file}`),
-        ...projectNameIssues.details,
-      ];
+      const { details } = bmadScaffoldIssues(ctx.repoRoot, selectedModules);
       return {
         id: "bmad.scaffold",
         title: "BMAD modules/docs scaffold",
@@ -3987,7 +4094,7 @@ return ([
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
       };
       if (ctx.dryRun) {
-        const sentinels = requiredBmadSentinels(ctx.repoRoot, selectedModules);
+        const issues = bmadScaffoldIssues(ctx.repoRoot, selectedModules);
         // An installed project's real run goes through the preservation preflight, so the preview mirrors it.
         const companion = installedBmad ? await runG33PreUpdateCompanion(ctx.repoRoot) : await runG33Companion(ctx.repoRoot, true, "bmad-install");
         if (installedBmad && ["unavailable", "conflict", "error"].includes(companion.status)) {
@@ -4001,10 +4108,8 @@ return ([
             bmadCompanion: companion,
           };
         }
-        changedFiles.push(...sentinels
-          .map((file) => join(ctx.repoRoot, "_bmad", file))
-          .filter((path) => !existsSync(path)));
-        changedFiles.push(...bmadProjectNameIssues(ctx.repoRoot).paths);
+        changedFiles.push(...issues.gaps.map((gap) => join(ctx.repoRoot, "_bmad", gap.path)));
+        changedFiles.push(...issues.nameIssues.paths);
         const reservedPreview = installedBmad ? evictReservedModuleEntries(ctx.repoRoot, true) : undefined;
         changedFiles.push(...(reservedPreview?.changedFiles ?? []));
         return {
@@ -4023,11 +4128,10 @@ return ([
       }
 
       if (installedBmad && g33CompanionEnabled(ctx.repoRoot)) {
+        const before = bmadScaffoldIssues(ctx.repoRoot, selectedModules);
         const expectedChangedPaths = [
-          ...requiredBmadSentinels(ctx.repoRoot, selectedModules)
-            .map((file) => join(ctx.repoRoot, "_bmad", file))
-            .filter((path) => !existsSync(path)),
-          ...bmadProjectNameIssues(ctx.repoRoot).paths,
+          ...before.gaps.map((gap) => join(ctx.repoRoot, "_bmad", gap.path)),
+          ...before.nameIssues.paths,
         ];
         // PJAN-180: the rollback covers only the verified installer surface, or the whole tree with the reason.
         const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
@@ -4071,11 +4175,10 @@ return ([
         };
       }
 
+      const before = bmadScaffoldIssues(ctx.repoRoot, selectedModules);
       const expectedChangedPaths = [
-        ...requiredBmadSentinels(ctx.repoRoot, selectedModules)
-          .map((file) => join(ctx.repoRoot, "_bmad", file))
-          .filter((path) => !existsSync(path)),
-        ...bmadProjectNameIssues(ctx.repoRoot).paths,
+        ...before.gaps.map((gap) => join(ctx.repoRoot, "_bmad", gap.path)),
+        ...before.nameIssues.paths,
       ];
       // Clear retired pack symlinks first: they point into a registry cache
       // that no longer holds the pack, and the installer must be able to write
@@ -4484,7 +4587,7 @@ return ([
       };
     },
   },
-] satisfies RecipeOwnedCheck[]).map(withInstallerSkillHandoff);
+] satisfies RecipeOwnedCheck[]).map(withInstallerSkillHandoff).map(withScaffoldPostcondition);
 }
 
 

@@ -204,7 +204,8 @@ try {
   // and succeeds with full preservation when the configured companion is healthy.
   const retired = join(target, ".agents", "skills", "bmad-retired-pack");
   symlinkSync(join(scratch, "absent-pack"), retired);
-  rmSync(join(target, "_bmad", "core", "config.yaml"));
+  // A bmad.scaffold sentinel the installer rewrites (PJAN-166: the config resolver, not core/config.yaml).
+  rmSync(join(target, "_bmad", "scripts", "resolve_config.py"));
   {
     const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
     configuredManifest.bmad.companion = configured({ behavior: "unavailable" });
@@ -222,7 +223,7 @@ try {
     assert.equal(repaired.results[0].status, "applied");
     rmSync(join(scratch, "updater-reached"), { force: true });
     assert.equal(existsSync(retired), false);
-    assert.equal(existsSync(join(target, "_bmad", "core", "config.yaml")), true);
+    assert.equal(existsSync(join(target, "_bmad", "scripts", "resolve_config.py")), true);
     assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
     assert.equal(lstatSync(native).mode & 0o7777, 0o640);
     assert.equal(readFileSync(nativeExtra, "utf8"), "Operator extra native skill note\n");

@@ -296,6 +296,13 @@ jobs:
       - run: npm run test:bmad-rollback-surface
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      # PJAN-166: Contract A against the real thing. The real installer, then the
+      # real bmad-bmb-setup scripts (uv and PyYAML are installed above), then the
+      # audit, the repair and a repeat of both; it also holds the hermetic suite's
+      # BMB model and installer fixture to what really happened.
+      - run: npm run test:bmad-config-authority
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       # test:coverage builds (with sourcemaps) and runs the whole suite under
       # c8. 37 of the suites spawn dist/index.js rather than importing src, so
