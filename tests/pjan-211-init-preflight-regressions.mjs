@@ -20,7 +20,12 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import {
+  BMAD_INSTALLER_FIXTURE_VERSION as PIN,
+  createBmadInstallerFixture,
+  createSkillPackFixture,
+  createSkillexMiseFixture,
+} from "./helpers/pack-fixture.mjs";
 import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -41,6 +46,13 @@ function check(label, body) {
 const scratch = hermeticScratch("pjan-211-");
 let nextMachine = 0;
 
+// Derived from the production pin, so the suite cannot rot when the pin moves: three patch
+// releases ahead is "upstream has published a newer stable", and 6.0.0 is "an install behind
+// the pin" (PJAN-208 keeps that a fixable WARN; at the pin itself it is an advisory pass).
+const [pinMajor, pinMinor, pinPatch] = PIN.split(".").map((part) => Number.parseInt(part, 10));
+const NEWER_STABLE = `${pinMajor}.${pinMinor}.${pinPatch + 3}`;
+const OLDER_THAN_PIN = "6.0.0";
+
 /** One hermetic machine, with a stub Plane adapter that records every call it gets. */
 function machine() {
   const base = join(scratch, `m${nextMachine += 1}`);
@@ -48,8 +60,13 @@ function machine() {
   const catalog = join(base, "catalog");
   const adapters = join(base, "adapters");
   const calls = join(base, "adapter-calls.log");
-  mkdirSync(home, { recursive: true });
+  mkdirSync(join(home, ".cache", "pjangler"), { recursive: true });
   mkdirSync(adapters, { recursive: true });
+  // No network: upstream's dist-tags are seeded, with a stable that is ahead of the pin.
+  writeFileSync(
+    join(home, ".cache", "pjangler", "bmad-dist-tags.json"),
+    JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: NEWER_STABLE, next: `${pinMajor}.${pinMinor}.${pinPatch + 1}-next.1` } }),
+  );
   createSkillPackFixture(catalog);
   writeFileSync(join(adapters, "plane.sh"), `#!/bin/sh
 set -eu
@@ -64,6 +81,7 @@ printf '{"board_id":"11111111-2222-3333-4444-555555555555","identifier":"STUB","
     PJ_BMAD_INSTALLER: createBmadInstallerFixture(catalog),
     PJ_TICKET_PROVIDER_ADAPTERS: adapters,
     PLANE_API_KEY: "stub-plane-key-never-logged",
+    XDG_CACHE_HOME: join(home, ".cache"),
     XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(base, "data"),
     XDG_STATE_HOME: join(base, "state"),
@@ -114,6 +132,17 @@ function tree(dir) {
 
 const manifestOf = (target) => JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
 const adapterCalls = (m) => (existsSync(m.calls) ? readFileSync(m.calls, "utf8").trim().split("\n").filter(Boolean) : []);
+
+/**
+ * Leave one rule that can only warn: this repo's BMAD install falls behind the pin while upstream
+ * has a newer stable, so bmad.version is a fixable WARN. The fixture installer cannot land the
+ * stable it is asked for, so migrating it comes back unfinished (blocked or partial), exactly the
+ * shape of "update withheld: g33 companion adapter not configured" on a 33god-linked project.
+ */
+function fallBehind(target) {
+  const manifest = join(target, "_bmad", "_config", "manifest.yaml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace(/(installation:\s*\n\s*version:)\s*\S+/, `$1 ${OLDER_THAN_PIN}`));
+}
 const PATH_ARTIFACT = "/tmp/pjtest-211/transcripts/spec.md";
 
 console.log("pjan-211 init preflight");
@@ -208,7 +237,9 @@ try {
   });
 
   check("the rule that could not finish is reported as a warning, not an error", () => {
+    fallBehind(legacyTarget);
     const again = apply(legacy, "Badshape", legacyTarget, ["--json"]);
+    assert.equal(again.result.status, 0, `a warn-only rule must not fail init:\n${again.text}`);
     const report = JSON.parse(again.result.stdout);
     const unfinished = report.migrationReport.results.filter((entry) => entry.status === "blocked" || entry.status === "partial");
     assert.ok(unfinished.length > 0, `the fixture must leave a rule unfinished to prove anything:\n${JSON.stringify(report.migrationReport.results.map((r) => [r.id, r.status]))}`);
@@ -219,6 +250,7 @@ try {
   });
 
   check("the text report says 'warning', not 'blocked' or 'still failing'", () => {
+    fallBehind(legacyTarget);
     const again = apply(legacy, "Badshape", legacyTarget);
     assert.equal(again.result.status, 0, again.text);
     assert.match(again.text, /Migration complete\s+·\s+1 warning/);
@@ -231,6 +263,7 @@ try {
     assert.equal(removed.result.status, 0, removed.text);
     const gone = pj(legacy, ["list", "--registry", legacy.registry, "--json"]);
     assert.equal(JSON.parse(gone.result.stdout).projects.badshape, undefined, "the fixture must start unregistered");
+    fallBehind(legacyTarget);
     const again = apply(legacy, "Badshape", legacyTarget);
     assert.equal(again.result.status, 0, `a re-apply must exit 0:\n${again.text}`);
     const back = pj(legacy, ["list", "--registry", legacy.registry, "--json"]);
