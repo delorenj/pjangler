@@ -2,6 +2,8 @@ import { normalizeProjectId } from "../project/registryClient";
 import {
   companionDetails,
   G33_OWNED_SURFACES,
+  G33_SKILL,
+  g33AdapterGap,
   g33BmadUpdateBoundary,
   g33CompanionEnabled,
   isInstalledBmadProject,
@@ -12,7 +14,7 @@ import {
 } from "../bmad/companion";
 import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
-import { planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts } from "../bmad/setup-scripts";
+import { planBmadSetupScripts, applyBmadSetupScripts, describeDeclined, inspectBmadSetupScripts, type DeclinedScript } from "../bmad/setup-scripts";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
@@ -20,7 +22,7 @@ import { evictReservedModuleEntries, isLegacyReservedModuleEntry } from "../bmad
 import { parse as parseToml } from "smol-toml";
 import { bold, dim, green, red, yellow, gray, glyph, statusStyle, joinDot } from "../utils/style";
 import { SUPPORTED_BMAD_TOOLS, SUPPORTED_CLIS, SUPPORTED_CLI_ROOTS } from "../recipes/supported-clis";
-import { auditProjectSkills, currentSkillActivations, dropLegacyRegistryField, legacyRegistryField, reconcileInstallerSkills, synchronizeProjectSkills } from "./skills";
+import { auditProjectSkills, currentSkillActivations, PJ_SKILLS, dropLegacyRegistryField, legacyRegistryField, reconcileInstallerSkills, synchronizeProjectSkills } from "./skills";
 import { attestBmadInstallerFiles, bmadCliProjectionInventory, installedBmadTools, inventoryFilesUnder } from "./bmad-attestation";
 import { applySkillRoots, CANONICAL_CLI_SKILLS_ALIAS, planSkillRoots, type SkillRootsPlan } from "./skill-roots";
 import {
@@ -2033,6 +2035,16 @@ function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION): BmadInstalle
 }
 
 
+/** An exact npm version (a dist-tag such as `latest` or `next` is not one). */
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * How long resolveBmadInstallerPackage waits for npx when its caller gives no
+ * timeout: a cold download of the installer package, with npm's own retries.
+ * bmad.scaffold and bmad.version migrate rely on it, so it is named and asserted.
+ */
+export const BMAD_RESOLVE_DEFAULT_TIMEOUT_MS = 180_000;
+
 /**
  * PJAN-180: the bmad-method package that will actually run, so its installer
  * code can be fingerprinted (deriveBmadUpdateScope) and then executed directly:
@@ -2041,7 +2053,7 @@ function bmadInstallerInvocation(version = BMAD_INSTALLER_VERSION): BmadInstalle
  * the update keeps the whole-tree rollback with the reason.
  */
 export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION, options: { timeoutMs?: number } = {}): BmadInstallerPackage {
-  const timeoutMs = options.timeoutMs ?? 180_000;
+  const timeoutMs = options.timeoutMs ?? BMAD_RESOLVE_DEFAULT_TIMEOUT_MS;
   const packageAt = (dir: string): string | undefined => {
     try {
       const parsed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
@@ -2064,12 +2076,16 @@ export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION, op
     return { reason: "PJ_BMAD_INSTALLER is not a bmad-method package" };
   }
   // Portable (no readlink -f on macOS): resolve the bin inside the npx environment.
+  // An exact version is immutable, so a cached copy is as good as a fresh one and
+  // revalidating it against the registry only costs a round trip (about 300ms warm
+  // against several seconds). A dist-tag moves, so it is never read from a stale cache.
+  const exactVersion = EXACT_VERSION.test(version);
   const probe = spawnSync("npx", [
     "-y", "-p", `${BMAD_NPM_PACKAGE}@${version}`, "-c",
     `node -e "process.stdout.write(require('fs').realpathSync(process.argv[1]))" "$(command -v ${BMAD_NPM_PACKAGE})"`,
   ], {
     encoding: "utf8", timeout: timeoutMs,
-    env: { ...process.env, npm_config_update_notifier: "false", npm_config_fund: "false" },
+    env: { ...process.env, npm_config_update_notifier: "false", npm_config_fund: "false", ...(exactVersion ? { npm_config_prefer_offline: "true" } : {}) },
   });
   const entry = probe.stdout?.trim().split("\n").pop()?.trim();
   if (probe.status !== 0 || !entry) {
@@ -2087,41 +2103,93 @@ export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION, op
 
 
 /**
- * How long bmad.setup-scripts will wait for the pinned package. It matches the
- * 8s npm reach `bmad.version` allows `npm view`, rounded up for a cold `npx`
- * download (about 3s here). Past it the rule skips; it never keeps an audit
- * waiting on the network (npm's own retries run 70-189s offline).
+ * How long the bmad.setup-scripts AUDIT will wait for the pinned package. It
+ * matches the 8s npm reach `bmad.version` allows `npm view`, rounded up for a
+ * cold `npx` download (about 3s here). Past it the audit skips; it never keeps an
+ * audit waiting on the network (npm's own retries run 70-189s offline). The
+ * migrate does not use it: it is an explicit request to repair, so it waits as
+ * long as bmad.scaffold's own installer resolve does (BMAD_RESOLVE_DEFAULT_TIMEOUT_MS).
  */
 export const BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS = 10_000;
 
-const BMAD_SETUP_SCRIPTS_REMEDY = "re-run the BMAD installer (npx bmad-method install) or upgrade via `pj migrate bmad.version`";
+const NO_INSTALLED_BMAD = "No installed BMAD project";
+
+const NPX_CACHE_CLEAR = 'rm -rf "$(npm config get cache)/_npx"';
+
+/**
+ * The remedy for a decline that is about the PACKAGE, by cause. Only a resolver
+ * failure or timeout is cured by waiting for npm; a mismatching fingerprint or an
+ * unreadable copy is deterministic and says nothing about the network; and with
+ * PJ_BMAD_INSTALLER set the operator's override is the thing to fix, whatever
+ * the cause.
+ */
+function packageRemedy(kind: "unresolved" | "unverified" | "layout", override: boolean): string {
+  if (override) return "fix or unset PJ_BMAD_INSTALLER to enable recovery from the pinned package";
+  switch (kind) {
+    case "unresolved": return "retry when npm is reachable";
+    case "unverified": return `clear the npx cache (${NPX_CACHE_CLEAR}) and re-run; if it persists, bmad-method@${BMAD_INSTALLER_VERSION} as published is not the release this pjangler verified`;
+    case "layout": return `the npx copy of bmad-method@${BMAD_INSTALLER_VERSION} is unreadable (a corrupted npx cache): clear it (${NPX_CACHE_CLEAR}) and re-run`;
+  }
+}
+
+/**
+ * The remedy for a decline that is about the INSTALL: its own manifest cannot
+ * attest the pinned bytes (another bmad-method version, or no manifest at all).
+ * Recovery from the pinned package cannot help there, and `pj migrate
+ * bmad.version` does nothing for an install that is already current, so the
+ * remedy is a re-install at the version the install already is (a quick-update
+ * writes _bmad/scripts and its manifest rows back; measured on a Wingman clone,
+ * whose memlog.py attests 6.12.4). A g33-enabled project's BMAD update is
+ * withheld by pjangler until the owner adapter can preserve the companion, so
+ * there `pj migrate bmad.scaffold` is the route, and it needs that adapter.
+ */
+function reinstallRemedy(repoRoot: string): string {
+  const installed = readInstalledBmadVersion(repoRoot);
+  // No readable manifest.yaml (it is ignored, so a fresh clone has none) leaves the version unknown:
+  // naming the pin there could downgrade an install that is newer, so it is left for the operator.
+  const version = installed && EXACT_VERSION.test(installed) ? installed : "<the version this install was made with>";
+  const installer = `re-run the installer at this install's own version: npx -y ${BMAD_NPM_PACKAGE}@${version} install --yes --directory . --action quick-update`;
+  let g33 = false;
+  try { g33 = g33CompanionEnabled(repoRoot); } catch { /* an unreadable .project.json is another rule's finding */ }
+  if (!g33) return installer;
+  const gap = g33AdapterGap(repoRoot);
+  return `run \`pj migrate bmad.scaffold\` (it re-runs the BMAD installer and keeps the g33 companion${gap ? `, but it stays blocked while the g33 adapter is unavailable: ${gap}; run \`${PJ_SKILLS} enable skill ${G33_SKILL}\` first` : ""}), or ${installer}`;
+}
 
 type BmadSetupScriptsState =
   /** Every script exists as a regular file; the pinned package was never resolved. */
   | { kind: "present" }
   /** Nothing this rule can safely do or attest. Always a skip: never a failure, never a write. */
   | { kind: "decline"; summary: string }
-  /** A project-side hazard or an unattestable restore. Visible; not fixable here. */
+  /** A project-side hazard. Visible; not fixable here. */
   | { kind: "refuse"; error: string }
-  /** Scripts are missing and the verified pinned package can restore them. */
-  | { kind: "missing"; pkg: BmadInstallerPackage; files: string[] };
+  /** The verified pinned package can restore `files`; `declined` is what it will not, each with its reason. */
+  | { kind: "missing"; pkg: BmadInstallerPackage; files: string[]; declined: DeclinedScript[] };
+
+/** The declined scripts, each with its reason, and the remedy; empty when nothing was declined. */
+const declinedNote = (repoRoot: string, declined: readonly DeclinedScript[]): string =>
+  declined.length ? `declined ${describeDeclined(declined)}; ${reinstallRemedy(repoRoot)}` : "";
 
 /**
  * bmad.setup-scripts decides from the disk first (inspectBmadSetupScripts), so a
  * healthy project costs five lstats and resolves nothing: no npx, no network.
- * The pinned package is resolved only when a script is missing AND the install
- * could attest a restore, and only for as long as BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS.
+ * A missing script is restorable when its files-manifest.csv row attests the
+ * pinned package's bytes, whatever version string manifest.yaml carries; each
+ * script is judged on its own, and the ones that cannot be attested are reported
+ * as declined without holding back the rest. The pinned package is resolved only
+ * when something is restorable, for as long as `options.timeoutMs` (the audit's
+ * cap; none for a migrate).
  *
  * It declines (skip, never fail, never write) when it has nothing to attest
- * against or from: a pre-manifest install, a manifest with no script rows, an
- * install at another bmad-method version, an unreachable or unverified pinned
- * package, or an explicit PJ_BMAD_INSTALLER that is not that package. Those
- * are host or version conditions, not damage this rule can repair. What stays a
- * visible failure is a hazard in the project's own tree: a symlink or
- * directory where a script or `_config` should be, a malformed manifest.
+ * against or from: a pre-manifest install, no script row for any missing script,
+ * rows that attest other bytes, an unreachable or unverified pinned package, or
+ * an explicit PJ_BMAD_INSTALLER that is not that package. Those are host or
+ * install conditions, not damage this rule can repair. What stays a visible
+ * failure is a hazard in the project's own tree: a symlink or directory where a
+ * script or `_config` should be, a malformed manifest.
  */
-function bmadSetupScriptsState(repoRoot: string): BmadSetupScriptsState {
-  const inspection = inspectBmadSetupScripts(repoRoot, BMAD_INSTALLER_VERSION, () => readInstalledBmadVersion(repoRoot));
+function bmadSetupScriptsState(repoRoot: string, options: { timeoutMs?: number } = {}): BmadSetupScriptsState {
+  const inspection = inspectBmadSetupScripts(repoRoot, BMAD_INSTALLER_VERSION);
   const decline = (why: string, missing: string[], remedy: string): BmadSetupScriptsState => ({
     kind: "decline",
     summary: `Setup script recovery unavailable: ${why}${missing.length ? ` (missing from _bmad/scripts: ${missing.join(", ")})` : ""}; ${remedy}`,
@@ -2129,23 +2197,21 @@ function bmadSetupScriptsState(repoRoot: string): BmadSetupScriptsState {
   switch (inspection.state) {
     case "present": return { kind: "present" };
     case "unsafe": return { kind: "refuse", error: `BMAD script recovery refused: ${inspection.error}` };
-    case "decline": return decline(inspection.why, inspection.missing, BMAD_SETUP_SCRIPTS_REMEDY);
+    case "decline": return decline(inspection.why, inspection.missing, reinstallRemedy(repoRoot));
     case "missing": break;
   }
   const override = Boolean(process.env.PJ_BMAD_INSTALLER?.trim());
-  const remedy = override
-    ? "unset PJ_BMAD_INSTALLER to enable recovery from the pinned package"
-    : `retry when npm is reachable, or ${BMAD_SETUP_SCRIPTS_REMEDY}`;
-  const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION, { timeoutMs: BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS });
-  if (!pkg.root) return decline(pkg.reason ?? "installer is not a bmad-method package", inspection.missing, remedy);
+  const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION, options);
+  if (!pkg.root) return decline(pkg.reason ?? "installer is not a bmad-method package", inspection.missing, packageRemedy("unresolved", override));
   const plan = planBmadSetupScripts(repoRoot, pkg, BMAD_INSTALLER_VERSION);
   if (plan.error) {
-    return plan.declinable
-      ? decline(plan.error.replace(/^BMAD script recovery refused: /, ""), inspection.missing, plan.declinable === "attest" ? BMAD_SETUP_SCRIPTS_REMEDY : remedy)
-      : { kind: "refuse", error: plan.error };
+    if (!plan.declinable) return { kind: "refuse", error: plan.error };
+    if (plan.declinable === "attest") return decline(describeDeclined(plan.declined), inspection.missing, reinstallRemedy(repoRoot));
+    return decline(plan.error.replace(/^BMAD script recovery refused: /, ""), inspection.missing, packageRemedy(plan.declinable, override));
   }
   // A concurrent installer may have restored them between the inspection and the plan.
-  return plan.files.length ? { kind: "missing", pkg, files: plan.files } : { kind: "present" };
+  if (!plan.files.length) return { kind: "present" };
+  return { kind: "missing", pkg, files: plan.files, declined: plan.declined };
 }
 
 
@@ -2308,7 +2374,7 @@ function bmadChannelTarget(distTags: Record<string, string> | undefined): { vers
 
 
 /** Read `installation.version` from a repo's `_bmad/_config/manifest.yaml`. */
-function readInstalledBmadVersion(repoRoot: string): string | undefined {
+export function readInstalledBmadVersion(repoRoot: string): string | undefined {
   const raw = safeReadText(join(repoRoot, "_bmad", "_config", "manifest.yaml"));
   if (!raw) return undefined;
   try {
@@ -4413,38 +4479,47 @@ return ([
     id: "bmad.setup-scripts",
     title: "BMAD ignored installer setup scripts",
     audit: (ctx) => {
-      if (!isInstalledBmadProject(ctx.repoRoot)) return {
-        id: "bmad.setup-scripts", title: "BMAD ignored installer setup scripts", status: "skip",
-        summary: "No installed BMAD project", details: [], fixable: false,
-      };
-      const state = bmadSetupScriptsState(ctx.repoRoot);
       const id = "bmad.setup-scripts", title = "BMAD ignored installer setup scripts";
+      if (!isInstalledBmadProject(ctx.repoRoot)) return { id, title, status: "skip", summary: NO_INSTALLED_BMAD, details: [], fixable: false };
+      // The audit never waits long on the network; the migrate below does.
+      const state = bmadSetupScriptsState(ctx.repoRoot, { timeoutMs: BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS });
       switch (state.kind) {
         case "present": return { id, title, status: "pass", summary: "BMAD installer scripts are present", details: [], fixable: false };
         case "decline": return { id, title, status: "skip", summary: state.summary, details: [], fixable: false };
         case "refuse": return { id, title, status: "fail", summary: state.error, details: [state.error], fixable: false };
-        case "missing": return {
-          id, title, status: "fail", summary: "Ignored BMAD installer scripts are missing",
-          details: state.files.map((path) => relative(ctx.repoRoot, path)), fixable: true,
-        };
+        case "missing": {
+          const note = declinedNote(ctx.repoRoot, state.declined);
+          return {
+            id, title, status: "fail", summary: `Ignored BMAD installer scripts are missing${note ? `; ${note}` : ""}`,
+            details: [...state.files.map((path) => relative(ctx.repoRoot, path)), ...state.declined.map((d) => `declined scripts/${d.name} ${d.why}`)],
+            fixable: true,
+          };
+        }
       }
     },
-    migrate: (ctx, finding) => {
-      const title = finding.title, id = finding.id;
-      if (finding.status === "skip") return { id, title, status: "skipped", summary: finding.summary, details: [], changedFiles: [] };
+    // A passed finding is never trusted, whatever its status: the disk is read again
+    // and the pinned package resolved with no audit cap, since a migrate is an explicit
+    // request to repair (an audit that gave up on a slow npx is retried here).
+    migrate: (ctx, _finding) => {
+      const id = "bmad.setup-scripts", title = "BMAD ignored installer setup scripts";
+      if (!isInstalledBmadProject(ctx.repoRoot)) return { id, title, status: "skipped", summary: NO_INSTALLED_BMAD, details: [], changedFiles: [] };
       const state = bmadSetupScriptsState(ctx.repoRoot);
       if (state.kind === "decline") return { id, title, status: "skipped", summary: state.summary, details: [], changedFiles: [] };
       if (state.kind === "refuse") return { id, title, status: "blocked", summary: state.error, details: [state.error], changedFiles: [] };
       if (state.kind === "present") return { id, title, status: "noop", summary: "BMAD installer scripts already present", details: [], changedFiles: [] };
       const { pkg, files } = state;
-      if (ctx.dryRun) return {
-        id, title, status: "applied", summary: "Would restore ignored scripts from verified pinned bmad-method package",
-        details: [`bmad-method@${BMAD_INSTALLER_VERSION} (${pkg.root})`], changedFiles: files,
-      };
+      const source = `bmad-method@${BMAD_INSTALLER_VERSION} (${pkg.root})`;
+      if (ctx.dryRun) {
+        const note = declinedNote(ctx.repoRoot, state.declined);
+        return {
+          id, title, status: "applied", summary: `Would restore ignored scripts from verified pinned bmad-method package${note ? `; ${note}` : ""}`,
+          details: [source], changedFiles: files,
+        };
+      }
       const applied = applyBmadSetupScripts(ctx.repoRoot, pkg, BMAD_INSTALLER_VERSION);
-      return applied.error
-        ? { id, title, status: "blocked", summary: applied.error, details: [applied.error], changedFiles: [] }
-        : { id, title, status: "applied", summary: "Restored ignored BMAD installer scripts", details: [`bmad-method@${BMAD_INSTALLER_VERSION} (${pkg.root})`], changedFiles: applied.files };
+      if (applied.error) return { id, title, status: "blocked", summary: applied.error, details: [applied.error], changedFiles: [] };
+      const note = declinedNote(ctx.repoRoot, applied.declined);
+      return { id, title, status: "applied", summary: `Restored ignored BMAD installer scripts${note ? `; ${note}` : ""}`, details: [source], changedFiles: applied.files };
     },
   },
   {

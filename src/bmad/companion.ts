@@ -91,6 +91,23 @@ export function g33CompanionEnabled(projectRoot: string): boolean {
   return select(projectRoot).enabled;
 }
 
+/**
+ * Read-only: why a g33-enabled project's BMAD update would stop for want of the
+ * owner adapter (none configured, or its local source file is absent, which is
+ * every fresh clone until the catalog skill is activated). `undefined` when g33
+ * is off for the project, the adapter's source is present, or it is a package
+ * specifier (not resolved here: that needs a subprocess). Never throws.
+ */
+export function g33AdapterGap(projectRoot: string): string | undefined {
+  try {
+    const selection = select(resolve(projectRoot));
+    if (!selection.enabled) return undefined;
+    if (!selection.module || !selection.exportName) return "no bmad.companion.adapter is configured";
+    if (!selection.module.startsWith(".") && !isAbsolute(selection.module)) return undefined;
+    return existsSync(resolve(projectRoot, selection.module)) ? undefined : `its adapter source ${selection.module} is absent`;
+  } catch { return undefined; }
+}
+
 /** Resolve only; no package installation, export guesses, or owner code execution. */
 function resolveAdapter(projectRoot: string, module: string): string {
   if (module.startsWith(".") || isAbsolute(module)) {

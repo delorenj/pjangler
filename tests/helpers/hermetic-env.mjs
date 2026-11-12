@@ -190,6 +190,21 @@ const NETWORK_CONTRACTS = Object.freeze([
   "tests/pjan-180-surface-oracle.mjs",
   "tests/pjan-166-bmb-setup-contract.mjs",
 ]);
+/*
+ * Suites whose real-probe cases resolve a bmad-method package through the real
+ * npx (PJAN-166 bmad.setup-scripts: the restore copies that package's bytes, and
+ * the sha256 table in src/bmad/setup-scripts.ts is held to them). They are
+ * network contracts too, but they never call the GitHub API, so they get the two
+ * TLS trust anchors a host behind a TLS-inspecting gateway needs to reach npm,
+ * and NOT GITHUB_TOKEN: a credential granted to a suite that cannot use it is
+ * the exact drift PJAN-196 closed (tests/pjan-196-suite-env-canary.mjs holds
+ * the GITHUB_TOKEN list to NETWORK_CONTRACTS). Everything in such a suite that
+ * does not need the package's bytes is decided from the disk or from a local
+ * `npx` shim and stays hermetic.
+ */
+const NPM_PROBE_SUITES = Object.freeze([
+  "tests/pjan-166-bmad-setup-scripts-regressions.mjs",
+]);
 const grant = (reason, suites) => Object.freeze({ reason, suites: Object.freeze([...suites]) });
 const POSTGRES = "Postgres connection settings: publish.yml's service container (PGHOST=localhost, PGUSER=postgres, trust auth) or the operator's local server. The Postgres-backed suites and the bundled suites they launch connect with them";
 export const SUITE_PASSTHROUGH = Object.freeze({
@@ -207,8 +222,8 @@ export const SUITE_PASSTHROUGH = Object.freeze({
   PJ_SKILLEX_TEST_TARBALL: grant("operator knob: test a local @delorenj/skillex tarball", ["tests/skillex-init-regressions.mjs"]),
   PJAN75_CLI_SRC: grant("operator knob, not a credential: bundle the CLI from another src/index.ts to watch the suite FAIL against the pre-fix tree (the procedure documented at the top of the suite). Without the grant the preamble deletes it and the procedure silently tests the current src (PJAN-198)", ["tests/pjan-75-regressions.mjs"]),
   GITHUB_TOKEN: grant("the real BMAD installer resolves module tags through the GitHub API; publish.yml passes the job's read-only token so a shared runner IP does not exhaust the anonymous 60 requests/hour. The ONE deliberate credential passthrough", NETWORK_CONTRACTS),
-  SSL_CERT_FILE: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", NETWORK_CONTRACTS),
-  NODE_EXTRA_CA_CERTS: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", NETWORK_CONTRACTS),
+  SSL_CERT_FILE: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", [...NETWORK_CONTRACTS, ...NPM_PROBE_SUITES]),
+  NODE_EXTRA_CA_CERTS: grant("TLS trust anchor for the real installer's npm/GitHub traffic (public certificates, not a secret; see the TLS/proxy decision above)", [...NETWORK_CONTRACTS, ...NPM_PROBE_SUITES]),
 });
 
 /*
