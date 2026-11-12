@@ -809,6 +809,7 @@ test("PJAN-166: an install whose manifest has no row for a missing script skips 
         for (const name of unattested) assert.ok(finding.summary.includes(`scripts/${name} has no row in _bmad/_config/files-manifest.csv, so it cannot be attested`), `${label}: ${name} in: ${finding.summary}`);
         assert.match(finding.summary, new RegExp(`missing from _bmad/scripts: ${escapeRe(unattested.join(", "))}\\)`));
         remedy(finding.summary);
+        assert.doesNotMatch(finding.summary, /not needed by bmad\.scaffold/, `${label}: config_utils.py is one it needs`);
         assert.doesNotMatch(finding.summary, NETWORK_HINT, label);
         await assertMigrateDeclines(project, finding);
         assert.equal(calls(), "", `${label}: an unattestable restore must not wait on npm`);
@@ -818,6 +819,21 @@ test("PJAN-166: an install whose manifest has no row for a missing script skips 
   }
 });
 
+test("PJAN-166: a declined script that bmad.scaffold needs is never called optional, while the other scripts are still restored", async () => {
+  const project = fixture({ installedVersion: trackedVersion });
+  try {
+    const manifest = manifestOf(project);
+    writeFileSync(manifest, readFileSync(manifest, "utf8").replace(hash(join(source, "config_utils.py")), "0".repeat(64)));
+    const finding = await setup.audit(ctx(project, false));
+    assert.equal(finding.status, "fail", JSON.stringify(finding));
+    assert.equal(finding.fixable, true);
+    assert.match(finding.summary, /declined scripts\/config_utils\.py is attested by the manifest as other bytes/);
+    assert.match(finding.summary, REINSTALL(trackedVersion));
+    assert.doesNotMatch(finding.summary, /not needed by bmad\.scaffold/, "config_utils.py is one of the two scripts bmad.scaffold requires");
+    assert.deepEqual(finding.details.slice(0, 4), scripts.filter((name) => name !== "config_utils.py").map((name) => `_bmad/scripts/${name}`));
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
 test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary)", () => {
   const shipped = (version) => {
     const resolved = resolveBmadInstallerPackage(version, { timeoutMs: 120_000 });
@@ -825,7 +841,13 @@ test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that
     const dir = join(resolved.root, "src", "scripts");
     return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".py")) : [];
   };
-  assert.deepEqual(shipped("6.3.1-next.12"), [], "the release before the boundary ships no _bmad/scripts source");
+  // The release published right before the constant, read from the registry, so a constant moved later cannot pass.
+  const listed = realSpawnSync("npm", ["view", "bmad-method", "versions", "--json"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
+  assert.equal(listed.status, 0, `npm view failed: ${listed.stderr}`);
+  const versions = JSON.parse(listed.stdout);
+  const at = versions.indexOf(BMAD_FIRST_SCRIPTS_RELEASE);
+  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release`);
+  assert.deepEqual(shipped(versions[at - 1]), [], `${versions[at - 1]}, the release before the boundary, ships no _bmad/scripts source`);
   assert.notDeepEqual(shipped(BMAD_FIRST_SCRIPTS_RELEASE), [], "the boundary release ships one");
 });
 
