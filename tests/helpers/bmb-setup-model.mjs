@@ -12,8 +12,9 @@ import YAML from "yaml";
 // it runs the REAL scripts on a real install and fails if bmadTreeShape() of the
 // real result differs from bmadTreeShape() of this model applied to a copy of the
 // same pre-setup tree. A model nobody compares with the thing it models is a
-// fixture that encodes its author's assumption; this one is compared on every run
-// of the contract.
+// fixture that encodes its author's assumption; this one is compared after EVERY
+// real setup run of the contract (the first install and each repeat), because the
+// repeat runs start from a tree the repair rebuilt, not from a fresh install.
 //
 // What it models (all VERIFIED against bmad-method 6.12.1 + bmb v2.2.2, see
 // _bmad-output/implementation-artifacts/issue-evidence/PJAN-166-config-authority-trace.md):

@@ -365,7 +365,11 @@ done
     const audit = jsonCommand(["audit", repo, "--json"], { home }).json;
     // Core-only has no per-module config to demand (core/config.yaml is no longer a sentinel, PJAN-166),
     // so the work the installer is asked to do is the missing config resolver.
-    assert.deepEqual(finding(audit, "bmad.scaffold").details, RUNTIME_SCRIPTS.map((script) => `_bmad/scripts/${script}`));
+    // Each line is the sentinel path, then the cause git confirms and the repair; the paths are what matter here.
+    assert.deepEqual(
+      finding(audit, "bmad.scaffold").details.map((line) => line.replace(/ \(.*$/s, "")),
+      RUNTIME_SCRIPTS.map((script) => `_bmad/scripts/${script}`),
+    );
 
     const fakeBin = mkdtempSync(join("/tmp", `pjan-43-${selection.name}-npx-`));
     cleanup.push(fakeBin);

@@ -50,11 +50,11 @@ node tests/pjan-57-lifecycle-recipes-regressions.mjs # registry/dispatch + audit
 node tests/pjan-57-dogfood-regressions.mjs           # real mise/fake-op + TOML/provenance
 node tests/generated-project-lifecycle-regressions.mjs # packed CLI + actual Copier + hermetic BMAD lifecycle
 npm run test:bmad-installer-contract                 # actual immutable BMAD package; network/cache required
-npm run test:bmad-config-authority                   # PJAN-166: real install + real bmad-bmb-setup scripts + audit/repair; network, uv/PyYAML required
+npm run test:bmad-config-authority                   # PJAN-166: real install + real bmad-bmb-setup scripts + audit/repair; network, uv/PyYAML and a GITHUB_TOKEN required locally (see below)
 npm test                                             # all regression and package gates
 ```
 
-The packed lifecycle suite builds and extracts the CLI under an isolated HOME, renders through actual Copier, then uses a faithful local installer fixture to prove all six supported roots, the requested project name in core plus `bmm`, `bmb`, and `cis`, Git/HEAD, immediate clean audit, and idempotent re-init/migrate. Ordinary `npm test` stays hermetic and offline-safe. The publish workflow separately resolves the immutable `bmad-method@6.11.1-next.1` package through npm metadata/cache and runs the real installer contract; inability to resolve that artifact is a release-gate failure, never a skip. Run `npm run typecheck` before committing.
+The packed lifecycle suite builds and extracts the CLI under an isolated HOME, renders through actual Copier, then uses a faithful local installer fixture to prove all six supported roots, the requested project name in core plus `bmm`, `bmb`, and `cis`, Git/HEAD, immediate clean audit, and idempotent re-init/migrate. Ordinary `npm test` stays hermetic and offline-safe. The publish workflow separately resolves the immutable `bmad-method@6.11.1-next.1` package through npm metadata/cache and runs the real installer contract; inability to resolve that artifact is a release-gate failure, never a skip. The two real-installer contracts (`test:bmad-installer-contract`, `test:bmad-config-authority`) resolve the bmb/cis module tags through the GitHub API, so locally they need a `GITHUB_TOKEN` in the environment of the command you run (the anonymous 60 requests an hour are used up quickly), for example `GITHUB_TOKEN="$(gh auth token)" npm run test:bmad-config-authority`; CI passes the job's read-only token. The config-authority contract forwards it to its `pj` children only, never to the BMB setup scripts or the fixture installer it also runs. Run `npm run typecheck` before committing.
 
 ## Project conventions (from `AGENTS.md`)
 

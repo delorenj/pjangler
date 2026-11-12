@@ -298,9 +298,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       # PJAN-166: Contract A against the real thing. The real installer, then the
       # real bmad-bmb-setup scripts (uv and PyYAML are installed above), then the
-      # audit, the repair and a repeat of both; it also holds the hermetic suite's
-      # BMB model and installer fixture to what really happened.
+      # audit, the repair and a repeat of both, then the scripts-only restore with
+      # no reinstall; it also holds the hermetic suite's BMB model (every round)
+      # and installer fixture to what really happened. Many real installs and
+      # `uv` resolutions in one step: a stuck registry or GitHub must fail the
+      # job in minutes instead of holding the runner for the six-hour default.
       - run: npm run test:bmad-config-authority
+        timeout-minutes: 15
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

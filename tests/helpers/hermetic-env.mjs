@@ -144,14 +144,16 @@ const PASSTHROUGH_PATTERN = /^LC_[A-Z]+$/;
  *   TLS peers a child accepts. Neither may differ between a workstation and CI.
  * - A proxy URL can carry credentials (`http://user:pass@proxy:3128`), and the
  *   rule since PJAN-193 is that no credential reaches a hermetic child.
- * - Only the network-backed release contracts (the real BMAD installer and the
- *   PJAN-180 surface oracle) talk to the internet. They get the two TLS trust
- *   anchors through SUITE_PASSTHROUGH below: public certificates, not secrets,
- *   and what a host behind a TLS-inspecting gateway needs to reach npm and
- *   GitHub at all. They do not get the proxy variables, for the credential
- *   reason above. Neither CI (ubuntu-latest) nor this fleet's hosts set any of
- *   the five today; a host that ever needs a proxy adds a SUITE_PASSTHROUGH
- *   entry scoped to those two contracts, with its reason.
+ * - Only the network-backed release contracts (NETWORK_CONTRACTS below: the real
+ *   BMAD installer, the PJAN-180 surface oracle, and the PJAN-166 config-authority
+ *   contract, whose BMB setup scripts also reach PyPI through uv) talk to the
+ *   internet. They get the two TLS trust anchors through SUITE_PASSTHROUGH
+ *   below: public certificates, not secrets, and what a host behind a
+ *   TLS-inspecting gateway needs to reach npm, GitHub and PyPI at all. They do
+ *   not get the proxy variables, for the credential reason above. Neither CI
+ *   (ubuntu-latest) nor this fleet's hosts set any of the five today; a host
+ *   that ever needs a proxy adds a SUITE_PASSTHROUGH entry scoped to those
+ *   contracts, with its reason.
  */
 
 /**

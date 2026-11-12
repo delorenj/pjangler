@@ -1760,9 +1760,14 @@ function consolidatedBmadConfig(repoRoot: string): ConsolidatedBmadConfig {
   if (!existsSync(path)) return { status: "absent" };
   let parsed: unknown;
   try {
-    parsed = YAML.parse(readText(path));
+    // Read it the way its writer and readers do: BMB's merge-config.py uses PyYAML, which
+    // accepts a repeated key (the last one wins), so `yaml`'s strict unique-keys default
+    // would call a file upstream reads fine unparseable.
+    parsed = YAML.parse(readText(path), { uniqueKeys: false });
   } catch (error) {
-    return { status: "unusable", reason: `could not be parsed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}` };
+    // `yaml`'s first message line ends "at line N, column M:" (a code frame follows it).
+    const reason = error instanceof Error ? error.message.split("\n")[0]!.replace(/:\s*$/, "") : String(error);
+    return { status: "unusable", reason: `could not be parsed: ${reason}` };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return { status: "unusable", reason: "is not a YAML mapping" };
@@ -1771,15 +1776,64 @@ function consolidatedBmadConfig(repoRoot: string): ConsolidatedBmadConfig {
 }
 
 /**
+ * The repair every gap in an installed `_bmad/` tree names. When the resolver
+ * scripts are the only gap it restores just them from the verified pinned package
+ * (withScaffoldScriptRestore); otherwise it reinstalls.
+ */
+const BMAD_SCAFFOLD_REMEDY = "pj migrate bmad.scaffold";
+
+/**
+ * Does git exclude `rel` (repo-relative) in this checkout: the repo's
+ * .gitignore, info/exclude or the global excludes file? A tracked path never
+ * is, and outside a work tree or without git nothing is, so an audit line says
+ * "git-ignored" only when git itself confirms it.
+ */
+function gitIgnoresPath(repoRoot: string, rel: string): boolean {
+  return spawnSync("git", ["check-ignore", "-q", "--", rel], { cwd: repoRoot, encoding: "utf8", timeout: 5_000 }).status === 0;
+}
+
+/**
+ * The audit line for a missing `_bmad/_config/manifest.yaml`, naming a cause
+ * only when the tree shows it.
+ *
+ * BMB's setup (`cleanup-legacy.py --also-remove _config`) deletes ALL of
+ * `_bmad/_config` and `_bmad/core` and leaves its consolidated
+ * `_bmad/config.yaml`, so that shape is the only one that names it; a
+ * surviving `_config/` or `core/` rules it out. The machine-wide ignore
+ * (~/.agents/git/ignore) lists the manifest, so the usual cause on this fleet
+ * is different: a fresh clone or a new worktree of a repo that does not track
+ * it never has it, and git says so.
+ */
+function bmadManifestGapDetail(repoRoot: string): string {
+  const path = "_bmad/_config/manifest.yaml";
+  const bmad = join(repoRoot, "_bmad");
+  // With no `_bmad/` at all nothing was installed: the bare path, no claim about a cause.
+  if (!existsSync(bmad)) return path;
+  const present = (...segments: string[]): boolean => {
+    try { lstatSync(join(bmad, ...segments)); return true; }
+    catch { return false; }
+  };
+  const record = `${path} (the installer's install record)`;
+  const remedy = `Restore it with: ${BMAD_SCAFFOLD_REMEDY}`;
+  if (!present("_config") && !present("core") && existsSync(join(bmad, "config.yaml"))) {
+    return `${record}. BMB setup's \`--also-remove _config\` cleanup is the likely cause: it deletes all of _bmad/_config. ${remedy}`;
+  }
+  if (gitIgnoresPath(repoRoot, path)) return `${record} is git-ignored in this checkout, so a fresh clone or worktree lacks it. ${remedy}`;
+  return `${record} is missing. ${remedy}`;
+}
+
+/**
  * PJAN-166 (Contract A): what a healthy `_bmad/` tree must hold, judged by what
  * the 6.12.1 runtime and BMB's setup actually read and delete (see
  * _bmad-output/implementation-artifacts/issue-evidence/PJAN-166-config-authority-trace.md).
  *
  * - `config.toml` and `scripts/{resolve_config,config_utils}.py`: the config
- *   resolver's only hard requirements. BMB's setup never touches them.
+ *   resolver's only hard requirements. BMB's setup never touches them. The
+ *   scripts are git-ignored machine-wide, so a clone or worktree of a repo that
+ *   does not track them lacks them; their lines say so and name the repair.
  * - `_config/manifest.yaml`: the installer's install record (version, module
- *   selection, pins). BMB's `--also-remove _config` cleanup deletes it, so its
- *   loss names that cause and the repair.
+ *   selection, pins). Its line names the cause the tree shows (BMB's
+ *   `--also-remove _config` cleanup, or git ignoring it here) and the repair.
  * - per selected module, `<m>/config.yaml` OR a `<m>` section in the consolidated
  *   `config.yaml`, the two places bmb's skills look. BMB's setup folds `bmb/` and
  *   `core/` into the second and deletes the first.
@@ -1790,19 +1844,19 @@ function bmadSentinelGaps(repoRoot: string, modules = selectedBmadModules(repoRo
   const bmad = join(repoRoot, "_bmad");
   const gaps: BmadSentinelGap[] = [];
   const absent = (...segments: string[]): boolean => !existsSync(join(bmad, ...segments));
+  const installed = existsSync(bmad);
   if (absent("config.toml")) gaps.push({ path: "config.toml", detail: "_bmad/config.toml" });
   for (const script of BMAD_RUNTIME_SCRIPT_SENTINELS) {
-    if (absent("scripts", script)) gaps.push({ path: join("scripts", script), detail: `_bmad/scripts/${script}` });
+    if (!absent("scripts", script)) continue;
+    const rel = `_bmad/scripts/${script}`;
+    // Like the manifest: a never-installed tree gets the bare path; an installed one, the cause git confirms and the repair.
+    const detail = !installed ? rel
+      : gitIgnoresPath(repoRoot, rel) ? `${rel} (git-ignored in this checkout, so a fresh clone or worktree lacks it; restore it with: ${BMAD_SCAFFOLD_REMEDY})`
+        : `${rel} (restore it with: ${BMAD_SCAFFOLD_REMEDY})`;
+    gaps.push({ path: join("scripts", script), detail });
   }
   if (absent("_config", "manifest.yaml")) {
-    // The BMB-setup hint only fits a tree that was installed once: with no `_bmad/` at all
-    // the install record is missing because nothing was installed, not because it was deleted.
-    gaps.push({
-      path: join("_config", "manifest.yaml"),
-      detail: existsSync(bmad)
-        ? "_bmad/_config/manifest.yaml (the installer's install record). BMB setup's `--also-remove _config` cleanup is the likely cause: it deletes all of _bmad/_config. Restore it with: pj migrate bmad.scaffold"
-        : "_bmad/_config/manifest.yaml",
-    });
+    gaps.push({ path: join("_config", "manifest.yaml"), detail: bmadManifestGapDetail(repoRoot) });
   }
   let consolidated: ConsolidatedBmadConfig | undefined;
   for (const module of modules) {
@@ -4090,34 +4144,74 @@ function withInstallerSkillHandoff(check: RecipeOwnedCheck): RecipeOwnedCheck {
 }
 
 /**
- * PJAN-166: bmad.scaffold's migrate re-derives its own result from disk.
+ * PJAN-166: when the config resolver scripts are bmad.scaffold's ONLY gap, its
+ * repair is the one bmad.setup-scripts makes, not a reinstall.
  *
- * What it reports as changed is the sentinel paths that existed after the
- * installer ran, which says nothing about whether the tree now satisfies the
- * audit: the sentinel rule has alternatives (a module's config may live in the
- * consolidated `_bmad/config.yaml`) and a deleted-by-BMB install record is only
- * restored if the installer actually rewrites it. Run after the installer and
- * the skills handoff, so a claimed success the audit still rejects is demoted to
- * `partial` with the audit's own account, exactly as RecipeRegistry.verifyMigration
- * does for the CLI path (this covers a direct caller of the rule).
+ * `_bmad/scripts/` is git-ignored machine-wide (~/.agents/git/ignore), so every
+ * fresh clone and new worktree of a repo that does not track it starts with
+ * exactly this gap. The installer path cannot close it cleanly there: a
+ * reinstall rewrites tracked files and moves the install to the pin, and on a
+ * linked g33 project with no companion adapter it is withheld outright, so
+ * `pj migrate bmad.scaffold` reported `blocked` while bmad.setup-scripts fixed
+ * the same files with no tracked change. This restores the missing scripts
+ * through the same state machine and writer (bmadSetupScriptsState,
+ * applyBmadSetupScripts): the verified pinned package, each file attested by
+ * the install's own files-manifest.csv, nothing overwritten. No upstream code
+ * runs, so it comes before the g33 update boundary, the dry run and the
+ * installer, and outside the installer-skill handoff (no installer wrote any
+ * skills).
+ *
+ * Anything else (another gap, a project_name issue, an invalid manifest, a
+ * restore the install cannot attest, a failed restore) takes the installer path
+ * unchanged, with one detail line saying why the scripts were not restored on
+ * their own when that was tried.
+ *
+ * The result is verified like every rule's: RecipeRegistry.verifyMigration
+ * re-audits it after all selected rules have run (PJAN-75, PJAN-84), and
+ * Recipe.initializeOwnedChecks right after the check (init).
  */
-function withScaffoldPostcondition(check: RecipeOwnedCheck): RecipeOwnedCheck {
+function withScaffoldScriptRestore(check: RecipeOwnedCheck): RecipeOwnedCheck {
   if (check.id !== "bmad.scaffold") return check;
   return {
     ...check,
     migrate: async (ctx, finding) => {
-      const result = await check.migrate(ctx, finding);
-      if (ctx.dryRun || (result.status !== "applied" && result.status !== "noop")) return result;
-      const after = await check.audit(ctx);
-      if (after.status === "pass" || after.status === "skip") return result;
-      return {
-        ...result,
-        status: "partial",
-        summary: after.summary,
-        details: [...result.details, `still failing after the install: ${after.summary}`, ...after.details],
-      };
+      const attempt = restoreScaffoldScripts(ctx, finding);
+      if (attempt.result) return attempt.result;
+      const viaInstaller = await check.migrate(ctx, finding);
+      return attempt.note ? { ...viaInstaller, details: [attempt.note, ...viaInstaller.details] } : viaInstaller;
     },
   };
+}
+
+function restoreScaffoldScripts(ctx: Context, finding: AuditFinding): { result?: MigrationRuleResult; note?: string } {
+  const manifest = manifestBmadModules(ctx.repoRoot);
+  if (manifest.status === "invalid") return {};
+  const modules = manifest.status === "valid"
+    ? manifest.modules
+    : configuredBmadModuleSelection(ctx.repoRoot)?.modules ?? [...DEFAULT_BMAD_MODULES];
+  const issues = bmadScaffoldIssues(ctx.repoRoot, modules);
+  const scriptGap = (path: string): boolean => BMAD_RUNTIME_SCRIPT_SENTINELS.some((script) => path === join("scripts", script));
+  if (!issues.gaps.length || issues.nameIssues.details.length || !issues.gaps.every((gap) => scriptGap(gap.path))) return {};
+  const state = bmadSetupScriptsState(ctx.repoRoot);
+  if (state.kind === "present") return {};
+  if (state.kind !== "missing") {
+    return { note: `targeted _bmad/scripts restore not possible, so this takes the installer path: ${state.kind === "decline" ? state.summary : state.error}` };
+  }
+  const source = `bmad-method@${BMAD_INSTALLER_VERSION} (${state.pkg.root})`;
+  if (ctx.dryRun) {
+    return { result: {
+      id: finding.id, title: finding.title, status: "applied",
+      summary: "Would restore the missing _bmad/scripts from the verified pinned bmad-method package (no reinstall)",
+      changedFiles: state.files, details: [source],
+    } };
+  }
+  const applied = applyBmadSetupScripts(ctx.repoRoot, state.pkg, BMAD_INSTALLER_VERSION);
+  if (applied.error) return { note: `targeted _bmad/scripts restore failed, so this takes the installer path: ${applied.error}` };
+  return { result: {
+    id: finding.id, title: finding.title, status: applied.files.length ? "applied" : "noop",
+    summary: applied.files.length ? "Restored the missing _bmad/scripts from the verified pinned bmad-method package (no reinstall)" : "No changes required",
+    changedFiles: applied.files, details: [source],
+  } };
 }
 
 export function createBmadChecks(): RecipeOwnedCheck[] {
@@ -4698,7 +4792,7 @@ return ([
       };
     },
   },
-] satisfies RecipeOwnedCheck[]).map(withInstallerSkillHandoff).map(withScaffoldPostcondition);
+] satisfies RecipeOwnedCheck[]).map(withInstallerSkillHandoff).map(withScaffoldScriptRestore);
 }
 
 
