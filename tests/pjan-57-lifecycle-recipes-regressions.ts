@@ -86,9 +86,19 @@ const ctx = (repoRoot: string): LifecycleContext => ({
     join(homeDir, ".cache", "pjangler", "bmad-dist-tags.json"),
     JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "99.0.0", next: "99.0.1-next.1" } }),
   );
+  // PJAN-208: ...but only for an install that is NOT the verified pin. A project AT
+  // the pin is the version pjangler verified, and stable moves after every bump:
+  // warning there made `pj init` (which migrates every fixable finding) install an
+  // unverified stable over the pin. That is an advisory pass, never a fixable defect.
+  const atPinBehindStable = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  assert.equal(atPinBehindStable.status, "pass", "a newer upstream stable is advisory for a project at the verified pin");
+  assert.equal(atPinBehindStable.fixable, false);
+  assert.match(atPinBehindStable.summary, /matches the verified installer pin; stable 99\.0\.0 is newer/);
+  writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 6.0.0\n");
   const behindStable = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
-  assert.equal(behindStable.status, "warn", "being behind the published stable release is a real currency defect");
+  assert.equal(behindStable.status, "warn", "an install that is not the pin and is behind the published stable release is a real currency defect");
   assert.equal(behindStable.fixable, true);
+  writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), `installation:\n  version: ${BMAD_INSTALLER_VERSION}\n`);
   writeFileSync(
     join(homeDir, ".cache", "pjangler", "bmad-dist-tags.json"),
     JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "0.0.1", next: "99.0.1-next.1" } }),

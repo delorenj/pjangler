@@ -139,6 +139,36 @@ try {
     assert.equal(installedModules.has(moduleName), true, `${moduleName} must be enabled in the real installer manifest`);
   }
 
+  // PJAN-208: the real-world "newer stable exists" condition. This project is
+  // the REAL pinned installer's output and the registry is the REAL npm one, so
+  // whatever upstream has published today (stable 6.12.4 over a 6.12.1 pin when
+  // this was written) is exactly what the audit sees. The invariant is that a
+  // project at the verified pin never fails or warns on upstream currency,
+  // because `pj init` migrates every fixable finding and would otherwise install
+  // an unverified stable over the pin. The offline twin, with a stable seeded
+  // ahead of the pin and a full init, is tests/pjan-208-bmad-pin-currency-regressions.mjs.
+  const tagsResult = runRequired("npm", ["view", packageName, "dist-tags", "--json"], "reading the real dist-tags", 60_000);
+  const parsedTags = JSON.parse(tagsResult.stdout);
+  const stable = (Array.isArray(parsedTags) ? parsedTags[0] : parsedTags)?.latest;
+  assert.equal(typeof stable, "string", `npm published no latest dist-tag: ${tagsResult.stdout}`);
+  const auditRun = spawnSync(process.execPath, [join(root, "dist", "index.js"), "audit", target, "--rules", "bmad.version", "--json"], {
+    cwd: root,
+    // The suite's private hermetic HOME (cold dist-tags cache), so pj asks the
+    // real registry itself instead of reading an operator's cached answer.
+    env: hermeticEnv({ CI: "true", NO_COLOR: "1", npm_config_fund: "false", npm_config_update_notifier: "false" }, { pass: SUITE_GRANTS }),
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  assert.equal(auditRun.status, 0, `audit of the real pinned install failed (stable ${stable}):\n${auditRun.stdout}\n${auditRun.stderr}`);
+  const versionFinding = JSON.parse(auditRun.stdout).rules.find((rule) => rule.id === "bmad.version");
+  assert.equal(
+    versionFinding?.status,
+    "pass",
+    `bmad.version must not warn or fail for the verified pin ${requiredVersion} while stable is ${stable}: ${JSON.stringify(versionFinding)}`,
+  );
+  assert.equal(versionFinding.fixable, false, `an upstream release must not be a fixable finding for the verified pin: ${JSON.stringify(versionFinding)}`);
+  console.log(`Real BMAD pin currency contract passed (pin ${requiredVersion}, npm stable ${stable}: ${versionFinding.summary})`);
+
   console.log(`Real BMAD installer project_name contract passed (${packageSpec}, core+bmm+bmb+cis)`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

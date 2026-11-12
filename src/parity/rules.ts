@@ -1650,8 +1650,15 @@ const BMAD_NPM_PACKAGE = "bmad-method";
 // module from its main branch, whose layout moved, so every default install
 // (bmm,bmb,cis) failed. 6.12.0 passes the contract with all four modules.
 // 6.12.0 -> 6.12.1: 6.12.1 went stable on 2026-10-04, after which bmad.version
-// warned "behind stable" on every fresh install of the old pin, and init treats
-// that warn as a failed postcondition. 6.12.1 passes the same contract.
+// warned "behind stable" on a project at the old pin. 6.12.1 passes the same
+// contract.
+// A pin bump is NOT the cure for that warning (PJAN-208): upstream moves again
+// after every bump. `pj init` selects every fixable warn for migration, so a
+// project at the verified pin was upgraded to the unverified stable (the
+// unpinned bmad.version migrate targets the dist-tag) and then failed its own
+// postcondition audit. bmad.version now treats "installed == this pin, stable
+// is newer" as an advisory pass, so the pin only moves through the
+// verified-installer path (`mise run bmad:verify-surface <version>`).
 export const BMAD_INSTALLER_VERSION = "6.12.1";
 
 // Legacy BMAD currency checks continue to report the moving next channel; fresh
@@ -4392,6 +4399,9 @@ return ([
       // `migrate --all` would reinstall BMAD everywhere to chase it. A real
       // currency defect is measured against a floor that does not move: the
       // published stable release, or an explicit transaction pin.
+      // (PJAN-84 later made a warn non-gating, so the postcondition clause above
+      // is history; the migrate-everywhere clause still holds, and PJAN-208
+      // applies the same reasoning to the stable floor at the verified pin.)
       if (!pinned && !stable) {
         // No published stable tag resolved, so there is no non-moving floor to
         // measure currency against. Say so instead of guessing in either
@@ -4406,6 +4416,35 @@ return ([
         };
       }
       const behindStable = !pinned && stable ? compareBmadVersions(installed, stable) < 0 : false;
+      // PJAN-208: a project AT the verified installer pin is not defective because
+      // upstream published something newer. The pin is the only version pjangler has
+      // verified (mise run bmad:verify-surface), and stable moves after every bump,
+      // so reporting this as a fixable warn made `pj init` over an existing project
+      // (which migrates every fixable non-pass finding) install the unverified
+      // stable and then fail its own postcondition (bmad.setup-scripts cannot attest
+      // the pinned scripts, bmad.cli-roots and skills.project-manifest drift).
+      // Currency stays visible as an advisory, exactly like the PJAN-82 prerelease
+      // case, and an explicit `pj migrate bmad.version` still takes it.
+      // Only an EXACT match counts: an install behind the pin, or at some other
+      // version, is a mismatch and keeps the warn below. The transaction-pinned
+      // path (`pinned`, init create mode) never reaches here and still fails a
+      // mismatch.
+      if (behindStable && compareBmadVersions(installed, BMAD_INSTALLER_VERSION) === 0) {
+        return {
+          id: "bmad.version",
+          title: "BMAD version currency",
+          status: "pass",
+          summary: `BMAD ${installed} matches the verified installer pin; stable ${stable} is newer (advisory)${staleNote}`,
+          details: [
+            `installed: ${installed}`,
+            `verified installer pin: ${BMAD_INSTALLER_VERSION}`,
+            `stable latest: ${stable}`,
+            "pjangler advances its pin only through the verified-installer path (`mise run bmad:verify-surface <version>`)",
+            "run `pj migrate bmad.version` to take the newer release anyway",
+          ],
+          fixable: false,
+        };
+      }
       if (!pinned && !behindStable) {
         return {
           id: "bmad.version",
