@@ -47,14 +47,93 @@ function sameIdentity(a: import("node:fs").Stats | undefined, b: import("node:fs
 }
 
 
+/**
+ * An error the rule reports as a decline (skip), not a failure: the cause is the
+ * resolved package or the installed version's relationship to it, not damage to
+ * the project that this rule is meant to surface.
+ */
+class DeclinableError extends Error {
+  constructor(message: string, readonly kind: "package" | "attest") { super(message); }
+}
+
+/** Field separator for comparing manifest rows as one string (a NUL cannot occur in a CSV field). */
+const FIELD_SEP = String.fromCharCode(0);
+
+export interface BmadSetupScriptsPlan {
+  files: string[];
+  source?: string;
+  error?: string;
+  /** Set with `error` when the refusal is a host/version condition the project cannot fix by itself. */
+  declinable?: "package" | "attest";
+}
+
+export type BmadSetupScriptsInspection =
+  | { state: "present" }
+  /** A project-side hazard (symlink, directory, ...): visible and never overwritten. */
+  | { state: "unsafe"; error: string }
+  /** Scripts are missing but this rule has nothing it can safely attest; never a failure. */
+  | { state: "decline"; why: string; missing: string[] }
+  /** At least one script is missing and the manifest could attest a restore: the pinned package is needed. */
+  | { state: "missing"; missing: string[] };
+
+const MANIFEST_UNUSABLE = "Installed BMAD file manifest is missing or not a real file; cannot attest recovered scripts";
+
+/**
+ * What is on disk, decided WITHOUT resolving the pinned package (no network).
+ * An existing script that is a regular non-symlink file counts as present, with
+ * no byte or mode comparison: real installs land at other versions and other
+ * umasks (664/775 against the package's 644/755), and a present file is not
+ * this rule's to judge. Only a missing script needs the package.
+ */
+export function inspectBmadSetupScripts(repoRoot: string, version: string, installedVersion?: () => string | undefined): BmadSetupScriptsInspection {
+  const bmadDir = join(repoRoot, "_bmad");
+  const dest = join(bmadDir, "scripts");
+  try {
+    const bmad = entryStat(bmadDir);
+    if (!bmad) return { state: "decline", why: "_bmad is absent", missing: [...RUNTIME_SCRIPTS] };
+    if (!bmad.isDirectory() || bmad.isSymbolicLink()) return { state: "unsafe", error: "_bmad is not a real directory" };
+    const destStat = entryStat(dest);
+    if (destStat && (!destStat.isDirectory() || destStat.isSymbolicLink())) return { state: "unsafe", error: "_bmad/scripts is not a real directory" };
+    const missing: string[] = [];
+    for (const name of RUNTIME_SCRIPTS) {
+      const existing = destStat ? entryStat(join(dest, name)) : undefined;
+      if (!existing) missing.push(name);
+      else if (!existing.isFile() || existing.isSymbolicLink()) return { state: "unsafe", error: `Existing _bmad/scripts/${name} is not a regular file; refusing overwrite` };
+    }
+    if (!missing.length) return { state: "present" };
+
+    // lstat follows intermediate symlinks, so a dangling `_config` link reads as
+    // ENOENT on the manifest: look at `_config` itself before calling it absent.
+    const configDir = entryStat(join(bmadDir, "_config"));
+    if (configDir && (!configDir.isDirectory() || configDir.isSymbolicLink())) return { state: "unsafe", error: MANIFEST_UNUSABLE };
+    const manifestPath = join(bmadDir, "_config", "files-manifest.csv");
+    const manifestFile = configDir ? entryStat(manifestPath) : undefined;
+    if (!manifestFile) return { state: "decline", why: "_bmad/_config/files-manifest.csv is absent, so recovered scripts cannot be attested", missing };
+    if (!manifestFile.isFile() || manifestFile.isSymbolicLink()) return { state: "unsafe", error: MANIFEST_UNUSABLE };
+
+    const installed = installedVersion?.();
+    if (installed && installed !== version) {
+      return { state: "decline", why: `this install is bmad-method ${installed}, not the pinned ${version} that recovery restores from`, missing };
+    }
+    const rows = manifestRows(readFileSync(manifestPath, "utf8"));
+    const unattested = missing.filter((name) => !rows.some((row) => row[3] === `scripts/${name}`));
+    if (unattested.length) {
+      return { state: "decline", why: `_bmad/_config/files-manifest.csv has no row for ${unattested.map((name) => `scripts/${name}`).join(", ")}, so recovered scripts cannot be attested`, missing };
+    }
+    return { state: "missing", missing };
+  } catch (error) {
+    return { state: "unsafe", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** Rehydrate only ignored installer runtime scripts, never run a full update against an installed project. */
-export function planBmadSetupScripts(repoRoot: string, pkg: BmadInstallerPackage, version: string): { files: string[]; source?: string; error?: string } {
+export function planBmadSetupScripts(repoRoot: string, pkg: BmadInstallerPackage, version: string): BmadSetupScriptsPlan {
   const dest = join(repoRoot, "_bmad", "scripts");
-  if (!pkg.root || !pkg.entry || pkg.version !== version) return { files: [], error: `Pinned bmad-method@${version} package could not be resolved: ${pkg.reason ?? "version mismatch"}` };
+  if (!pkg.root || !pkg.entry || pkg.version !== version) return { files: [], declinable: "package", error: `Pinned bmad-method@${version} package could not be resolved: ${pkg.reason ?? "version mismatch"}` };
   let fingerprint: string;
   try { fingerprint = installerFingerprint(pkg.root); }
-  catch (error) { return { files: [], error: `Could not fingerprint pinned BMAD installer: ${String(error)}` }; }
-  if (VERIFIED_BMAD_INSTALLERS[fingerprint] !== version) return { files: [], error: `Unverified BMAD installer fingerprint ${fingerprint}; refusing script recovery` };
+  catch (error) { return { files: [], declinable: "package", error: `Could not fingerprint pinned BMAD installer: ${String(error)}` }; }
+  if (VERIFIED_BMAD_INSTALLERS[fingerprint] !== version) return { files: [], declinable: "package", error: `Unverified BMAD installer fingerprint ${fingerprint}; refusing script recovery` };
   const source = join(pkg.root, "src", "scripts");
   try {
     const bmad = lstatSync(join(repoRoot, "_bmad"));
@@ -62,34 +141,36 @@ export function planBmadSetupScripts(repoRoot: string, pkg: BmadInstallerPackage
     const destStat = entryStat(dest);
     if (destStat && (!destStat.isDirectory() || destStat.isSymbolicLink())) throw new Error("_bmad/scripts is not a real directory");
     const names = readdirSync(source).filter((name) => !name.startsWith(".") && !name.endsWith(".pyc") && name !== "tests" && name !== "__pycache__" && name !== ".pytest_cache").sort();
-    if (names.join("\0") !== [...RUNTIME_SCRIPTS].sort().join("\0")) throw new Error("Pinned installer script inventory changed; refusing recovery");
+    if (names.join(FIELD_SEP) !== [...RUNTIME_SCRIPTS].sort().join(FIELD_SEP)) throw new DeclinableError("Pinned installer script inventory changed; refusing recovery", "package");
+    // An installed regular file is present as it stands; only a missing script is restored.
+    const missing: string[] = [];
+    for (const name of names) {
+      const existing = entryStat(join(dest, name));
+      if (!existing) missing.push(name);
+      else if (!existing.isFile() || existing.isSymbolicLink()) throw new Error(`Existing _bmad/scripts/${name} is not a regular file; refusing overwrite`);
+    }
     const files: string[] = [];
+    if (!missing.length) return { files, source };
     const manifestPath = join(repoRoot, "_bmad", "_config", "files-manifest.csv");
     const manifestDir = entryStat(join(repoRoot, "_bmad", "_config"));
     const manifestFile = entryStat(manifestPath);
     if (!manifestDir?.isDirectory() || manifestDir.isSymbolicLink() || !manifestFile?.isFile() || manifestFile.isSymbolicLink()) {
-      throw new Error("Installed BMAD file manifest is missing or not a real file; cannot attest recovered scripts");
+      throw new Error(MANIFEST_UNUSABLE);
     }
     const rows = manifestRows(readFileSync(manifestPath, "utf8"));
-    for (const name of names) {
+    for (const name of missing) {
       const src = join(source, name);
-      if (!lstatSync(src).isFile() || lstatSync(src).isSymbolicLink()) throw new Error(`Installer script is not a regular file: ${name}`);
-      const path = join(dest, name);
+      if (!lstatSync(src).isFile() || lstatSync(src).isSymbolicLink()) throw new DeclinableError(`Installer script is not a regular file: ${name}`, "package");
       const matching = rows.filter((row) => row[3] === `scripts/${name}`);
       const expectedHash = createHash("sha256").update(readFileSync(src)).digest("hex");
-      if (matching.length !== 1 || matching[0]!.join("\0") !== ["py", name.slice(0, -3), "scripts", `scripts/${name}`, expectedHash].join("\0")) {
-        throw new Error(`Installed file manifest does not attest pinned script ${name}`);
+      if (matching.length !== 1 || matching[0]!.join(FIELD_SEP) !== ["py", name.slice(0, -3), "scripts", `scripts/${name}`, expectedHash].join(FIELD_SEP)) {
+        throw new DeclinableError(`Installed file manifest does not attest pinned script ${name}`, "attest");
       }
-      const existing = entryStat(path);
-      if (existing) {
-        if (!existing.isFile() || existing.isSymbolicLink() || !readFileSync(path).equals(readFileSync(src)) || (existing.mode & 0o7777) !== (lstatSync(src).mode & 0o7777)) {
-          throw new Error(`Existing _bmad/scripts/${name} is not the pinned installer output; refusing overwrite`);
-        }
-      } else files.push(path);
+      files.push(join(dest, name));
     }
     return { files, source };
   } catch (error) {
-    return { files: [], error: `BMAD script recovery refused: ${error instanceof Error ? error.message : String(error)}` };
+    return { files: [], ...(error instanceof DeclinableError ? { declinable: error.kind } : {}), error: `BMAD script recovery refused: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
