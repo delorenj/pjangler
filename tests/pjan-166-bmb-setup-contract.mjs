@@ -329,8 +329,12 @@ try {
     // Control: a second gap makes the repair a reinstall, which the boundary withholds. Without it
     // the next step proves nothing about the boundary.
     const withheld = migrate("scripts and cis missing, g33 enabled with no adapter");
-    assert.equal(withheld.result.status, "blocked", JSON.stringify(withheld.result));
+    // The scripts are still restorable from attested bytes, so that part lands ("partial"); the
+    // installer-only gap (cis/config.yaml) stays withheld and is named, never reinstalled around.
+    assert.equal(withheld.result.status, "partial", JSON.stringify(withheld.result));
     assert.match(withheld.result.summary, /BMAD update withheld: optional g33 companion adapter is not configured/);
+    assert.equal(existsSync(bmad("cis", "config.yaml")), false, "the withheld installer must not have rewritten cis/config.yaml");
+    rmSync(scriptsDir, { recursive: true });
     writeFileSync(bmad("cis", "config.yaml"), cisConfig);
     assertScriptsRestored("scripts only, g33 enabled with no adapter: restore, not blocked");
     assert.equal(sha(bmad("_config", "manifest.yaml")), recordBefore, "no reinstall under the boundary either");
