@@ -475,7 +475,11 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       const gating = new Set((eligibilityAudit?.rules ?? []).filter((finding) => gatesProject(finding)).map((finding) => finding.id));
       const reportedByMigration = new Set<string>();
       for (const { result, phase } of unfinishedMigrations) {
-        if (!eligibilityAudit || gating.has(result.id)) {
+        // PJAN-212: a warn-level audit is not enough. The downgrade also needs the rule's word
+        // that the tree is as it found it: a BMAD installer that crashed half-way leaves the
+        // audit at "behind stable" while _bmad is truncated, and init used to exit 0, link the
+        // board and register the project on top of that.
+        if (!eligibilityAudit || gating.has(result.id) || result.wroteNothing !== true) {
           errors.push(describeFinding(result));
           reportedByMigration.add(result.id);
         } else {

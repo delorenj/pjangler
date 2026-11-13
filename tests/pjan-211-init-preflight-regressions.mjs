@@ -284,6 +284,36 @@ try {
   });
 
   // -------------------------------------------------------------------------
+  // 2b. PJAN-212: "only warns" needs proof the rule wrote nothing.
+  // -------------------------------------------------------------------------
+  check("an installer that damages the repo and then fails blocks init: no board, no registration (PJAN-212)", () => {
+    const m = machine();
+    const target = repo(m, "halfinstall");
+    const first = apply(m, "Halfinstall", target, ["--skip-board"]);
+    assert.equal(first.result.status, 0, first.text);
+    const removed = pj(m, ["remove", "halfinstall", "--apply", "--registry", m.registry]);
+    assert.equal(removed.result.status, 0, removed.text);
+    fallBehind(target);
+    // Upstream installers have crashed mid-run (PJAN-181): truncate a config, then exit 7.
+    const crash = join(m.base, "bin", "bmad-crash");
+    mkdirSync(join(m.base, "bin"), { recursive: true });
+    writeFileSync(crash, `#!/bin/sh
+[ "\${1:-}" = --version ] && { echo ${PIN}; exit 0; }
+dir=""; while [ $# -gt 0 ]; do [ "$1" = --directory ] && dir="$2"; shift; done
+printf 'TRUNCATED' > "$dir/_bmad/core/config.yaml"
+exit 7
+`, { mode: 0o755 });
+    const crashed = { ...m, fixture: { ...m.fixture, PJ_BMAD_INSTALLER: crash } };
+    const blocked = apply(crashed, "Halfinstall", target, ["--json"]);
+    assert.notEqual(blocked.result.status, 0, `a half-written install must fail init:\n${blocked.text}`);
+    assert.match(blocked.text, /bmad\.version/);
+    assert.match(blocked.text, /_bmad\/core\/config\.yaml/, "the damaged path is named");
+    assert.deepEqual(adapterCalls(m), [], "no board may be linked over a damaged repo");
+    const listed = pj(m, ["list", "--registry", m.registry, "--json"]);
+    assert.equal(JSON.parse(listed.result.stdout).projects.halfinstall, undefined, "the project must not be registered");
+  });
+
+  // -------------------------------------------------------------------------
   // 3. The skills summary counts problems, not lines.
   // -------------------------------------------------------------------------
   check("skills.project-manifest counts its findings and names the plan separately", () => {

@@ -12,6 +12,7 @@ import {
   runG33PreUpdateCompanion,
   type CompanionResult,
 } from "../bmad/companion";
+import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { planBmadSetupScripts, applyBmadSetupScripts, describeDeclined, inspectBmadSetupScripts, type DeclinedScript } from "../bmad/setup-scripts";
@@ -97,6 +98,13 @@ export interface MigrationRuleResult {
    * fail init. Absent everywhere else, so `pj migrate` keeps its strict exit.
    */
   advisory?: boolean;
+  /**
+   * PJAN-212: the rule left the working tree exactly as it found it (it refused
+   * before any write, or a failed write was proven undone byte-for-byte). Only
+   * such a result may be downgraded to `advisory` by init: an unfinished rule
+   * that may have half-written the repo always fails the transaction.
+   */
+  wroteNothing?: boolean;
 }
 
 
@@ -4691,6 +4699,7 @@ return ([
           summary: "BMAD module manifest is invalid; refusing fallback module selection",
           changedFiles: [],
           details: [manifestSelection.error],
+          wroteNothing: true,
         };
       }
       const selectedModules = manifestSelection.status === "valid"
@@ -4701,7 +4710,7 @@ return ([
       const preservation = g33BmadUpdateBoundary(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       if (preservation) return {
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
-        changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
+        changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation, wroteNothing: true,
       };
       const channelArgs = bmadUpgradeChannelArgs(ctx.repoRoot, available ?? BMAD_TARGET_CHANNEL);
 
@@ -4716,6 +4725,7 @@ return ([
             changedFiles: [],
             details: companionDetails(companion),
             bmadCompanion: companion,
+            wroteNothing: true,
           };
         }
         return {
@@ -4779,17 +4789,30 @@ return ([
       }
 
       // No whole-tree backup on this path, so the manifest edit carries its own undo.
+      // PJAN-212: this path has no rollback, so a failed installer may have half-written the repo.
+      // The snapshot is taken before any write here; after a failure (and the manifest's own undo)
+      // the tree either still matches it, provably untouched, or the damage is named.
+      const beforeInstall = snapshotTree(ctx.repoRoot, { tolerateUnreadable: true, tolerateVanished: true });
       const reserved = evictReservedModuleEntries(ctx.repoRoot, false);
       const install = await runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs);
       if (!install.ok) {
         if (reserved.original !== undefined) writeFileSync(reserved.changedFiles[0]!, reserved.original, "utf8");
+        const damaged = changedTreePaths(ctx.repoRoot, beforeInstall, snapshotTree(ctx.repoRoot, { tolerateUnreadable: true, tolerateVanished: true }))
+          .map((path) => relative(ctx.repoRoot, path));
         return {
           id: finding.id,
           title: finding.title,
           status: "blocked",
-          summary: "Failed to upgrade BMAD via installer",
+          summary: damaged.length
+            ? `Failed to upgrade BMAD via installer; it changed ${damaged.length} path(s) before failing (recover with git)`
+            : "Failed to upgrade BMAD via installer",
           changedFiles: [],
-          details: [...(reserved.original !== undefined ? [...reserved.details, "restored _bmad/_config/manifest.yaml after the failed install"] : []), install.error ?? "Unknown error"],
+          details: [
+            ...(reserved.original !== undefined ? [...reserved.details, "restored _bmad/_config/manifest.yaml after the failed install"] : []),
+            install.error ?? "Unknown error",
+            ...(damaged.length ? [`left changed by the failed installer: ${damaged.slice(0, 10).join(", ")}${damaged.length > 10 ? `, … ${damaged.length - 10} more` : ""}`] : []),
+          ],
+          ...(damaged.length ? {} : { wroteNothing: true }),
         };
       }
       const evictedChanges: string[] = [];
