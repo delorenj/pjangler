@@ -1179,7 +1179,7 @@ program
       console.log(`Import ${result.status}: ${result.plan?.target ?? source}`);
       for (const change of result.plan?.changes ?? []) console.log(`  ${change}`);
       if (result.error) console.error(result.error);
-      if (result.recovery) { console.error(`Recovery receipt: ${result.recovery.receipt}`); for (const instruction of result.recovery.instructions) console.error(instruction); }
+      if (result.recovery) { console.error(result.recovery.receipt ? `Recovery receipt: ${result.recovery.receipt}` : `Recovery for ${result.recovery.checkout}:`); for (const instruction of result.recovery.instructions) console.error(instruction); }
     }
     if (!result.ok) process.exitCode = 1;
   });

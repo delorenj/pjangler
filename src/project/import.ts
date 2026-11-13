@@ -32,7 +32,7 @@ export interface ImportResult {
   status: "planned" | "imported" | "unchanged" | "refused" | "rolled_back" | "recovery_required";
   plan?: ImportPlan;
   error?: string;
-  recovery?: { receipt: string; checkout: string; instructions: string[]; errors: string[] };
+  recovery?: { receipt?: string; checkout: string; instructions: string[]; errors: string[] };
 }
 interface Snapshot { path: string; bytes?: Buffer; mode?: number }
 
@@ -143,23 +143,23 @@ function linkPlan(root: string, target: string, home: string, local: boolean, ex
         const newTarget = mapped(oldTarget, root, target); links.push({ path, before, after: isAbsolute(before) ? newTarget : relative(bin, newTarget), inside: false });
       }
     } else if (s.isFile() && s.size <= 1024 * 1024 && readFileSync(path).includes(Buffer.from(root))) {
-      throw new Error(`Unsupported executable binding at ${path}; its owner must supply a relocation adapter`);
+      throw new Error(`Unsupported executable binding at ${path}: its owner must supply a relocation adapter (Pilot/config path-binding contract missing); nothing was moved`);
     }
   }
   function serviceBindings(dir: string) {
     if (!present(dir)) return;
     for (const name of readdirSync(dir)) {
       const path = join(dir, name), s = lstatSync(path);
-      if (s.isSymbolicLink()) { if (inside(root, resolve(dirname(path), readlinkSync(path)))) throw new Error(`Unsupported service binding at ${path}; Flume/service-owner relocation contract required`); }
+      if (s.isSymbolicLink()) { if (inside(root, resolve(dirname(path), readlinkSync(path)))) throw new Error(`Unsupported service binding at ${path}: Flume relocation contract missing (FLUME-41, service/unit bindings); nothing was moved`); }
       else if (s.isDirectory()) serviceBindings(path);
-      else if (s.isFile() && s.size <= 1024 * 1024 && readFileSync(path).includes(Buffer.from(root))) throw new Error(`Unsupported service binding at ${path}; Flume/service-owner relocation contract required`);
+      else if (s.isFile() && s.size <= 1024 * 1024 && readFileSync(path).includes(Buffer.from(root))) throw new Error(`Unsupported service binding at ${path}: Flume relocation contract missing (FLUME-41, service/unit bindings); nothing was moved`);
     }
   }
   const configHome = explicitHome ? join(home, ".config") : process.env.XDG_CONFIG_HOME ?? join(home, ".config");
   serviceBindings(join(configHome, "systemd", "user"));
   const pilotConfig = !explicitHome && process.env.PILOT_CONFIG_DIR ? resolve(process.env.PILOT_CONFIG_DIR) : join(configHome, "pilot");
   const configFile = join(pilotConfig, "config.json");
-  for (const path of [configFile, join(pilotConfig, "default.schema.json")]) if (present(path) && lstatSync(path).isSymbolicLink() && inside(root, resolve(dirname(path), readlinkSync(path)))) throw new Error(`Pilot config binding at ${path} requires its owner's relocation adapter before import`);
+  for (const path of [configFile, join(pilotConfig, "default.schema.json")]) if (present(path) && lstatSync(path).isSymbolicLink() && inside(root, resolve(dirname(path), readlinkSync(path)))) throw new Error(`Pilot config binding at ${path} requires its owner's relocation adapter (Pilot/config path-binding contract missing); nothing was moved`);
   if (present(configFile)) {
     let config: Record<string, unknown>;
     try { config = JSON.parse(readFileSync(configFile, "utf8")); }
@@ -167,13 +167,13 @@ function linkPlan(root: string, target: string, home: string, local: boolean, ex
     if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error(`Pilot config must be an object (${configFile})`);
     for (const key of ["defaultSchema", "default_schema", "manifestRegistry"]) {
       const value = config[key];
-      if (typeof value === "string" && inside(root, resolve(value.startsWith("~/") ? join(home, value.slice(2)) : value))) throw new Error(`Pilot ${key} binding requires its owner's relocation adapter before import (${configFile})`);
+      if (typeof value === "string" && inside(root, resolve(value.startsWith("~/") ? join(home, value.slice(2)) : value))) throw new Error(`Pilot ${key} binding requires its owner's relocation adapter (Pilot/config path-binding contract missing); nothing was moved (${configFile})`);
     }
   }
   return links;
 }
 async function ownedCapabilities(root: string, manifest: Record<string, any>, home: string): Promise<void> {
-  if (Object.keys(manifest.agents ?? {}).length || present(join(root, "agents", "hermes"))) throw new Error("Flume employee relocation capability is missing: PM must obtain public plan/execute/rollback for stable employee, profile and service bindings before import");
+  if (Object.keys(manifest.agents ?? {}).length || present(join(root, "agents", "hermes"))) throw new Error("Flume relocation contract missing (FLUME-41, Backlog): identity-preserving employee/profile/runtime/service relocation is owned by Flume and is not delivered; nothing was moved");
   const registry = join(home, ".hermes", "agents-registry.yaml");
   if (present(registry)) {
     const result = spawnSync("flume", ["roster", "--agent-registry", registry, "--json"], { encoding: "utf8", timeout: 30_000, shell: false, maxBuffer: 16 * 1024 * 1024 });
@@ -181,14 +181,14 @@ async function ownedCapabilities(root: string, manifest: Record<string, any>, ho
     let inventory: any;
     try { inventory = JSON.parse(result.stdout); } catch { throw new Error("Flume roster returned invalid JSON; employee relocation cannot be assessed"); }
     if (!inventory.ok || inventory.data?.truncated?.length || !Array.isArray(inventory.data?.rows)) throw new Error("Flume roster is incomplete; employee relocation cannot be assessed");
-    if (JSON.stringify(inventory.data.rows).includes(root)) throw new Error("Flume employee relocation capability is missing for the roster's project bindings; obtain public plan/execute/rollback through PM");
+    if (JSON.stringify(inventory.data.rows).includes(root)) throw new Error("Flume relocation contract missing (FLUME-41, Backlog) for the roster's project bindings: identity-preserving employee/profile/service relocation is owned by Flume and is not delivered; nothing was moved");
   }
   const receipt = await readActivationReceipt(root, { home, env: process.env });
-  if (receipt.document) throw new Error("Skillex project-scope relocation capability is missing: preserve activation and scopeRoot receipt; PM must obtain public relocation API before import");
+  if (receipt.document) throw new Error("Skillex relocation contract missing: project-scope activation links and the scopeRoot-keyed ownership receipt cannot be re-anchored by import; the Skillex owner must supply a public from/to relocation; nothing was moved");
   function skillLinks(dir: string): void {
     if (!present(dir)) return;
     const s = lstatSync(dir);
-    if (s.isSymbolicLink()) throw new Error("Skillex project activation relocation capability is missing; preserve skill links and copied skills and obtain its public relocation API through PM");
+    if (s.isSymbolicLink()) throw new Error("Skillex relocation contract missing: project activation links under .agents/skills cannot be re-anchored by import; copied skills stay untouched; the Skillex owner must supply a public from/to relocation; nothing was moved");
     if (s.isDirectory()) for (const name of readdirSync(dir)) skillLinks(join(dir, name));
   }
   skillLinks(join(root, ".agents", "skills"));
@@ -199,6 +199,104 @@ function inspect(registry: string): IndexView { return registryRequest(registry,
 function collision(index: IndexView, id: string, source: string, target: string): void {
   const old = index.__registry_status[id]?.manifest_path;
   if (old && old !== join(source, ".project.json") && old !== join(target, ".project.json")) throw new Error(`Registry identity collision for ${id} at ${old}; reindex its authoritative checkout before relocation`);
+}
+
+/**
+ * A refusal that carries the minimum safe next step. It is still a refusal: the
+ * exit code, the status and every byte on disk are exactly what a plain error
+ * would leave, but the operator is told what proves, or what blocks, convergence.
+ */
+class Refusal extends Error {
+  constructor(message: string, readonly checkout: string, readonly instructions: string[]) { super(message); }
+}
+const shellQuote = (value: string) => /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Where a local import records the path it came from. The journal receipt under
+ * .git/pjangler-imports names the source too, but it is a private journal an
+ * operator can lose (a scrubbed .git, a parent copied without untracked state).
+ * This key lives in the parent's own .git/config, is written and rolled back by
+ * the same transaction as the gitlink and .gitmodules, and is what lets a repeat
+ * prove the source after the receipt is gone. Exactly one value counts: an
+ * ambiguous record proves nothing.
+ */
+const sourceKey = (name: string) => `pjangler-import.${name}.source`;
+function recordedSource(parent: string, name: string): string | undefined {
+  const values = (maybeGit(parent, ["config", "--local", "--get-all", sourceKey(name)]) ?? "").split("\n").filter(Boolean);
+  return values.length === 1 ? values[0] : undefined;
+}
+
+/** Symlinks (in the moved tree and in HOME's .local/bin) that still resolve into `former`: a binding the import should have moved and did not. */
+function staleBindings(former: string, target: string, home: string): string[] {
+  const stale: string[] = [];
+  const points = (path: string) => inside(former, resolve(dirname(path), readlinkSync(path)));
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (name === ".git") continue;
+      const path = join(dir, name), s = lstatSync(path);
+      if (s.isSymbolicLink()) { if (points(path)) stale.push(path); }
+      else if (s.isDirectory()) walk(path);
+    }
+  };
+  walk(target);
+  const bin = join(home, ".local", "bin");
+  if (present(bin)) for (const name of readdirSync(bin)) { const path = join(bin, name); if (lstatSync(path).isSymbolicLink() && points(path)) stale.push(path); }
+  return stale;
+}
+
+interface Enrollment { parent: string; name: string; target: string; registry: string; home: string; url: string | undefined; gitlink: string; prior?: any; former?: string }
+/**
+ * Prove an existing enrollment healthy WITHOUT writing anything: the gitlink is
+ * the checkout's HEAD, origin is the .gitmodules URL, the registry binds the
+ * project to this very manifest (path and bytes), the manifest's repo_path is
+ * the canonical target, and no recorded binding, nor any symlink into the
+ * former source, was left behind. Throws the first thing that is not true.
+ */
+async function verifyEnrollment(e: Enrollment): Promise<{ id: string; url: string; manifestPath: string }> {
+  const existing = standalone(realpathSync(e.target));
+  if (e.gitlink !== `160000 ${existing.head} 0\t${e.name}` || maybeGit(e.target, ["remote", "get-url", "origin"]) !== e.url) throw new Error(`Existing enrollment drift at ${e.target}; reconcile gitlink and origin before retrying`);
+  const manifest = await readManifest(join(e.target, ".project.json"));
+  const index = inspect(e.registry);
+  if (index.__registry_status[manifest.id]?.manifest_path !== manifest.path || index.__registry_status[manifest.id]?.content_hash !== manifest.hash) throw new Error(`Existing enrollment has stale registry binding; run pj reindex in ${e.target}`);
+  if (manifest.manifest.repo_path !== e.target) throw new Error(`Existing enrollment manifest repo_path ${manifest.manifest.repo_path} is not the canonical path ${e.target}; reconcile ${manifest.path} before retrying`);
+  for (const l of e.prior?.plan?.bindings ?? []) {
+    const path = l.inside ? mapped(l.path, e.prior.plan.source, e.target) : l.path;
+    if (!present(path) || !lstatSync(path).isSymbolicLink() || readlinkSync(path) !== l.after) throw new Error(`Existing executable/symlink binding drift at ${path}; reconcile its owner before retrying`);
+  }
+  if (e.former !== undefined) {
+    const stale = staleBindings(e.former, e.target, e.home);
+    if (stale.length) throw new Error(`Existing binding at ${stale[0]} still points into the former source ${e.former}; rebind it (its owner, if it is not a plain symlink) before retrying`);
+  }
+  return { id: manifest.id, url: e.url!, manifestPath: manifest.path };
+}
+
+/**
+ * Why an import cannot be reported "unchanged" against a destination that
+ * already exists, and what the operator can safely do about it. Never mutates.
+ * An enrollment whose provenance is merely UNPROVEN is checked for health here
+ * so the message can say so, and only a verified one is offered the one-line
+ * provenance record; a mismatch or a source that still exists is a different
+ * checkout and is told to pick another --name.
+ */
+async function collisionRefusal(input: ReturnType<typeof importSource>, claimed: string | undefined, e: Enrollment): Promise<Refusal> {
+  const head = `Destination collision: ${e.target}`;
+  const other = `import ${input.mode === "local" ? input.source : input.url} under another destination with --name <name>`;
+  if (input.mode === "remote") return new Refusal(head, e.target, [`${e.target} is not an enrollment of ${input.url}; ${other}, or reconcile ${e.target} first`]);
+  if (claimed !== undefined && claimed !== input.source) return new Refusal(`${head} was imported from ${claimed}, not ${input.source}`, e.target, [`${e.target} belongs to ${claimed}; ${other}`]);
+  if (present(input.source)) return new Refusal(head, e.target, [`${input.source} still exists, so it is not the checkout that was moved into ${e.target}; ${other}, or reconcile ${e.target} first`]);
+  if (claimed !== undefined) return new Refusal(head, e.target, [`${e.target} is not an enrolled submodule of ${e.parent}; ${other}, or reconcile it first`]);
+  const unproven = `${head} already exists and nothing proves it was imported from ${input.source} (no completed import receipt and no provenance record)`;
+  let verified: Awaited<ReturnType<typeof verifyEnrollment>>;
+  try { verified = await verifyEnrollment({ ...e, former: input.source }); }
+  catch (error) {
+    return new Refusal(unproven, e.target, [`Nothing was changed. ${e.target} does not verify as a healthy enrollment: ${message(error)}`, `Reconcile that first; only a verified enrollment can be recorded as imported from ${input.source}`]);
+  }
+  return new Refusal(unproven, e.target, [
+    `Nothing was changed. ${e.target} verified healthy: gitlink matches HEAD, origin matches .gitmodules, the registry binds ${verified.id} to ${verified.manifestPath}, and no binding points at ${input.source}`,
+    `If ${input.source} really was its source, record that with the one command below, then repeat the import (the repeat re-verifies everything and reports unchanged):`,
+    `git -C ${shellQuote(e.parent)} config --local ${sourceKey(e.name)} ${shellQuote(input.source)}`,
+    `Otherwise ${other}`,
+  ]);
 }
 
 export async function importProject(options: ImportOptions): Promise<ImportResult> {
@@ -217,7 +315,7 @@ export async function importProject(options: ImportOptions): Promise<ImportResul
     const target = join(parent, name), home = resolve(options.bindingsHome ?? homedir());
     const registry = resolveRegistryLocation(options.registry);
     if (!isRegistryServiceLocation(registry)) throw new Error("Import enrollment requires the project registry service; pass --registry <URL>");
-    plan = { ...input, name, target, registry, changes: [input.mode === "local" ? `Move ${input.source} to ${target}` : `Clone ${input.url} into ${target}`, `Stage .gitmodules and gitlink ${name}; no commit`, `Enroll ${join(target, ".project.json")} in ${registry}`], bindings: [] };
+    plan = { ...input, name, target, registry, changes: [input.mode === "local" ? `Move ${input.source} to ${target}` : `Clone ${input.url} into ${target}`, `Stage .gitmodules and gitlink ${name}; no commit`, ...(input.mode === "local" ? [`Record the source in ${join(parentGit.gitDir, "config")} (${sourceKey(name)}) so a repeat converges even if the receipt is lost`] : []), `Enroll ${join(target, ".project.json")} in ${registry}`], bindings: [] };
     const journalDir = join(parentGit.gitDir, "pjangler-imports");
     receiptPath = join(journalDir, `${name}.json`);
     let prior: any;
@@ -228,18 +326,15 @@ export async function importProject(options: ImportOptions): Promise<ImportResul
     if (present(target)) {
       const url = maybeGit(parent, ["config", "--file", ".gitmodules", "--get", `submodule.${name}.url`]);
       const gitlink = git(parent, ["ls-files", "--stage", "--", name]);
-      const sameInput = input.mode === "remote" ? url === input.url : prior?.plan?.source === input.source && !present(input.source);
-      if (!sameInput || !gitlink.startsWith("160000 ")) throw new Error(`Destination collision: ${target}`);
-      const existing = standalone(realpathSync(target));
-      if (gitlink !== `160000 ${existing.head} 0\t${name}` || maybeGit(target, ["remote", "get-url", "origin"]) !== url) throw new Error(`Existing enrollment drift at ${target}; reconcile gitlink and origin before retrying`);
-      const manifest = await readManifest(join(target, ".project.json"));
-      const index = inspect(registry);
-      if (index.__registry_status[manifest.id]?.manifest_path !== manifest.path || index.__registry_status[manifest.id]?.content_hash !== manifest.hash) throw new Error(`Existing enrollment has stale registry binding; run pj reindex in ${target}`);
-      for (const l of prior?.plan?.bindings ?? []) {
-        const path = l.inside ? mapped(l.path, prior.plan.source, target) : l.path;
-        if (!present(path) || !lstatSync(path).isSymbolicLink() || readlinkSync(path) !== l.after) throw new Error(`Existing executable/symlink binding drift at ${path}; reconcile its owner before retrying`);
-      }
-      plan.projectId = manifest.id; plan.url = url!; plan.changes = [];
+      const local = input.mode === "local";
+      // Provenance of a local import: a COMPLETED receipt, else the durable record in the parent's .git/config.
+      // A rolled-back or unfinished receipt proves nothing about a destination that exists.
+      const claimed = local ? (prior?.status === "imported" ? prior.plan?.source : recordedSource(parent, name)) : undefined;
+      const enrollment: Enrollment = { parent, name, target, registry, home, url, gitlink, prior: prior?.status === "imported" ? prior : undefined, former: local ? input.source : undefined };
+      const sameInput = local ? claimed === input.source && !present(input.source) : url === input.url;
+      if (!sameInput || !gitlink.startsWith("160000 ")) throw await collisionRefusal(input, claimed, enrollment);
+      const verified = await verifyEnrollment(enrollment);
+      plan.projectId = verified.id; plan.url = verified.url; plan.changes = [];
       return { ok: true, status: "unchanged", plan };
     }
     if (git(parent, ["ls-files", "--", name]) || maybeGit(parent, ["config", "--file", ".gitmodules", "--get", `submodule.${name}.path`]) || maybeGit(parent, ["config", "--get", `submodule.${name}.url`])) throw new Error(`Submodule/index collision for ${name}`);
@@ -317,6 +412,7 @@ export async function importProject(options: ImportOptions): Promise<ImportResul
       atomic(gmBefore.path, modulesBytes, gmBefore.mode); gmExpected = snapshot(gmBefore.path);
       git(parent, ["config", `submodule.${name}.url`, origin]); configExpected = snapshot(configBefore.path);
       git(parent, ["config", `submodule.${name}.active`, "true"]); configExpected = snapshot(configBefore.path);
+      if (input.mode === "local") { git(parent, ["config", "--local", sourceKey(name), input.source]); configExpected = snapshot(configBefore.path); }
       const indexLock = `${parentGit.index.path}.lock`;
       const fd = openSync(indexLock, "wx", parentGit.index.mode ?? 0o644);
       try {
@@ -367,7 +463,7 @@ export async function importProject(options: ImportOptions): Promise<ImportResul
       atomic(receiptPath!, `${JSON.stringify({ status: "recovery_required", plan, checkout, error: message(error) }, null, 2)}\n`, 0o600);
       return { ok: false, status: "recovery_required", plan, error: message(error), recovery: { receipt: receiptPath!, checkout, errors: [], instructions: ["Prepared remote checkout retained; resolve the reported capability and review this receipt before retrying"] } };
     }
-    return { ok: false, status: "refused", plan, error: message(error) };
+    return { ok: false, status: "refused", plan, error: message(error), ...(error instanceof Refusal ? { recovery: { checkout: error.checkout, instructions: error.instructions, errors: [] } } : {}) };
   } finally {
     if (lock !== undefined) { closeSync(lock); if (lockPath && present(lockPath)) unlinkSync(lockPath); }
   }

@@ -1,78 +1,21 @@
+import "./helpers/hermetic-suite.mjs";
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import pg from 'pg';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { readActivationReceipt, writeActivationReceipt, withLock } from '@delorenj/skillex';
+import { bytes, startHarness, tree } from './helpers/import-harness.mjs';
 
-const root = resolve(import.meta.dirname, '..');
-const temp = mkdtempSync(join(tmpdir(), 'pjan-165-'));
-const database = `pjan165_${process.pid}_${Date.now()}`;
-const home = join(temp, 'home');
-mkdirSync(join(home, '.local/bin'), { recursive: true });
-const env = { ...process.env, HOME: home, XDG_STATE_HOME: join(home, '.local/state'), GIT_OPTIONAL_LOCKS: '0', PGHOST: process.env.PGHOST ?? '/var/run/postgresql', PGDATABASE: database, PJ_REGISTRY_PORT: '0' };
-const admin = new pg.Client({ host: env.PGHOST, database: process.env.PJ_TEST_ADMIN_DATABASE ?? 'postgres' });
-let db, service, url;
-const evidence = { temporary_root: temp, database, assertions: [] };
-function run(command, args, cwd, options = {}) {
-  const r = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 30000, ...options });
-  assert.ifError(r.error);
-  return r;
-}
-function git(dir, ...args) {
-  const r = run('git', args, dir);
-  assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
-  return r.stdout.trim();
-}
-function repo(name, manifest = { project_id: name, agents: {} }) {
-  const dir = join(temp, name); mkdirSync(dir);
-  git(dir, 'init', '-q'); git(dir, 'config', 'user.name', 'PJAN-165 Test'); git(dir, 'config', 'user.email', 'pjan-165@localhost.invalid');
-  writeFileSync(join(dir, '.gitignore'), 'ignored/\n');
-  writeFileSync(join(dir, 'tracked'), 'base\n');
-  if (manifest) writeFileSync(join(dir, '.project.json'), `${JSON.stringify({ ...manifest, repo_path: dir }, null, 2)}\n`);
-  git(dir, 'add', '.'); git(dir, 'commit', '-qm', 'PJAN-165 initialize disposable repository');
-  return dir;
-}
-function bare(source, name) { const target = join(temp, `${name}.git`); git(temp, 'clone', '--bare', source, target); return target; }
-function cli(parent, source, ...args) {
-  const r = run(process.execPath, [join(root, 'dist/index.js'), 'import', source, '--registry', url, '--bindings-home', home, '--json', ...args], parent);
-  let data; try { data = JSON.parse(r.stdout); } catch { throw new Error(`Invalid CLI JSON (exit ${r.status}): ${r.stdout}\n${r.stderr}`); }
-  return { ...r, data };
-}
-async function request(path, data) {
-  const r = await fetch(`${url}${path}`, { method: data === undefined ? 'GET' : 'POST', ...(data === undefined ? {} : { body: JSON.stringify(data), headers: { 'content-type': 'application/json' } }) });
-  const result = await r.json(); assert.equal(r.status, 200, JSON.stringify(result)); return result;
-}
-const bytes = path => readFileSync(path).toString('base64');
-function tree(dir) {
-  const rows = [];
-  function walk(at, rel = '') {
-    for (const name of readdirSync(at).sort()) {
-      const path = join(at, name), key = join(rel, name), stat = lstatSync(path);
-      if (stat.isSymbolicLink()) rows.push([key, 'link', readlinkSync(path)]);
-      else if (stat.isDirectory()) { rows.push([key, 'dir', stat.mode]); walk(path, key); }
-      else rows.push([key, stat.mode, createHash('sha256').update(readFileSync(path)).digest('hex')]);
-    }
-  }
-  walk(dir); return rows;
-}
-function passed(name, details = {}) { evidence.assertions.push({ name, ...details }); console.log(`PASS ${name}`); }
+// PJAN-165 `pj import` acceptance suite. The real built CLI (dist/index.js) runs against
+// disposable repositories, local bare remotes, an isolated HOME and a disposable registry
+// database, all under the hermetic scratch base (tests/helpers/import-harness.mjs). Nothing
+// reaches ~/code, ~/code/33GOD, the live registry or the network: GitHub shorthand is
+// parse-checked with --dry-run only. Receipt-loss convergence (R1) lives in
+// tests/pjan-165-import-receipt-recovery.mjs.
+const h = await startHarness('pjan-165-import');
+const { root, temp, home, env, run, git, repo, bare, cli, request, db } = h;
+const url = h.url;
+function passed(name) { console.log(`PASS ${name}`); }
 try {
-  await admin.connect(); await admin.query(`CREATE DATABASE "${database}"`);
-  db = new pg.Client({ host: env.PGHOST, database }); await db.connect();
-  let output = '';
-  service = spawn(process.execPath, [join(root, 'dist/project-registry-service.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  service.stdout.on('data', c => { output += c; }); service.stderr.on('data', c => { output += c; });
-  for (let i = 0; i < 100; i++) {
-    url = output.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
-    if (url) break;
-    if (service.exitCode !== null) throw new Error(output);
-    await delay(50);
-  }
-  assert.ok(url, output);
   const parent = repo('parent');
   const source = repo('checkout', { project_id: 'stable-id', project_name: 'Original name', agents: {}, ticket_provider: { type: 'plane', board_id: 'board-kept', identifier: 'PX', workspace: '33god' }, memory: { bank: 'pilot' }, extensions: { profile_name: 'pilot-original' } });
   const upstream = bare(source, 'upstream'); git(source, 'remote', 'add', 'origin', upstream);
@@ -160,10 +103,10 @@ try {
   const invalidBefore = tree(temp); const invalid = cli(collisionParent, 'not-a-checkout'); assert.equal(invalid.status, 1); assert.deepEqual(tree(temp), invalidBefore);
   passed('AC4 collisions, unsupported worktrees and invalid sources fail before mutation');
   const employeeSource = repo('employee-source', { project_id: 'employee-source', agents: { 'stable-employee': { role: 'pm', role_dir: 'agents/hermes/pm', provisioning_state: 'provisioned' } }, memory: { bank: 'unchanged-bank' } }); git(employeeSource, 'remote', 'add', 'origin', upstream);
-  const employeeBefore = tree(temp); const employee = cli(collisionParent, employeeSource); assert.equal(employee.status, 1); assert.match(employee.data.error, /Flume.*relocation/i); assert.deepEqual(tree(temp), employeeBefore);
+  const employeeBefore = tree(temp); const employee = cli(collisionParent, employeeSource); assert.equal(employee.status, 1); assert.match(employee.data.error, /FLUME-41/); assert.deepEqual(tree(temp), employeeBefore);
   passed('AC3 missing Flume relocation contract fails closed (full AC3 UNPROVEN)', { result: employee.data });
   const blockedRemote = bare(employeeSource, 'employee-remote'); const blockedParent = repo('blocked-remote-parent');
-  const blocked = cli(blockedParent, blockedRemote, '--name', 'blocked'); assert.equal(blocked.status, 1); assert.equal(blocked.data.status, 'recovery_required');
+  const blocked = cli(blockedParent, blockedRemote, '--name', 'blocked'); assert.equal(blocked.status, 1); assert.equal(blocked.data.status, 'recovery_required'); assert.match(blocked.data.error, /FLUME-41/);
   assert.equal(existsSync(join(blockedParent, 'blocked')), false); assert.equal(git(blockedParent, 'ls-files', '--stage', '--', 'blocked'), '');
   assert.equal(git(blocked.data.recovery.checkout, 'rev-parse', 'HEAD'), git(employeeSource, 'rev-parse', 'HEAD'));
   assert.deepEqual(JSON.parse(readFileSync(join(blocked.data.recovery.checkout, '.project.json'))).agents, JSON.parse(readFileSync(join(employeeSource, '.project.json'))).agents);
@@ -173,20 +116,45 @@ try {
   mkdirSync(join(skillSource, '.agents/skills/copied'), { recursive: true }); writeFileSync(join(skillSource, '.agents/skills/copied/SKILL.md'), 'recoverable baseline copy');
   const receiptOptions = { home, env, stateHome: join(home, '.local/state') };
   await withLock('pjan-165-activation-test', async () => { const previous = await readActivationReceipt(skillSource, receiptOptions); await writeActivationReceipt(previous, { owned: [] }, receiptOptions); }, receiptOptions);
-  const skillBefore = tree(temp); const skill = cli(collisionParent, skillSource); assert.equal(skill.status, 1); assert.match(skill.data.error, /Skillex.*relocation/i); assert.deepEqual(tree(temp), skillBefore);
+  const skillBefore = tree(temp); const skill = cli(collisionParent, skillSource); assert.equal(skill.status, 1); assert.match(skill.data.error, /Skillex relocation contract missing.*scopeRoot/); assert.deepEqual(tree(temp), skillBefore);
   passed('AC3 actual Skillex scopeRoot receipt blocks relocation and preserves copied skills', { result: skill.data });
   const serviceSource = repo('service-source'); git(serviceSource, 'remote', 'add', 'origin', upstream);
   mkdirSync(join(home, '.config/systemd/user'), { recursive: true }); writeFileSync(join(home, '.config/systemd/user/pjan-165.service'), `[Service]\nWorkingDirectory=${serviceSource}\n`);
-  const serviceBefore = tree(temp); const serviceBlocked = cli(collisionParent, serviceSource); assert.equal(serviceBlocked.status, 1); assert.match(serviceBlocked.data.error, /service binding/i); assert.deepEqual(tree(temp), serviceBefore);
+  const serviceBefore = tree(temp); const serviceBlocked = cli(collisionParent, serviceSource); assert.equal(serviceBlocked.status, 1); assert.match(serviceBlocked.data.error, /service binding.*FLUME-41/); assert.deepEqual(tree(temp), serviceBefore);
   passed('AC3 unsupported service relocation fails before mutation', { result: serviceBlocked.data });
   const wrapperSource = repo('wrapper-source'); git(wrapperSource, 'remote', 'add', 'origin', upstream);
   writeFileSync(join(home, '.local/bin/wrapper'), `#!/bin/sh\nexec ${wrapperSource}/bin/run\n`); chmodSync(join(home, '.local/bin/wrapper'), 0o755);
-  const wrapperBefore = tree(temp); const wrapper = cli(collisionParent, wrapperSource); assert.equal(wrapper.status, 1); assert.match(wrapper.data.error, /executable binding/i); assert.deepEqual(tree(temp), wrapperBefore);
+  const wrapperBefore = tree(temp); const wrapper = cli(collisionParent, wrapperSource); assert.equal(wrapper.status, 1); assert.match(wrapper.data.error, /executable binding.*Pilot\/config path-binding contract/); assert.deepEqual(tree(temp), wrapperBefore);
   passed('AC3 opaque executable binding fails before mutation', { result: wrapper.data });
   const pilotSource = repo('pilot-config-source'); git(pilotSource, 'remote', 'add', 'origin', upstream);
   mkdirSync(join(home, '.config/pilot'), { recursive: true }); writeFileSync(join(home, '.config/pilot/config.json'), JSON.stringify({ defaultSchema: join(pilotSource, 'schemas/default.json'), preserved_field: 'keep' }));
-  const pilotBefore = tree(temp); const pilotConfig = cli(collisionParent, pilotSource); assert.equal(pilotConfig.status, 1); assert.match(pilotConfig.data.error, /Pilot defaultSchema.*relocation adapter/); assert.deepEqual(tree(temp), pilotBefore);
+  const pilotBefore = tree(temp); const pilotConfig = cli(collisionParent, pilotSource); assert.equal(pilotConfig.status, 1); assert.match(pilotConfig.data.error, /Pilot defaultSchema.*relocation adapter.*Pilot\/config path-binding contract/); assert.deepEqual(tree(temp), pilotBefore);
   passed('AC3 Pilot defaultSchema binding refuses unsupported relocation', { result: pilotConfig.data });
+  const hermesSource = repo('hermes-dir-source'); git(hermesSource, 'remote', 'add', 'origin', upstream);
+  mkdirSync(join(hermesSource, 'agents/hermes/pm'), { recursive: true }); writeFileSync(join(hermesSource, 'agents/hermes/pm/.keep'), '');
+  const hermesBefore = tree(temp); const hermesBlocked = cli(collisionParent, hermesSource); assert.equal(hermesBlocked.status, 1); assert.match(hermesBlocked.data.error, /FLUME-41/); assert.deepEqual(tree(temp), hermesBefore);
+  passed('AC3 a checkout carrying agents/hermes fails before mutation naming FLUME-41', { result: hermesBlocked.data });
+  const linkedSkillSource = repo('linked-skill-source'); git(linkedSkillSource, 'remote', 'add', 'origin', upstream);
+  mkdirSync(join(linkedSkillSource, '.agents/skills'), { recursive: true }); symlinkSync('../../elsewhere', join(linkedSkillSource, '.agents/skills/linked'));
+  const linkedSkillBefore = tree(temp); const linkedSkill = cli(collisionParent, linkedSkillSource); assert.equal(linkedSkill.status, 1); assert.match(linkedSkill.data.error, /Skillex relocation contract missing.*activation links/); assert.deepEqual(tree(temp), linkedSkillBefore);
+  passed('AC3 project-scope Skillex activation links fail before mutation naming the Skillex contract', { result: linkedSkill.data });
+  const pilotLinkSource = repo('pilot-link-source'); git(pilotLinkSource, 'remote', 'add', 'origin', upstream);
+  symlinkSync(join(pilotLinkSource, 'schemas/default.json'), join(home, '.config/pilot/default.schema.json'));
+  const pilotLinkBefore = tree(temp); const pilotLink = cli(collisionParent, pilotLinkSource); assert.equal(pilotLink.status, 1); assert.match(pilotLink.data.error, /Pilot config binding.*Pilot\/config path-binding contract/); assert.deepEqual(tree(temp), pilotLinkBefore);
+  passed('AC3 Pilot config symlink into the checkout fails before mutation naming the Pilot/config contract', { result: pilotLink.data });
+  const flumeProbe = run('sh', ['-c', 'command -v flume'], temp);
+  if (flumeProbe.status !== 0) console.log('SKIP AC3 Flume roster project bindings: no flume CLI on PATH (the gate fails closed without it)');
+  else {
+    // The REAL `flume roster` against a disposable agent registry under the isolated HOME; PJ_REGISTRY_URL points it at the disposable service.
+    const rosterSource = repo('roster-source'); git(rosterSource, 'remote', 'add', 'origin', upstream);
+    mkdirSync(join(home, '.hermes'), { recursive: true });
+    const rosterRegistry = join(home, '.hermes/agents-registry.yaml');
+    writeFileSync(rosterRegistry, `schema_version: 1\nagents:\n  roster-agent:\n    repo: roster-source\n    role: pm\n    type: hermes\n    project_path: ${rosterSource}\n    profile_name: roster-agent\n    role_dir: ${join(home, '.hermes/profiles/roster-agent')}\n`);
+    try {
+      const rosterBefore = tree(temp); const roster = cli(collisionParent, rosterSource); assert.equal(roster.status, 1, JSON.stringify(roster.data)); assert.match(roster.data.error, /FLUME-41.*roster/, roster.data.error); assert.deepEqual(tree(temp), rosterBefore);
+      passed('AC3 a Flume roster row bound to the checkout fails before mutation naming FLUME-41', { result: roster.data });
+    } finally { rmSync(rosterRegistry, { force: true }); rmSync(join(home, '.hermes'), { recursive: true, force: true }); }
+  }
   const duplicate = repo('duplicate-source', { project_id: 'stable-id', agents: {} }); git(duplicate, 'remote', 'add', 'origin', upstream);
   const duplicateBefore = tree(temp); const duplicateResult = cli(collisionParent, duplicate); assert.equal(duplicateResult.status, 1); assert.match(duplicateResult.data.error, /identity collision/i); assert.deepEqual(tree(temp), duplicateBefore);
   const noOrigin = repo('no-origin'); const noOriginBefore = tree(temp); assert.equal(cli(collisionParent, noOrigin).status, 1); assert.deepEqual(tree(temp), noOriginBefore);
@@ -199,9 +167,5 @@ try {
   assert.equal(git(join(freshParent, 'fresh-import'), 'remote', 'get-url', 'origin'), `file://${freshRemote}`);
   passed('AC2 normal file Git URL and manifest initialization through shared enrollment');
 } finally {
-  if (process.env.PJAN_165_EVIDENCE_DIR) { mkdirSync(process.env.PJAN_165_EVIDENCE_DIR, { recursive: true }); writeFileSync(join(process.env.PJAN_165_EVIDENCE_DIR, 'import-cli-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`); }
-  if (service && service.exitCode === null) { service.kill('SIGTERM'); await new Promise(r => service.once('exit', r)); }
-  if (db) await db.end();
-  if (admin._connected) { await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`); await admin.end(); }
-  rmSync(temp, { recursive: true, force: true });
+  await h.stop();
 }

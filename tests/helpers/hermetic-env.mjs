@@ -176,6 +176,10 @@ const PASSTHROUGH_PATTERN = /^LC_[A-Z]+$/;
  * suite fails if any other credential-shaped name appears.
  */
 const POSTGRES_SUITES = Object.freeze([
+  // PJAN-165: `pj import` enrolls into a real registry service, so both suites
+  // create a uniquely named disposable database behind it (tests/helpers/import-harness.mjs).
+  "tests/pjan-165-import-regressions.mjs",
+  "tests/pjan-165-import-receipt-recovery.mjs",
   "tests/pjan-80-cli-regressions.mjs",
   "tests/pjan-80-bootstrap-regressions.mjs",
   "tests/pjan-80-registry-consumers.mjs",

@@ -235,6 +235,30 @@ remote import inspects the prepared checkout before enrollment. Repeating the
 original input after successful enrollment is a no-op when the gitlink, origin,
 manifest and index agree. Drift asks for reconciliation instead of hiding it.
 
+A repeat of a LOCAL import is "unchanged" only when the destination can be proved
+to be that import. Two things prove it, and a completed receipt wins: the
+receipt under `.git/pjangler-imports/` (status `imported`), or the provenance
+record `pjangler-import.<name>.source` that the import transaction writes to the
+parent's own `.git/config` (written and rolled back with the gitlink and
+`.gitmodules`, so it survives losing the private journal). The former source must
+also be gone; a checkout that still exists there, or one that was recreated at
+that path, is a different checkout and a collision. On top of provenance the
+repeat re-verifies the whole enrollment without writing anything: the gitlink is
+the checkout's HEAD, `origin` is the `.gitmodules` URL, the registry binds the
+project to this manifest (path and bytes), the manifest's `repo_path` is the
+canonical destination, and no symlink in the moved tree or in `~/.local/bin`
+still points into the former source. A rolled-back or unfinished receipt proves
+nothing; an ambiguous record (more than one value) proves nothing.
+
+If the receipt is lost and there is no record either (an enrollment made before
+the record existed, or by hand), the repeat stays refused: exit 1, status
+`refused`, nothing written. When the enrollment itself verifies healthy, the
+result says so and prints the one safe action, a single `git config --local`
+command that records the source. Run it, repeat the import, and every check above
+runs again before it reports "unchanged". When the enrollment does not verify,
+the result prints the drift to reconcile first instead. A surviving
+`recovery_required` (or any unfinished) receipt always stays blocked.
+
 The binding planner preserves relative external symlink targets and retargets
 direct executable symlinks in `~/.local/bin` that enter the moved checkout. This
 covers the Pilot `px`, `pilot` and `px-supervised` symlink pattern.
@@ -249,12 +273,19 @@ refused.
 Employee identity, profiles and service relocation belong to Flume. Import
 refuses declared employees, an existing Hermes role tree or affected employee
 bindings observed through Flume's public roster, because there is currently no
-public identity-preserving relocation transaction. Skillex owns skill activation
+public identity-preserving relocation transaction (FLUME-41, Backlog). Skillex owns skill activation
 and scopeRoot-bound receipts: existing activation receipts or symlinked skills
 also block relocation. Copied skill payloads remain intact. Import does not
 rehire employees, replace receipts, erase foreign skills or perform the author's
 one-time Pilot repair. Full employee/activation relocation remains an explicit
 capability gap, requiring the owners' public plan/execute/rollback APIs.
+
+Each such gate fails before any local move, with nothing written, and names the
+missing owner contract: `FLUME-41` for employee/profile/runtime/service
+bindings, `Skillex relocation contract missing` for project-scope activation
+links and the scopeRoot-keyed receipt, and `Pilot/config path-binding contract`
+for Pilot config and opaque executable bindings. Consuming those contracts once
+the owners deliver them is the open follow-up (PJAN-165 R2).
 
 Failures return a nonzero exit and distinguish `rolled_back` from
 `recovery_required`. A receipt under the parent's
@@ -264,9 +295,19 @@ symlinks and parent index/config/modules; failed remote preparation is retained
 for inspection. Concurrent changes are preserved and reported for recovery.
 Interrupted receipts block another import. Git may retain harmless unreachable
 objects written while staging `.gitmodules`; it retains no accidental commits.
-`pj import --json` exposes this plan and recovery state to automation.
+`pj import --json` exposes this plan and recovery state to automation; a
+refusal that has a safe next step carries it in `recovery.instructions`.
 
 ## Verification
+
+`tests/pjan-165-import-regressions.mjs` and
+`tests/pjan-165-import-receipt-recovery.mjs` run the built CLI against disposable
+repositories, bare remotes, an isolated HOME and a uniquely named disposable
+database behind a real registry service (`tests/helpers/import-harness.mjs`):
+dirty/staged/untracked/ignored preservation, remote import from a local bare
+remote, binding rebinding, reruns, rollback, every owner-contract gate and the
+receipt-loss convergence and refusal cases. GitHub shorthand is parse-checked
+with `--dry-run`; no GitHub network call is made.
 
 `tests/pjan-80-registry-regressions.mjs` creates a disposable PostgreSQL database
 and a real service. It tests collisions, case variants, direct edits, concurrent

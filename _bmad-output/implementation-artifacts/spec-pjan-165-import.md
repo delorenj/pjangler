@@ -124,3 +124,37 @@ user configuration. Import refuses those observed bindings before a move.
 
 Worker handback status is BLOCKED, and this spec remains in-progress. No
 independent spec/quality gate has run; worker verification approves neither.
+
+## Landing pass (2026-11-12): rebase and R1
+
+Scope decided by the operator for this landing: rebase onto `origin/main`, fix R1,
+and keep AC3's cross-owner relocations fail-closed. R2 (consuming the Flume,
+Skillex and Pilot/config relocation seams once their owners deliver them) is OUT
+of scope and stays open on the ticket; no owner internals and no live fleet,
+config or service were touched.
+
+R1 (receipt-loss convergence). A local import now records its source in the
+parent's own `.git/config` (`pjangler-import.<name>.source`), written and rolled
+back by the same transaction as the gitlink and `.gitmodules`. A repeat proves
+provenance from a COMPLETED receipt or that record, requires the former source to
+be gone, then re-verifies the enrollment read-only (gitlink = HEAD, origin =
+`.gitmodules`, registry path and bytes, canonical `repo_path`, no symlink left
+pointing into the former source) and reports `unchanged` without writing. With no
+receipt and no record it stays refused; when the enrollment verifies, the result
+prints the one `git config --local` command that records the source, and after
+that command the repeat re-runs every check. Unfinished (`preparing`, `moving`,
+`enrolling`, `recovery_required`) and `rolled_back` receipts never prove or
+unblock anything.
+
+AC3 gates: Flume employee/profile/service bindings name `FLUME-41` (Backlog),
+Skillex activation links and scopeRoot receipts name the Skillex contract, and
+Pilot config and opaque executable bindings name the Pilot/config path-binding
+contract. Each fails before any local move; the suites assert that nothing moved
+(whole-tree and registry equality) and a mutant that runs the gates after the
+move is killed.
+
+Verification: `tests/pjan-165-import-regressions.mjs` and
+`tests/pjan-165-import-receipt-recovery.mjs` (both registered, both on the
+hermetic preamble and the Postgres grants). 25 mutants of the new logic, all
+killed. Test fixtures are disposable repositories, bare remotes, an isolated HOME
+and a uniquely named disposable database under the hermetic scratch base.
