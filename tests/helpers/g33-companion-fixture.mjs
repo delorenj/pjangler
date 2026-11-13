@@ -35,3 +35,9 @@ export function writeCompanionAdapter(path) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, COMPANION_ADAPTER_SOURCE);
 }
+
+/** What the adapter's `apply` writes, project-relative, byte for byte (its `observe` accepts nothing else). */
+export const COMPANION_FIXTURE_FILES = Object.freeze({
+  "_bmad/g33/companion.md": "PJangler callable fixture companion\n",
+  "_bmad/_config/g33-mapping.json": '{"g33":"fixture reference"}\n',
+});
