@@ -54,6 +54,13 @@ export interface BmadInstallerPackage {
   entry?: string;
   version?: string;
   reason?: string;
+  /**
+   * With `reason` (no `root`): why the package is unavailable. `unresolved` is a
+   * resolver failure (npx failed or timed out), the only one that waiting for the
+   * network can cure; `unverified` is a package that is not the expected one;
+   * `layout` is a copy whose files cannot be read (a corrupted npx cache).
+   */
+  failure?: "unresolved" | "unverified" | "layout";
 }
 
 export type Structural =

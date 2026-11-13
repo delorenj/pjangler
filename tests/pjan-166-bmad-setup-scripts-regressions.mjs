@@ -21,8 +21,8 @@ import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 const realSpawnSync = childProcess.spawnSync;
 const root = resolve(import.meta.dirname, "..");
 const bundle = join(root, "node_modules", ".cache", `pjan-166-${process.pid}.mjs`);
-buildSync({ stdin: { contents: 'export {planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts, PINNED_SETUP_SCRIPT_SHA256, REQUIRED_BMAD_SETUP_SCRIPTS} from "./src/bmad/setup-scripts"; export {resolveBmadInstallerPackage, readInstalledBmadVersion, BMAD_INSTALLER_VERSION, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, createBmadChecks} from "./src/parity/rules";', resolveDir: root }, outfile: bundle, bundle: true, packages: "external", platform: "node", format: "esm" });
-const { planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts, PINNED_SETUP_SCRIPT_SHA256, REQUIRED_BMAD_SETUP_SCRIPTS, resolveBmadInstallerPackage, readInstalledBmadVersion, BMAD_INSTALLER_VERSION, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, createBmadChecks } = await import(pathToFileURL(bundle));
+buildSync({ stdin: { contents: 'export {planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts, PINNED_SETUP_SCRIPT_SHA256, REQUIRED_BMAD_SETUP_SCRIPTS} from "./src/bmad/setup-scripts"; export {resolveBmadInstallerPackage, readInstalledBmadVersion, BMAD_INSTALLER_VERSION, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, createBmadChecks, BMAD_FIRST_SCRIPTS_RELEASE} from "./src/parity/rules";', resolveDir: root }, outfile: bundle, bundle: true, packages: "external", platform: "node", format: "esm" });
+const { planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts, PINNED_SETUP_SCRIPT_SHA256, REQUIRED_BMAD_SETUP_SCRIPTS, resolveBmadInstallerPackage, readInstalledBmadVersion, BMAD_INSTALLER_VERSION, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, createBmadChecks, BMAD_FIRST_SCRIPTS_RELEASE } = await import(pathToFileURL(bundle));
 rmSync(bundle);
 const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
 assert.equal(pkg.version, BMAD_INSTALLER_VERSION, `real pinned package unavailable: ${pkg.reason}`);
@@ -47,6 +47,9 @@ process.on("exit", () => rmSync(trackedRoot, { recursive: true, force: true }));
   assert.equal(extract.status, 0, `tar failed: ${extract.stderr}`);
 }
 const trackedManifestYaml = readFileSync(join(trackedRoot, "_bmad", "_config", "manifest.yaml"), "utf8");
+// The version of that real install, read through the production export. Nothing below names it: a dogfood
+// quick-update of this repo's _bmad moves it, and the tests follow.
+const trackedVersion = readInstalledBmadVersion(trackedRoot);
 
 /**
  * A scratch project in the pinned-version shape: `_bmad/core` plus a files-manifest.csv whose
@@ -443,7 +446,7 @@ test("PJAN-166: failed publish leaves no partial scripts or staging and retains 
 // ---------------------------------------------------------------------------
 // Rewritten PJAN-166 review round. A scratch project below is either
 //   - realInstall(): a copy of THIS repo's own TRACKED `_bmad` (git archive of
-//     HEAD, never the working tree), a real bmad-method 6.12.4 install whose
+//     HEAD, never the working tree), a real bmad-method install (see trackedVersion) whose
 //     memlog.py attests other bytes than the pinned 6.12.1 (the shape of the
 //     Wingman, bloodbank and pjangler installs the review measured), or
 //   - fixture(): the pinned-version shape, whose manifest rows are the real
@@ -454,7 +457,11 @@ test("PJAN-166: failed publish leaves no partial scripts or staging and retains 
 // patched or corrupted copy, a hung registry).
 // ---------------------------------------------------------------------------
 const cli = join(root, "dist", "index.js");
-const REINSTALL = (version) => new RegExp(`npx -y bmad-method@${escapeRe(version)} install --yes --directory \\. --action quick-update`);
+const REINSTALL = (version) => new RegExp(`npx -y bmad-method@${escapeRe(version)} install --yes --directory \\. --action quick-update \\(it rewrites tracked _bmad config files: review \`git diff _bmad\` before committing\\)`);
+// What an install with no manifest.yaml (a fresh clone) is told: no raw installer command, which drops the installed modules there.
+const MANIFEST_LESS_REMEDY = /this install's version is unknown here \(_bmad\/_config\/manifest\.yaml is absent, and it is git-ignored\) and a bare installer run on such a clone drops the installed modules from the tracked _bmad config, so run `pj migrate bmad\.scaffold` \(it passes this project's module set\), or restore manifest\.yaml first and review `git diff _bmad` afterwards/;
+const NO_RAW_INSTALLER = /npx -y bmad-method@|--action quick-update|<the version/;
+const OPTIONAL_MEMLOG = /memlog\.py is not needed by bmad\.scaffold \(it requires only resolve_config\.py and config_utils\.py\), so there is nothing to do unless a skill uses it; to restore anyway: /;
 const NETWORK_HINT = /retry when npm is reachable/;
 const BMAD_VERSION_REMEDY = /pj migrate bmad\.version/;
 const manifestOf = (project) => join(project, "_bmad", "_config", "files-manifest.csv");
@@ -608,9 +615,9 @@ test("PJAN-166: an install whose manifest.yaml names the pinned version and whos
 });
 
 test("PJAN-166: restorability is the manifest row's bytes, not the manifest.yaml version label", async () => {
-  // 6.12.0 and a prerelease are what a mid-bump or canary install carries; 6.12.4 and 99.0.0 prove it is
+  // 6.12.0 and a prerelease are what a mid-bump or canary install carries; the tracked install's own version and 99.0.0 prove it is
   // the bytes and not an allow-list of labels. Every one of them attests the pinned package's own rows.
-  for (const label of ["6.12.0", "6.12.1-next.0", "6.12.4", "99.0.0"]) {
+  for (const label of ["6.12.0", "6.12.1-next.0", trackedVersion, "99.0.0"]) {
     const project = fixture({ installedVersion: label });
     try {
       const finding = await setup.audit(ctx(project, false));
@@ -645,13 +652,13 @@ test("PJAN-166: the real install used below really is the shape the review measu
   const project = realInstall();
   try {
     const dir = join(project, "_bmad", "scripts");
-    assert.equal(readInstalledBmadVersion(project), "6.12.4");
+    assert.equal(readInstalledBmadVersion(project), trackedVersion);
     assert.notEqual(readInstalledBmadVersion(project), BMAD_INSTALLER_VERSION, "this tree must be installed at a version other than the pin, or the tests below prove nothing");
     for (const name of scripts) assert.equal(lstatSync(join(dir, name)).isFile(), true, name);
-    // The 6.12.4 shape: memlog.py differs from the pinned package's, the other four are byte-identical to it.
+    // The shape the review measured on 6.12.4: memlog.py differs from the pinned package's, the other four are byte-identical to it.
     assert.deepEqual(scripts.filter((name) => hash(join(dir, name)) !== hash(join(source, name))), ["memlog.py"]);
     const manifest = readFileSync(manifestOf(project), "utf8");
-    assert.ok(manifest.includes(`"py","memlog","scripts","scripts/memlog.py","${hash(join(dir, "memlog.py"))}"`), "its manifest row attests its own (6.12.4) bytes");
+    assert.ok(manifest.includes(`"py","memlog","scripts","scripts/memlog.py","${hash(join(dir, "memlog.py"))}"`), "its manifest row attests its own (installed) bytes");
     for (const name of scripts.filter((n) => n !== "memlog.py")) assert.ok(manifest.includes(rowFor(name)), name);
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
@@ -709,7 +716,7 @@ test("PJAN-166: `pj audit` on real installs is ok, runs no npx, and never report
   }
 });
 
-test("PJAN-166: a missing memlog.py on a real 6.12.4 install skips with a remedy that is not the no-op bmad.version, resolving and writing nothing", async () => {
+test("PJAN-166: a missing memlog.py on a real install at another version skips with a remedy that is not the no-op bmad.version, resolving and writing nothing", async () => {
   const project = realInstall();
   try {
     const dir = join(project, "_bmad", "scripts");
@@ -723,7 +730,8 @@ test("PJAN-166: a missing memlog.py on a real 6.12.4 install skips with a remedy
       assert.equal(finding.fixable, false);
       assert.ok(finding.summary.startsWith(`Setup script recovery unavailable: scripts/memlog.py is attested by the manifest as other bytes (sha256 ${shortOfInstalled}) than bmad-method@${BMAD_INSTALLER_VERSION}'s (${shortOfPinned})`), finding.summary);
       assert.match(finding.summary, /\(missing from _bmad\/scripts: memlog\.py\)/);
-      assert.match(finding.summary, REINSTALL("6.12.4"));
+      assert.match(finding.summary, REINSTALL(trackedVersion));
+      assert.match(finding.summary, OPTIONAL_MEMLOG, "memlog.py is not a script bmad.scaffold needs, and the remedy says so");
       assert.doesNotMatch(finding.summary, BMAD_VERSION_REMEDY, "bmad.version is a no-op for an install that is already current");
       assert.doesNotMatch(finding.summary, NETWORK_HINT, "the cause is the install's manifest, not the network");
       await assertMigrateDeclines(project, finding);
@@ -733,7 +741,7 @@ test("PJAN-166: a missing memlog.py on a real 6.12.4 install skips with a remedy
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
 
-test("PJAN-166: a real 6.12.4 install missing every script restores the four it can attest and declines memlog.py, with the reason and the remedy", async () => {
+test("PJAN-166: a real install at another version missing every script restores the four it can attest and declines memlog.py, with the reason and the remedy", async () => {
   const project = realInstall();
   try {
     const dir = join(project, "_bmad", "scripts");
@@ -744,7 +752,8 @@ test("PJAN-166: a real 6.12.4 install missing every script restores the four it 
     assert.equal(finding.fixable, true, "the four attested scripts are fixable whatever memlog.py is");
     assert.deepEqual(finding.details.slice(0, attested.length), attested.map((name) => `_bmad/scripts/${name}`));
     assert.match(finding.summary, /declined scripts\/memlog\.py is attested by the manifest as other bytes/);
-    assert.match(finding.summary, REINSTALL("6.12.4"));
+    assert.match(finding.summary, REINSTALL(trackedVersion));
+    assert.match(finding.summary, OPTIONAL_MEMLOG);
     assert.ok(finding.details.some((line) => line.startsWith("declined scripts/memlog.py is attested by the manifest as other bytes")), JSON.stringify(finding.details));
     const preview = await setup.migrate(ctx(project, true), finding);
     assert.equal(preview.status, "applied", JSON.stringify(preview));
@@ -755,7 +764,7 @@ test("PJAN-166: a real 6.12.4 install missing every script restores the four it 
     assert.equal(applied.status, "applied", `an unattested script must not block the attested ones: ${JSON.stringify(applied)}`);
     assert.deepEqual(applied.changedFiles, attested.map((name) => join(dir, name)));
     assert.match(applied.summary, /^Restored ignored BMAD installer scripts; declined scripts\/memlog\.py is attested by the manifest as other bytes/);
-    assert.match(applied.summary, REINSTALL("6.12.4"));
+    assert.match(applied.summary, REINSTALL(trackedVersion));
     for (const name of attested) assert.equal(hash(join(dir, name)), hash(join(source, name)), name);
     assert.equal(existsSync(join(dir, "memlog.py")), false, "the unattested script is never written");
     // What is left is a declined skip, not a failure, and a second migrate changes nothing.
@@ -769,11 +778,25 @@ test("PJAN-166: a real 6.12.4 install missing every script restores the four it 
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
 
-test("PJAN-166: an install whose manifest has no row for a missing script skips without a probe (perth and alpha shapes)", async () => {
+test("PJAN-166: an install whose manifest has no row for a missing script skips without a probe, and is told the remedy that works for its shape (perth and alpha)", async () => {
   // perth: rows for resolve_config/resolve_customization only, exactly those two present.
   // alpha (CommonProject, castagram, ...): no script rows and no scripts directory.
-  for (const attested of [["resolve_config.py", "resolve_customization.py"], []]) {
-    const project = fixture();
+  const perth = ["resolve_config.py", "resolve_customization.py"];
+  const shapes = [
+    // A fresh clone has no manifest.yaml: the version is unknown, so no raw installer command is printed at all.
+    ["perth, no manifest.yaml", perth, undefined, (summary) => { assert.match(summary, MANIFEST_LESS_REMEDY); assert.doesNotMatch(summary, NO_RAW_INSTALLER); }],
+    ["alpha, no manifest.yaml", [], undefined, (summary) => { assert.match(summary, MANIFEST_LESS_REMEDY); assert.doesNotMatch(summary, NO_RAW_INSTALLER); }],
+    // An install that predates the first release shipping _bmad/scripts cannot get them from its own installer.
+    ["alpha, manifest.yaml tracked at 6.0.0-alpha.23", [], "6.0.0-alpha.23", (summary) => {
+      assert.match(summary, new RegExp(`this install \\(bmad-method@6\\.0\\.0-alpha\\.23\\) predates the first release that ships _bmad/scripts \\(${escapeRe(BMAD_FIRST_SCRIPTS_RELEASE)}\\), so re-running its own installer cannot create them: run \`pj migrate bmad\\.version\` to upgrade it`));
+      assert.doesNotMatch(summary, NO_RAW_INSTALLER);
+    }],
+    // One release before the boundary is still before it; the boundary itself and later are not.
+    ["perth, manifest.yaml at the release before the boundary", perth, "6.3.1-next.12", (summary) => assert.match(summary, BMAD_VERSION_REMEDY)],
+    ["perth, manifest.yaml at the boundary release", perth, BMAD_FIRST_SCRIPTS_RELEASE, (summary) => { assert.match(summary, REINSTALL(BMAD_FIRST_SCRIPTS_RELEASE)); assert.doesNotMatch(summary, BMAD_VERSION_REMEDY); }],
+  ];
+  for (const [label, attested, installedVersion, remedy] of shapes) {
+    const project = fixture({ installedVersion });
     try {
       const dir = join(project, "_bmad", "scripts");
       writeFileSync(manifestOf(project), "type,name,module,path,hash\n" + bmbMemlogRow + "\n" + attested.map(rowFor).map((row) => row + "\n").join(""));
@@ -781,22 +804,55 @@ test("PJAN-166: an install whose manifest has no row for a missing script skips 
       const unattested = scripts.filter((name) => !attested.includes(name));
       await withNpxShim(async ({ calls }) => {
         const finding = await setup.audit(ctx(project, false));
-        assert.equal(finding.status, "skip", JSON.stringify(finding));
+        assert.equal(finding.status, "skip", `${label}: ${JSON.stringify(finding)}`);
         assert.equal(finding.fixable, false);
-        for (const name of unattested) assert.ok(finding.summary.includes(`scripts/${name} has no row in _bmad/_config/files-manifest.csv, so it cannot be attested`), `${name} in: ${finding.summary}`);
+        for (const name of unattested) assert.ok(finding.summary.includes(`scripts/${name} has no row in _bmad/_config/files-manifest.csv, so it cannot be attested`), `${label}: ${name} in: ${finding.summary}`);
         assert.match(finding.summary, new RegExp(`missing from _bmad/scripts: ${escapeRe(unattested.join(", "))}\\)`));
-        assert.match(finding.summary, REINSTALL("<the version this install was made with>"), "no manifest.yaml means no version to name; the pin is not guessed");
-        assert.doesNotMatch(finding.summary, BMAD_VERSION_REMEDY);
+        remedy(finding.summary);
+        assert.doesNotMatch(finding.summary, /not needed by bmad\.scaffold/, `${label}: config_utils.py is one it needs`);
+        assert.doesNotMatch(finding.summary, NETWORK_HINT, label);
         await assertMigrateDeclines(project, finding);
-        assert.equal(calls(), "", "an unattestable restore must not wait on npm");
+        assert.equal(calls(), "", `${label}: an unattestable restore must not wait on npm`);
       });
       assert.deepEqual(existsSync(dir) ? readdirSync(dir).sort() : [], attested.slice().sort());
     } finally { rmSync(project, { recursive: true, force: true }); }
   }
 });
 
+test("PJAN-166: a declined script that bmad.scaffold needs is never called optional, while the other scripts are still restored", async () => {
+  const project = fixture({ installedVersion: trackedVersion });
+  try {
+    const manifest = manifestOf(project);
+    writeFileSync(manifest, readFileSync(manifest, "utf8").replace(hash(join(source, "config_utils.py")), "0".repeat(64)));
+    const finding = await setup.audit(ctx(project, false));
+    assert.equal(finding.status, "fail", JSON.stringify(finding));
+    assert.equal(finding.fixable, true);
+    assert.match(finding.summary, /declined scripts\/config_utils\.py is attested by the manifest as other bytes/);
+    assert.match(finding.summary, REINSTALL(trackedVersion));
+    assert.doesNotMatch(finding.summary, /not needed by bmad\.scaffold/, "config_utils.py is one of the two scripts bmad.scaffold requires");
+    assert.deepEqual(finding.details.slice(0, 4), scripts.filter((name) => name !== "config_utils.py").map((name) => `_bmad/scripts/${name}`));
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
+test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary)", () => {
+  const shipped = (version) => {
+    const resolved = resolveBmadInstallerPackage(version, { timeoutMs: 120_000 });
+    assert.equal(resolved.version, version, `real bmad-method@${version} unavailable: ${resolved.reason}`);
+    const dir = join(resolved.root, "src", "scripts");
+    return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".py")) : [];
+  };
+  // The release published right before the constant, read from the registry, so a constant moved later cannot pass.
+  const listed = realSpawnSync("npm", ["view", "bmad-method", "versions", "--json"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
+  assert.equal(listed.status, 0, `npm view failed: ${listed.stderr}`);
+  const versions = JSON.parse(listed.stdout);
+  const at = versions.indexOf(BMAD_FIRST_SCRIPTS_RELEASE);
+  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release`);
+  assert.deepEqual(shipped(versions[at - 1]), [], `${versions[at - 1]}, the release before the boundary, ships no _bmad/scripts source`);
+  assert.notDeepEqual(shipped(BMAD_FIRST_SCRIPTS_RELEASE), [], "the boundary release ships one");
+});
+
 test("PJAN-166: a manifest that attests other bytes than the pinned package skips with the remedy, never fails", async () => {
-  const project = fixture({ installedVersion: "6.12.4" });
+  const project = fixture({ installedVersion: trackedVersion });
   try {
     const dir = join(project, "_bmad", "scripts");
     mkdirSync(dir);
@@ -807,7 +863,7 @@ test("PJAN-166: a manifest that attests other bytes than the pinned package skip
       assert.equal(finding.status, "skip", JSON.stringify(finding));
       assert.equal(finding.fixable, false);
       assert.match(finding.summary, new RegExp(`scripts/${escapeRe(scripts[1])} is attested by the manifest as other bytes \\(sha256 000000000000\\) than bmad-method@${escapeRe(BMAD_INSTALLER_VERSION)}'s`));
-      assert.match(finding.summary, REINSTALL("6.12.4"));
+      assert.match(finding.summary, REINSTALL(trackedVersion));
       assert.doesNotMatch(finding.summary, NETWORK_HINT, "the cause is the manifest, not the network");
       assert.doesNotMatch(finding.summary, BMAD_VERSION_REMEDY);
       await assertMigrateDeclines(project, finding);
@@ -818,7 +874,7 @@ test("PJAN-166: a manifest that attests other bytes than the pinned package skip
 });
 
 test("PJAN-166: a malformed manifest is a visible failure decided from the disk, never a decline or a write", async () => {
-  for (const [label, text] of [["garbage", "this is not a manifest\n"], ["wrong header", "a,b,c\n1,2,3\n"], ["unterminated quote", 'type,name,module,path,hash\n"py,"x\n']]) {
+  for (const [label, text] of [["garbage", "this is not a manifest\n"], ["wrong header", "a,b,c\n1,2,3\n"], ["wrong header, five columns", "kind,label,module,file,sum\n" + bmbMemlogRow + "\n"], ["unterminated quote", 'type,name,module,path,hash\n"py,"x\n']]) {
     const project = realInstall();
     try {
       const dir = join(project, "_bmad", "scripts");
@@ -849,7 +905,7 @@ test("PJAN-166: an unreachable pinned package is a skip naming the network remed
       const finding = await setup.audit(ctx(project, false));
       assert.equal(finding.status, "skip", JSON.stringify(finding));
       assert.equal(finding.fixable, false);
-      assert.match(finding.summary, /Setup script recovery unavailable: could not resolve bmad-method@6\.12\.1/);
+      assert.match(finding.summary, new RegExp(`Setup script recovery unavailable: could not resolve bmad-method@${escapeRe(BMAD_INSTALLER_VERSION)}`));
       assert.match(finding.summary, NETWORK_HINT);
       assert.doesNotMatch(finding.summary, BMAD_VERSION_REMEDY);
       for (const name of scripts) assert.ok(finding.summary.includes(name), `${name} named in: ${finding.summary}`);
@@ -905,7 +961,7 @@ test("PJAN-166: with npx hung, the audit skips at its cap naming the network rem
       const finding = await setup.audit(ctx(project, false));
       assert.equal(finding.status, "skip", JSON.stringify(finding));
       assert.equal(finding.fixable, false);
-      assert.match(finding.summary, /could not resolve bmad-method@6\.12\.1: timed out after 10s/);
+      assert.match(finding.summary, new RegExp(`could not resolve bmad-method@${escapeRe(BMAD_INSTALLER_VERSION)}: timed out after 10s`));
       assert.match(finding.summary, NETWORK_HINT);
       for (const name of scripts) assert.ok(finding.summary.includes(name), `${name} named in: ${finding.summary}`);
       await assertMigrateDeclines(project, finding);
@@ -913,7 +969,7 @@ test("PJAN-166: with npx hung, the audit skips at its cap naming the network rem
       const [audit, ...migrates] = npxCalls();
       assert.equal(audit.options.timeout, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS);
       assert.deepEqual(migrates.map((call) => call.options.timeout), [BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS]);
-      assert.match(calls(), /-y -p bmad-method@6\.12\.1/);
+      assert.match(calls(), new RegExp(`-y -p bmad-method@${escapeRe(BMAD_INSTALLER_VERSION)}`));
     }, { clampMs: 400 }), { script: "exec sleep 30" });
     assert.equal(existsSync(join(project, "_bmad", "scripts")), false);
   } finally { rmSync(project, { recursive: true, force: true }); }
@@ -938,32 +994,17 @@ test("PJAN-166: a migrate handed the audit's give-up finding retries with its ow
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
 
-test("PJAN-166: with the registry black-holed the rule skips inside its cap instead of riding out npm's retries (real npx)", async () => {
-  const project = fixture();
-  const cache = mkdtempSync(join(tmpdir(), "pjan-166-npm-cache-"));
-  try {
-    await withEnv({ npm_config_cache: cache, npm_config_registry: "http://10.255.255.1:81/" }, async () => {
-      const started = Date.now();
-      const finding = await setup.audit(ctx(project, false));
-      const elapsed = Date.now() - started;
-      assert.equal(finding.status, "skip", JSON.stringify(finding));
-      assert.equal(finding.fixable, false);
-      assert.match(finding.summary, /could not resolve bmad-method@6\.12\.1/);
-      assert.match(finding.summary, NETWORK_HINT);
-      assert.ok(elapsed < BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS + 4000, `took ${elapsed}ms against a ${BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS}ms cap`);
-    });
-  } finally {
-    rmSync(cache, { recursive: true, force: true });
-    rmSync(project, { recursive: true, force: true });
-  }
-});
-
 test("PJAN-166: each package-side decline names its own remedy, and only a resolver failure suggests waiting for npm", async () => {
   const causes = [
     ["a patched installer (fingerprint mismatch)", (root) => appendFileSync(join(root, "tools", "installer", "bmad-cli.js"), "\n// patched, so its fingerprint is not a verified one\n"), /Unverified BMAD installer fingerprint/, /clear the npx cache \(rm -rf "\$\(npm config get cache\)\/_npx"\) and re-run/],
     ["a corrupted npx copy (the scripts directory is gone)", (root) => rmSync(join(root, "src", "scripts"), { recursive: true }), /Pinned installer scripts are unreadable: .*ENOENT/, /corrupted npx cache\): clear it/],
     ["a corrupted npx copy (a script is not a file)", (root) => { rmSync(join(root, "src", "scripts", "memlog.py")); mkdirSync(join(root, "src", "scripts", "memlog.py")); }, /Installer script memlog\.py is unreadable in the pinned package/, /corrupted npx cache\): clear it/],
     ["an installer whose script inventory changed", (root) => writeFileSync(join(root, "src", "scripts", "surprise.py"), "# a sixth script\n"), /Pinned installer script inventory changed/, /clear the npx cache/],
+    // The read errors of a corrupted copy that precede the scripts directory: each is a package decline, never the network's and never a project fail.
+    ["a corrupted npx copy (package.json is gone)", (root) => rmSync(join(root, "package.json")), /whose package\.json is unreadable: .*ENOENT/, /corrupted npx cache\): clear it/],
+    ["a corrupted npx copy (package.json is not JSON)", (root) => writeFileSync(join(root, "package.json"), "{ truncated"), /whose package\.json is unreadable: /, /corrupted npx cache\): clear it/],
+    ["a corrupted npx copy (the installer cannot be fingerprinted)", (root) => { rmSync(join(root, "tools", "installer"), { recursive: true }); writeFileSync(join(root, "tools", "installer"), "not a directory"); }, /Could not fingerprint pinned BMAD installer: .*ENOTDIR/, /corrupted npx cache\): clear it/],
+    ["a copy that is another package", (root) => writeFileSync(join(root, "package.json"), JSON.stringify({ name: "not-bmad-method", version: "1.0.0" })), /is not inside a bmad-method package/, /clear the npx cache/],
   ];
   for (const [label, mutate, reason, remedy] of causes) {
     const project = fixture();
@@ -1032,8 +1073,8 @@ test("PJAN-166: a pre-manifest install (no files-manifest.csv) skips with the in
     assert.equal(finding.status, "skip", JSON.stringify(finding));
     assert.equal(finding.fixable, false);
     assert.match(finding.summary, /files-manifest\.csv is absent/);
-    assert.match(finding.summary, REINSTALL("<the version this install was made with>"));
-    assert.doesNotMatch(finding.summary, BMAD_VERSION_REMEDY);
+    assert.match(finding.summary, MANIFEST_LESS_REMEDY);
+    assert.doesNotMatch(finding.summary, NO_RAW_INSTALLER);
     assert.doesNotMatch(finding.summary, NETWORK_HINT);
     await assertMigrateDeclines(project, finding);
     assert.equal(existsSync(join(project, "_bmad", "scripts")), false);
@@ -1047,8 +1088,14 @@ test("PJAN-166: a pre-manifest install (no files-manifest.csv) skips with the in
 });
 
 test("PJAN-166: scripts and manifest both missing skips, says the scripts are missing, and names the install remedy", async () => {
-  for (const [label, project, version] of [["pinned shape", fixture(), "<the version this install was made with>"], ["real install", realInstall(), "6.12.4"]]) {
+  // Each project is made inside its own try, so a failure while building one leaks no other.
+  for (const [label, make, remedy] of [
+    ["pinned shape (no manifest.yaml)", fixture, (summary) => { assert.match(summary, MANIFEST_LESS_REMEDY); assert.doesNotMatch(summary, NO_RAW_INSTALLER); }],
+    ["real install", realInstall, (summary) => assert.match(summary, REINSTALL(trackedVersion))],
+  ]) {
+    let project;
     try {
+      project = make();
       rmSync(join(project, "_bmad", "scripts"), { recursive: true, force: true });
       rmSync(manifestOf(project));
       await withNpxShim(async ({ calls }) => {
@@ -1057,21 +1104,22 @@ test("PJAN-166: scripts and manifest both missing skips, says the scripts are mi
         assert.equal(finding.fixable, false);
         assert.ok(finding.summary.includes(`missing from _bmad/scripts: ${scripts.join(", ")}`), finding.summary);
         assert.match(finding.summary, /files-manifest\.csv is absent/);
-        assert.match(finding.summary, REINSTALL(version));
+        remedy(finding.summary);
         assert.doesNotMatch(finding.summary, BMAD_VERSION_REMEDY);
         await assertMigrateDeclines(project, finding);
         assert.equal(calls(), "");
       });
-    } finally { rmSync(project, { recursive: true, force: true }); }
+    } finally { if (project) rmSync(project, { recursive: true, force: true }); }
   }
 });
 
-test("PJAN-166: a g33-enabled project is pointed at bmad.scaffold, and told the g33 prerequisite while its adapter is unavailable", async () => {
+test("PJAN-166: a g33-enabled project is pointed at bmad.scaffold, never at a bare installer run, and told the g33 prerequisite while its adapter is unavailable", async () => {
+  const bareInstaller = /npx -y bmad-method@|--action quick-update/;
   const cases = [
-    ["g33 on, no adapter configured", { enabled: true }, false, [/run `pj migrate bmad\.scaffold` \(it re-runs the BMAD installer and keeps the g33 companion, but it stays blocked while the g33 adapter is unavailable: no bmad\.companion\.adapter is configured; run `pj skills enable skill g33-33god-integration` first\), or re-run the installer at this install's own version/], []],
-    ["g33 on, adapter source absent (a fresh clone)", { enabled: true, adapter: { module: "./adapter.mjs", exportName: "g33Adapter" } }, false, [/stays blocked while the g33 adapter is unavailable: its adapter source \.\/adapter\.mjs is absent; run `pj skills enable skill g33-33god-integration` first/], []],
-    ["g33 on, adapter source present", { enabled: true, adapter: { module: "./adapter.mjs", exportName: "g33Adapter" } }, true, [/run `pj migrate bmad\.scaffold` \(it re-runs the BMAD installer and keeps the g33 companion\), or re-run the installer/], [/stays blocked/, /pj skills enable/]],
-    ["g33 explicitly off", { enabled: false }, false, [REINSTALL("6.12.4")], [/pj migrate bmad\.scaffold/, /g33/]],
+    ["g33 on, no adapter configured", { enabled: true }, false, [/run `pj migrate bmad\.scaffold` \(it re-runs the BMAD installer and keeps the g33 companion, but it stays blocked while the g33 adapter is unavailable: no bmad\.companion\.adapter is configured; run `pj skills enable skill g33-33god-integration` first\); a bare installer run would bypass the g33 update boundary/], [bareInstaller]],
+    ["g33 on, adapter source absent (a fresh clone)", { enabled: true, adapter: { module: "./adapter.mjs", exportName: "g33Adapter" } }, false, [/stays blocked while the g33 adapter is unavailable: its adapter source \.\/adapter\.mjs is absent; run `pj skills enable skill g33-33god-integration` first/], [bareInstaller]],
+    ["g33 on, adapter source present", { enabled: true, adapter: { module: "./adapter.mjs", exportName: "g33Adapter" } }, true, [/run `pj migrate bmad\.scaffold` \(it re-runs the BMAD installer and keeps the g33 companion\); a bare installer run would bypass the g33 update boundary/], [/stays blocked/, /pj skills enable/, bareInstaller]],
+    ["g33 explicitly off", { enabled: false }, false, [REINSTALL(trackedVersion)], [/pj migrate bmad\.scaffold/, /g33/]],
   ];
   for (const [label, companion, adapterPresent, wanted, unwanted] of cases) {
     const project = realInstall();
@@ -1084,7 +1132,7 @@ test("PJAN-166: a g33-enabled project is pointed at bmad.scaffold, and told the 
         assert.equal(finding.status, "skip", `${label}: ${JSON.stringify(finding)}`);
         for (const pattern of wanted) assert.match(finding.summary, pattern, label);
         for (const pattern of unwanted) assert.doesNotMatch(finding.summary, pattern, label);
-        assert.match(finding.summary, REINSTALL("6.12.4"), `${label}: the installer route is always named`);
+        assert.match(finding.summary, OPTIONAL_MEMLOG, `${label}: the declined script is optional, and the remedy says so`);
         assert.equal(calls(), "", label);
       });
     } finally { rmSync(project, { recursive: true, force: true }); }
@@ -1121,6 +1169,30 @@ test("PJAN-166: a dangling or live symlinked _config is a visible refusal naming
       assert.equal(lstatSync(join(bmad, "_config")).isSymbolicLink(), true);
     } finally { rmSync(project, { recursive: true, force: true }); }
   }
+});
+
+test("PJAN-166: scripts that appear while the package is being resolved (a concurrent installer) read as present, never a decline or a double write", async () => {
+  const project = fixture();
+  try {
+    const dir = join(project, "_bmad", "scripts");
+    // npx stands in for the concurrent installer: it restores every script, then reports the real package's entry.
+    const copies = scripts.map((name) => `cp '${join(source, name)}' '${dir}/${name}'`).join("\n");
+    const installerRace = { script: `mkdir -p '${dir}'\n${copies}\nprintf '%s' '${pkg.entry}'` };
+    await withNpxShim(async ({ calls }) => {
+      const finding = await setup.audit(ctx(project, false));
+      assert.match(calls(), /-y -p bmad-method@/, "the package was resolved, so the disk had been judged restorable first");
+      assert.equal(finding.status, "pass", JSON.stringify(finding));
+      assert.equal(finding.fixable, false);
+      assert.deepEqual(readdirSync(dir).sort(), scripts);
+    }, installerRace);
+    // The same race on a migrate: nothing is left to write, so it is a noop, not a blocked or declined result.
+    rmSync(dir, { recursive: true });
+    await withNpxShim(async () => {
+      const result = await setup.migrate(ctx(project, false), { id: "bmad.setup-scripts", title: "x", status: "fail", summary: "", details: [], fixable: true });
+      assert.equal(result.status, "noop", JSON.stringify(result));
+      assert.deepEqual(result.changedFiles, []);
+    }, installerRace);
+  } finally { rmSync(project, { recursive: true, force: true }); }
 });
 
 test("PJAN-166: a symlink, directory or symlinked directory where a script belongs stays a visible refusal", async () => {
