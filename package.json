@@ -26,7 +26,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/project-registry-service.ts src/notebook/journal-service-main.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && esbuild src/crank/tui.tsx --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && node scripts/export-project-notebook-skill.mjs",
+    "build": "esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/prompt-refresh.ts src/project-registry-service.ts src/notebook/journal-service-main.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && esbuild src/crank/tui.tsx --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && node scripts/export-project-notebook-skill.mjs",
     "check:audit:prod": "npm audit --omit=dev",
     "check:lock": "node scripts/check-package-lock-parity.mjs",
     "check:submodules": "node scripts/check-submodule-contract.mjs",

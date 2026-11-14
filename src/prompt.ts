@@ -28,6 +28,16 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { computeRepoActivity } from "./describe/activity";
 import { findProjectRoot, resolveBoardUrl } from "./project/boardUrl";
+import {
+  formatCandybars,
+  formatCrank,
+  freshSegments,
+  maybeRefresh,
+  pipelineCachePath,
+  readPipelineCache,
+  type CandybarCounts,
+  type CrankState,
+} from "./prompt-pipeline";
 
 export interface PromptFacts {
   root: string;
@@ -35,6 +45,10 @@ export interface PromptFacts {
   identifier?: string;
   age?: string;
   active: boolean;
+  /** 33GOD pipeline (cached, see ./prompt-pipeline): this project's / all registered candybars. */
+  candybars?: CandybarCounts | null;
+  /** 33GOD pipeline (cached): crank mode for this pane. */
+  crank?: CrankState | null;
 }
 
 /**
@@ -74,7 +88,7 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
   };
 }
 
-/** `pjangler (PJAN) · 3m` — deliberately terse; a prompt is not a report. */
+/** `pjangler (PJAN) · 3m · 🍫 3/124 · ⚡ crank 5m` — deliberately terse; a prompt is not a report. */
 export function formatPromptLine(facts: PromptFacts): string {
   const parts = [facts.slug];
   // The board prefix is context, not a competing identity. PJAN-80 collapsed
@@ -86,15 +100,27 @@ export function formatPromptLine(facts: PromptFacts): string {
   // this line as `pjangler (PJAN) · 3m` — so the prompt became the one surface
   // that disagreed, while still parsing the identifier it no longer printed.
   if (facts.identifier) parts.push(`(${facts.identifier})`);
-  const head = parts.join(" ");
-  return facts.age ? `${head} · ${facts.age}` : head;
+  const segments = [parts.join(" ")];
+  if (facts.age) segments.push(facts.age);
+  // The pipeline segments sit after the age: identity first, then the 33GOD machinery around it.
+  // Each is omitted (never guessed) when its source did not answer or the cache has expired.
+  if (facts.candybars) segments.push(formatCandybars(facts.candybars));
+  if (facts.crank) segments.push(formatCrank(facts.crank));
+  return segments.join(" · ");
 }
 
 /** Returns the line to print, or undefined when there is nothing to say. */
-export function promptLine(cwd: string, now?: Date): string | undefined {
+export function promptLine(cwd: string, now?: Date, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const root = findProjectRoot(cwd);
   if (!root) return undefined;
-  return formatPromptLine(readPromptFacts(root, now));
+  const facts = readPromptFacts(root, now);
+  const nowMs = (now ?? new Date()).getTime();
+  const cachePath = pipelineCachePath(root, env);
+  const cache = readPipelineCache(cachePath, root);
+  Object.assign(facts, freshSegments(cache, nowMs));
+  // Stale-while-revalidate: print what the cache says now, refresh behind the prompt.
+  maybeRefresh(root, cachePath, cache, nowMs, env);
+  return formatPromptLine(facts);
 }
 
 function main(): void {

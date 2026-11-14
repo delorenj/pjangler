@@ -691,7 +691,7 @@ export function claimedRoots(store: CrankStore, keys: string[] = storedTabKeys(s
   return [...new Set(Object.values(storedTabRoots(store, keys)))].sort();
 }
 
-const IDENTITY_BUDGET_MS = 20_000;
+export const IDENTITY_BUDGET_MS = 20_000;
 
 // ---------------------------------------------------------------------------
 // Project → tab resolution

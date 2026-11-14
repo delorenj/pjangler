@@ -168,8 +168,28 @@ state reflects your last fetch — nothing here touches the network.
 pjangler project, and nothing at all when it is not:
 
 ```
-pjangler (PJAN) · 3m
+pjangler (PJAN) · 3m · 🍫 3/124 · ⚡ crank 5m
 ```
+
+After the slug, board prefix and age come two 33GOD pipeline segments:
+
+- `🍫 3/124` — candybars registered (non-archived) for this repo / in the whole
+  Candybar registry (`GET $CANDYBAR_API_URL/candybars`, default
+  `http://127.0.0.1:8700`; the project is the `project:<repo>` tag, where
+  `<repo>` is the main checkout's basename, exactly as `candybar ls` resolves it).
+- `⚡ crank 5m` / `◌ crank off` — whether the crank beat may type into **this
+  pane**, decided by the engine's rule (`zcrank.py crank_enabled`): a
+  `zcrank:pane` override wins, else every key naming the live tab must be ON.
+  Outside the `Workspace` zellij session it shows the project's own switch, as
+  `pj crank` resolves it. The interval is the one the beat visits the tab at.
+
+Neither is computed on the prompt's critical path. They come from a small cache
+(`$PJ_PROMPT_CACHE_DIR`, default `~/.cache/pjangler/prompt/`, one file per
+project root and zellij pane) that a detached `dist/prompt-refresh.js` rewrites
+when it is older than 60s, so the first prompt in a new place shows none and the
+next one does. A segment whose source did not answer is omitted rather than
+guessed, and a cache older than 15 minutes is not shown at all.
+`PJ_PROMPT_NO_REFRESH=1` stops the background refresh.
 
 It is a separate binary from the main CLI on purpose — the CLI loads the whole
 parity rule set and takes ~52ms to boot, while this runs in ~30ms, well inside

@@ -43,8 +43,8 @@ const loadCrankScreens = () => loadScreen<CrankScreens>("./crank/tui.js", import
 
 const xmark = `${red(glyph.fail)}`;
 
-/** Everything needed to resolve a project onto a tab, or null off-project. */
-function currentProjectNames(): { slug: string; names: ProjectNames; identity?: string } {
+/** Everything needed to resolve a project onto a tab, or null off-project. Shared with dist/prompt-refresh.js. */
+export function currentProjectNames(): { slug: string; names: ProjectNames; identity?: string } {
   const handle = resolveProject(process.cwd());
   let record: { name?: string; agents?: Record<string, { role?: string }> } | undefined;
   try {
@@ -65,7 +65,7 @@ function currentProjectNames(): { slug: string; names: ProjectNames; identity?: 
 }
 
 /** Resolve a project onto a tab against live tabs (with pane owners) and stored keys + roots. */
-function contextFor(project: { names: ProjectNames; identity?: string }, store: CrankStore): CrankContext {
+export function contextFor(project: { names: ProjectNames; identity?: string }, store: CrankStore): CrankContext {
   const keys = storedTabKeys(store);
   const roots = storedTabRoots(store, keys);
   return buildCrankContext(project.names, liveTabsWithOwners({ claimed: Object.values(roots) }), keys, { identity: project.identity, roots });
