@@ -1,5 +1,6 @@
 /** Canonical manifests own execution; derived registry fields never activate it. */
-export const EXECUTION_LANES = ['Backlog', 'Needs Re-evaluation', 'Todo', 'In Progress', 'E2E Testing & QA', 'Ready for Documentation', 'Done', 'Needs Attention', 'Cancelled'];
+/** Krebs lifecycle v2: the five stock lanes every board binds (review and holds are labels, not lanes). */
+export const EXECUTION_LANES = ['Backlog', 'Todo', 'In Progress', 'Done', 'Cancelled'];
 export function executionReadiness(manifest: Record<string, any>): string[] {
   const execution = manifest.execution;
   if (!execution || execution.mode === 'legacy') return [];
@@ -9,7 +10,7 @@ export function executionReadiness(manifest: Record<string, any>): string[] {
   if (manifest.ticket_provider?.type !== 'plane' || !manifest.ticket_provider.workspace || !manifest.ticket_provider.board_id) errors.push('exact Plane binding missing');
   if (execution.policy_version !== 2 || !execution.skill_version) errors.push('execution policy or skill pin missing');
   for (const lane of EXECUTION_LANES) if (!execution.states?.[lane]) errors.push(`lane binding missing: ${lane}`);
-  for (const pin of ['pilot_bundle_sha256','momo_bundle_sha256']) if (!/^[a-f0-9]{64}$/.test(execution[pin] ?? '')) errors.push(`${pin} missing`);
+  for (const pin of ['pilot_bundle_sha256']) if (!/^[a-f0-9]{64}$/.test(execution[pin] ?? '')) errors.push(`${pin} missing`);
   if (!execution.working_label) errors.push('working label binding missing');
   if (!execution.actors?.[execution.pm_actor] || execution.actors[execution.pm_actor].role !== 'pm') errors.push('PM actor enrollment missing');
   if (!execution.actors?.[execution.controller_actor] || execution.actors[execution.controller_actor].role !== 'operator') errors.push('controller repair actor enrollment missing');
