@@ -22,8 +22,9 @@
 // A fact that cannot be read is written as null and the prompt hides that
 // segment. It is never guessed: "crank off" when Redis is down would be a lie.
 
-import { renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { contextFor, currentProjectNames } from "./crank/cli";
 import {
   IDENTITY_BUDGET_MS,
@@ -49,16 +50,74 @@ import { PIPELINE_CACHE_VERSION, type CandybarCounts, type CrankState, type Pipe
 const CANDYBAR_DEFAULT_API_URL = "http://127.0.0.1:8700";
 const CANDYBAR_TIMEOUT_MS = 3_000;
 const PROJECT_TAG_PREFIX = "project:";
+const CANDYBARS_DIR = ".candybars";
+const CANDYBAR_PROJECT_FILE = ".candybar.toml";
+/** Cache files nobody has refreshed for this long belong to dead panes/sessions and are swept. */
+const CACHE_SWEEP_AFTER_MS = 24 * 3600_000;
 
-/** Candybar's project name for `root`: the basename of the repo's main worktree, else the dir's own. */
-export function candybarProjectName(root: string): string {
-  return basename(projectIdentity(root) ?? root);
+function git(cwd: string, ...args: string[]): string | undefined {
+  try {
+    const out = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 10_000 });
+    const value = (out.stdout ?? "").trim();
+    return out.status === 0 && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Candybar's project name for `dir` — a port of candybar/src/candybar/project.py find_project +
+ * _git_project_name, so the `project:<name>` tag we count is the one candybar writes. Keep in sync.
+ *   - in git: the toplevel's basename, except a linked worktree takes its main checkout's name
+ *     (`--git-common-dir` is `<main>/.git`), a bare repo's worktree takes `<bare>` minus `.git`,
+ *     and a submodule (`.git/modules/<name>`) keeps its toplevel basename;
+ *   - outside git: the nearest ancestor holding `.candybars/` or `.candybar.toml`, else none.
+ */
+export function candybarProjectName(dir: string): string | undefined {
+  let here: string;
+  try {
+    here = realpathSync(dir);
+  } catch {
+    return undefined;
+  }
+  const top = git(here, "rev-parse", "--show-toplevel");
+  if (top) {
+    const topName = basename(top);
+    const common = git(here, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    if (!common) return topName;
+    let name: string;
+    if (basename(common) === ".git") name = basename(dirname(common));
+    else if (basename(dirname(common)) === "modules") return topName;
+    else name = basename(common).replace(/\.git$/, "");
+    return name && name !== topName ? name : topName;
+  }
+  for (let candidate = here; ; candidate = dirname(candidate)) {
+    if (isDir(join(candidate, CANDYBARS_DIR)) || isFile(join(candidate, CANDYBAR_PROJECT_FILE))) return basename(candidate);
+    if (dirname(candidate) === candidate) return undefined;
+  }
+}
+
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** Count registered (non-archived) rows overall and for one project tag. Pure. */
-export function countCandybars(rows: unknown, projectName: string): CandybarCounts | null {
+export function countCandybars(rows: unknown, projectName: string | undefined): CandybarCounts | null {
   if (!Array.isArray(rows)) return null;
-  const tag = `${PROJECT_TAG_PREFIX}${projectName}`;
+  // No candybar project here => nothing can be tagged for it; the registry total still counts.
+  const tag = projectName ? `${PROJECT_TAG_PREFIX}${projectName}` : undefined;
   let total = 0;
   let project = 0;
   for (const row of rows) {
@@ -66,7 +125,7 @@ export function countCandybars(rows: unknown, projectName: string): CandybarCoun
     const r = row as { archived?: unknown; tags?: unknown };
     if (r.archived === true) continue;
     total++;
-    if (Array.isArray(r.tags) && r.tags.includes(tag)) project++;
+    if (tag && Array.isArray(r.tags) && r.tags.includes(tag)) project++;
   }
   return { project, total };
 }
@@ -135,6 +194,10 @@ export function readCrank(env: NodeJS.ProcessEnv = process.env, nowMs: number = 
         const snapshot = snapshotCrank(store, tabDisplay(me.tabName), keys, nowMs, 0, scope);
         return { enabled: verdict.enabled, interval: snapshot.interval, scope: verdict.decidedBy };
       }
+      // We ARE a Workspace pane but could not see ourselves (list-panes failed, timed out, or has not
+      // caught up): no answer, not the project's answer. The engine decides by tab, so a project
+      // verdict here can be the opposite of what the beat will do.
+      return null;
     }
 
     // Outside the crank session: the project's own switch, resolved exactly as `pj crank` does.
@@ -148,9 +211,44 @@ export function readCrank(env: NodeJS.ProcessEnv = process.env, nowMs: number = 
 }
 
 export function writeCacheAtomically(cachePath: string, cache: PipelineCache): void {
+  mkdirSync(dirname(cachePath), { recursive: true });
   const tmp = `${cachePath}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(cache));
-  renameSync(tmp, cachePath);
+  try {
+    writeFileSync(tmp, JSON.stringify(cache));
+    renameSync(tmp, cachePath);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // never written
+    }
+    throw error;
+  }
+}
+
+/** Delete cache/lock/tmp files in `dir` untouched for CACHE_SWEEP_AFTER_MS (dead panes, old sessions). */
+export function sweepCacheDir(dir: string, nowMs: number = Date.now(), keep?: string): number {
+  let removed = 0;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!/^[0-9a-f]{16}\.json(\.lock|\.\d+\.tmp)?$/.test(name)) continue;
+    const path = join(dir, name);
+    if (path === keep) continue;
+    try {
+      if (nowMs - statSync(path).mtimeMs > CACHE_SWEEP_AFTER_MS) {
+        unlinkSync(path);
+        removed++;
+      }
+    } catch {
+      // raced with another sweeper
+    }
+  }
+  return removed;
 }
 
 async function main(): Promise<void> {
@@ -161,6 +259,7 @@ async function main(): Promise<void> {
     const candybars = await readCandybars(root);
     const crank = readCrank();
     writeCacheAtomically(cachePath, { v: PIPELINE_CACHE_VERSION, writtenAtMs: Date.now(), root, candybars, crank });
+    sweepCacheDir(dirname(cachePath), Date.now(), cachePath);
   } catch {
     // A refresher that fails leaves the old cache; the prompt ages it out.
   } finally {

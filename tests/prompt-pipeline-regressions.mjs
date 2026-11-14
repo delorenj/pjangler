@@ -10,10 +10,11 @@ import "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
+import { startThrowawayRedis } from "./pjan-182-crank-regressions-helpers.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = mkdtempSync(join(tmpdir(), "prompt-pipeline-"));
@@ -25,7 +26,7 @@ writeFileSync(
   [
     `export * from ${JSON.stringify(join(root, "src/prompt-pipeline.ts"))};`,
     `export { formatPromptLine } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
-    `export { countCandybars, engineCrankFor, readCandybars } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
+    `export { candybarProjectName, countCandybars, engineCrankFor, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
   ].join("\n"),
 );
 const kitOut = join(workspace, "kit.mjs");
@@ -43,7 +44,7 @@ const {
   PIPELINE_CACHE_VERSION, PIPELINE_REFRESH_AFTER_MS, PIPELINE_EXPIRE_AFTER_MS, PIPELINE_LOCK_STALE_MS,
   pipelineCacheDir, pipelineCachePath, readPipelineCache, freshSegments, needsRefresh,
   formatCandybars, formatCrank, takeRefreshLock, maybeRefresh, formatPromptLine,
-  countCandybars, engineCrankFor, readCandybars,
+  countCandybars, engineCrankFor, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically, candybarProjectName,
 } = kit;
 
 let passed = 0;
@@ -192,6 +193,9 @@ await test("reads $CANDYBAR_API_URL/candybars; an error or a dead API is null, n
   const url = `http://127.0.0.1:${server.address().port}/`;
   try {
     mkdirSync(projectRoot, { recursive: true });
+    // Outside git a dir is a candybar project only with .candybars/ or .candybar.toml (find_project).
+    assert.deepEqual(await readCandybars(projectRoot, { CANDYBAR_API_URL: url }), { project: 0, total: 2 });
+    writeFileSync(join(projectRoot, ".candybar.toml"), "");
     assert.deepEqual(await readCandybars(projectRoot, { CANDYBAR_API_URL: url }), { project: 1, total: 2 });
     status = 500;
     assert.equal(await readCandybars(projectRoot, { CANDYBAR_API_URL: url }), null);
@@ -199,6 +203,27 @@ await test("reads $CANDYBAR_API_URL/candybars; an error or a dead API is null, n
     await new Promise((r) => server.close(r));
   }
   assert.equal(await readCandybars(projectRoot, { CANDYBAR_API_URL: url }), null);
+});
+
+await test("project name is candybar's: worktree -> main checkout, subdir -> toplevel, non-git -> .candybars ancestor", () => {
+  const g = (cwd, ...args) => {
+    const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: hermeticEnv({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }) });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const repo = join(workspace, "names", "HeyMa");
+  mkdirSync(join(repo, "src", "deep"), { recursive: true });
+  g(repo, "init", "-q");
+  g(repo, "commit", "-q", "--allow-empty", "-m", "x");
+  assert.equal(candybarProjectName(repo), "HeyMa");
+  assert.equal(candybarProjectName(join(repo, "src", "deep")), "HeyMa");
+  g(repo, "worktree", "add", "-q", join(workspace, "names", "heyma-wt"));
+  assert.equal(candybarProjectName(join(workspace, "names", "heyma-wt")), "HeyMa");
+  const loose = join(workspace, "loose", "proj", "sub");
+  mkdirSync(join(workspace, "loose", "proj", ".candybars"), { recursive: true });
+  mkdirSync(loose, { recursive: true });
+  assert.equal(candybarProjectName(loose), "proj");
+  assert.equal(candybarProjectName(join(workspace, "does-not-exist")), undefined);
+  assert.deepEqual(countCandybars([{ tags: ["project:x"] }], undefined), { project: 0, total: 1 });
 });
 
 console.log("refresher: crank (zcrank.py crank_enabled parity)");
@@ -242,6 +267,82 @@ await test("a pane override under an unstored tab name still counts (engine read
   assert.equal(v.decidedBy, "pane");
 });
 
+console.log("refresher: crank against a throwaway Redis and a fake zellij");
+{
+  const redisServer = await startThrowawayRedis();
+  const shimDir = join(workspace, "shim");
+  mkdirSync(shimDir, { recursive: true });
+  const zellij = join(shimDir, "zellij");
+  const fakeZellij = (mode) => writeFileSync(zellij, [
+    "#!/bin/sh",
+    mode === "fail" ? "exit 1" : "",
+    'case "$*" in',
+    `  *list-panes*) echo '[{"id":9,"tab_id":4,"tab_position":4,"tab_name":"HeyMa 🟢","is_plugin":false},{"id":9,"tab_id":4,"tab_position":4,"tab_name":"HeyMa 🟢","is_plugin":true}]' ;;`,
+    `  *list-tabs*) echo '[{"tab_id":4,"position":4,"name":"HeyMa 🟢"}]' ;;`,
+    "esac",
+  ].join("\n"), { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  const savedPort = process.env.ZCRANK_REDIS_PORT;
+  process.env.PATH = `${shimDir}:${savedPath}`;
+  process.env.ZCRANK_REDIS_PORT = String(redisServer.port);
+  const proj = join(workspace, "crank-proj");
+  mkdirSync(proj, { recursive: true });
+  writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "heyma", project_name: "HeyMa" }));
+  const savedCwd = process.cwd();
+  process.chdir(proj);
+  const paneEnv = { ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "9" };
+  try {
+    redisServer.cli("HSET", "zcrank:tab:HeyMa", "enabled", "1", "interval", "1h");
+    await test("this pane's live tab decides, status suffix stripped, interval read", () => {
+      fakeZellij("ok");
+      assert.deepEqual(readCrank(paneEnv), { enabled: true, interval: "1h", scope: "tab" });
+    });
+    await test("a pane override OFF beats the tab ON", () => {
+      redisServer.cli("SET", "zcrank:pane:HeyMa:terminal_9", "0");
+      assert.deepEqual(readCrank(paneEnv), { enabled: false, interval: "1h", scope: "pane" });
+      redisServer.cli("DEL", "zcrank:pane:HeyMa:terminal_9");
+    });
+    await test("a Workspace pane that cannot see itself has NO answer (never the project's)", () => {
+      fakeZellij("fail");
+      assert.equal(readCrank(paneEnv), null);
+      fakeZellij("ok");
+      assert.equal(readCrank({ ...paneEnv, ZELLIJ_PANE_ID: "77" }), null, "pane missing from the list");
+    });
+    await test("outside the Workspace session: the project's own switch", () => {
+      fakeZellij("fail");
+      const v = readCrank({});
+      assert.equal(v.scope, "project");
+      assert.equal(v.enabled, true);
+    });
+    await test("Redis down => null, not OFF", () => {
+      process.env.ZCRANK_REDIS_PORT = "1";
+      assert.equal(readCrank(paneEnv), null);
+    });
+  } finally {
+    process.chdir(savedCwd);
+    process.env.PATH = savedPath;
+    if (savedPort === undefined) delete process.env.ZCRANK_REDIS_PORT;
+    else process.env.ZCRANK_REDIS_PORT = savedPort;
+    await redisServer.stop();
+  }
+}
+
+console.log("refresher: cache files");
+await test("writes atomically into a missing dir; sweeps only day-old pipeline files", () => {
+  const dir = join(workspace, "sweep", "nested");
+  const keep = join(dir, "0123456789abcdef.json");
+  writeCacheAtomically(keep, cacheFile());
+  assert.deepEqual(readPipelineCache(keep, projectRoot), cacheFile());
+  const old = (Date.now() - 2 * 24 * 3600_000) / 1000;
+  for (const name of ["aaaaaaaaaaaaaaaa.json", "bbbbbbbbbbbbbbbb.json.lock", "cccccccccccccccc.json.123.tmp", "unrelated.txt"]) {
+    writeFileSync(join(dir, name), "x");
+    utimesSync(join(dir, name), old, old);
+  }
+  utimesSync(keep, old, old);
+  assert.equal(sweepCacheDir(dir, Date.now(), keep), 3);
+  assert.deepEqual(readdirSync(dir).sort(), ["0123456789abcdef.json", "unrelated.txt"]);
+});
+
 console.log("end to end: dist/prompt.js");
 await test("prints cached segments inside a project; nothing outside", () => {
   const bin = join(root, "dist", "prompt.js");
@@ -264,6 +365,41 @@ await test("prints cached segments inside a project; nothing outside", () => {
   writeFileSync(cachePath, JSON.stringify({ ...cacheFile(), root: proj, writtenAtMs: Date.now() - PIPELINE_EXPIRE_AFTER_MS - 60_000 }));
   assert.doesNotMatch(run(proj).stdout, /🍫|crank/);
   assert.equal(JSON.parse(readFileSync(cachePath, "utf8")).root, proj, "NO_REFRESH leaves the cache alone");
+});
+
+await test("a stale cache spawns the detached refresher, which writes the cache and releases the lock", async () => {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify([{ tags: ["project:e2e-live"] }, { tags: [] }, { tags: [], archived: true }]));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const proj = join(workspace, "e2e-live");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "e2e-live" }));
+    writeFileSync(join(proj, ".candybar.toml"), "");
+    const env = hermeticEnv({
+      PJ_PROMPT_CACHE_DIR: join(workspace, "e2e-live-cache"),
+      CANDYBAR_API_URL: `http://127.0.0.1:${server.address().port}`,
+      ZCRANK_REDIS_PORT: "1",
+    });
+    const run = () => spawnSync(process.execPath, [join(root, "dist", "prompt.js")], { cwd: proj, env, encoding: "utf8" });
+    const first = run();
+    assert.equal(first.status, 0);
+    assert.doesNotMatch(first.stdout, /🍫/, "nothing cached yet");
+    const cachePath = pipelineCachePath(proj, env);
+    const deadline = Date.now() + 15_000;
+    while (!(existsSync(cachePath) && !existsSync(`${cachePath}.lock`)) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const cache = readPipelineCache(cachePath, proj);
+    assert.ok(cache, "the detached child wrote the cache");
+    assert.deepEqual(cache.candybars, { project: 1, total: 2 });
+    assert.equal(cache.crank, null, "Redis down => crank unknown");
+    assert.equal(existsSync(`${cachePath}.lock`), false, "lock released");
+    assert.match(run().stdout, / · 🍫 1\/2$/);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
 });
 
 console.log(`prompt-pipeline: ${passed} passed`);
