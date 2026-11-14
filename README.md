@@ -194,7 +194,10 @@ scripts/build-prompt-font.py --install   # uv run; builds dist/fonts/, copies to
 ```
 
 Fontconfig then draws U+10EF0D from "pjangler Prompt Glyphs" behind any
-primary font. Tabler's own codepoint (U+EF0D) is unusable: Nerd Fonts put Font
+primary font. A terminal that was already running keeps showing an empty box
+until its process restarts (it reads fontconfig once at startup; a new window
+of a single-instance ghostty or `alacritty msg create-window` is not enough).
+`ghostty +show-face --cp=0x10EF0D` should name "pjangler Prompt Glyphs". Tabler's own codepoint (U+EF0D) is unusable: Nerd Fonts put Font
 Awesome there. On a machine without the font, set
 `PJ_PROMPT_CANDYBAR_GLYPH=🍫` (or any glyph) instead of living with tofu.
 

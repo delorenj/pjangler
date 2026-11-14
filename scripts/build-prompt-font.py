@@ -132,6 +132,8 @@ def main() -> int:
     print(f"built {font.relative_to(ROOT)}: " + ", ".join(f"{n} U+{cp:X}" for n, (_, cp) in GLYPHS.items()))
     if args.install:
         print(f"installed {install(font)}")
+        # Terminals read fontconfig once at startup: a running one shows tofu until it restarts.
+        print("restart your terminal app (every window of it; zellij sessions survive) to pick it up")
     return 0
 
 
