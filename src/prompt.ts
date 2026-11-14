@@ -88,7 +88,7 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
   };
 }
 
-/** `pjangler (PJAN) · 3m · 🍫 3/124 · ⚡ crank 5m` — deliberately terse; a prompt is not a report. */
+/** `pjangler (PJAN) · 3m · <candy> 3/124 · ⚡ crank 5m` — deliberately terse; a prompt is not a report. */
 export function formatPromptLine(facts: PromptFacts): string {
   const parts = [facts.slug];
   // The board prefix is context, not a competing identity. PJAN-80 collapsed

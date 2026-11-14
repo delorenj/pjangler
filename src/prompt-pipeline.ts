@@ -116,9 +116,18 @@ export function needsRefresh(cache: PipelineCache | undefined, nowMs: number): b
   return age > PIPELINE_REFRESH_AFTER_MS || age < 0;
 }
 
-/** `🍫 3/124` — this project's candybars / the whole registry. */
-export function formatCandybars(counts: CandybarCounts): string {
-  return `🍫 ${counts.project}/${counts.total}`;
+/**
+ * The candybar icon: delorenj/icons `outline/candy`, drawn by the "pjangler Prompt Glyphs" font
+ * (scripts/build-prompt-font.py --install) at U+10EF0D in Supplementary PUA-B, where no Nerd Font
+ * glyph can shadow it. Keep in sync with GLYPHS in that script. A machine without the font shows
+ * tofu: set PJ_PROMPT_CANDYBAR_GLYPH (e.g. to 🍫) there.
+ */
+export const CANDYBAR_GLYPH = "\u{10EF0D}";
+
+/** `<candy> 3/124` — this project's candybars / the whole registry. */
+export function formatCandybars(counts: CandybarCounts, env: NodeJS.ProcessEnv = process.env): string {
+  const glyph = env.PJ_PROMPT_CANDYBAR_GLYPH || CANDYBAR_GLYPH;
+  return `${glyph} ${counts.project}/${counts.total}`;
 }
 
 /** `⚡ crank 5m` when ON, `◌ crank off` when OFF. Always shown when known: absence must not read as OFF. */

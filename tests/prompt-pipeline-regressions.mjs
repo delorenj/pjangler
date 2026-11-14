@@ -3,7 +3,7 @@ import "./helpers/hermetic-suite.mjs";
 //   - the cache contract: a foreign/garbage/wrong-version cache is ignored, an expired one is
 //     hidden, a stale one is shown AND refreshed;
 //   - the refresh lock: exclusive, and a dead child's lock is taken over;
-//   - the formatting: `🍫 project/total`, `⚡ crank 5m` / `◌ crank off`, omitted when unknown;
+//   - the formatting: `<candy U+10EF0D> project/total`, `⚡ crank 5m` / `◌ crank off`, omitted when unknown;
 //   - the refresher's pure halves: candybar counting and the engine's crank_enabled rule;
 //   - end to end: the built dist/prompt.js prints the cached segments, and stays silent off-project.
 
@@ -43,7 +43,7 @@ const kit = await import(kitOut);
 const {
   PIPELINE_CACHE_VERSION, PIPELINE_REFRESH_AFTER_MS, PIPELINE_EXPIRE_AFTER_MS, PIPELINE_LOCK_STALE_MS,
   pipelineCacheDir, pipelineCachePath, readPipelineCache, freshSegments, needsRefresh,
-  formatCandybars, formatCrank, takeRefreshLock, maybeRefresh, formatPromptLine,
+  formatCandybars, formatCrank, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine,
   countCandybars, engineCrankFor, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically, candybarProjectName,
 } = kit;
 
@@ -157,12 +157,17 @@ await test("segments follow the age, in order, joined by ·", () => {
   assert.equal(formatPromptLine(base), "pjangler (PJAN) · 3m");
   assert.equal(
     formatPromptLine({ ...base, candybars: { project: 3, total: 124 }, crank: { enabled: true, interval: "1h", scope: "tab" } }),
-    "pjangler (PJAN) · 3m · 🍫 3/124 · ⚡ crank 1h",
+    `pjangler (PJAN) · 3m · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank 1h`,
   );
   assert.equal(formatPromptLine({ ...base, age: undefined, candybars: null, crank: { enabled: false, scope: "pane" } }), "pjangler (PJAN) · ◌ crank off");
 });
 await test("unknown is omitted, OFF is explicit", () => {
-  assert.equal(formatCandybars({ project: 0, total: 7 }), "🍫 0/7");
+  assert.equal(CANDYBAR_GLYPH, String.fromCodePoint(0x10ef0d), "the candy glyph font's codepoint (scripts/build-prompt-font.py)");
+  const fontScript = readFileSync(join(root, "scripts", "build-prompt-font.py"), "utf8");
+  assert.match(fontScript, /"candy": \("candy\.svg", 0x10EF0D\)/, "the font builder puts the candy where the prompt prints it");
+  assert.match(readFileSync(join(root, "assets", "prompt-glyphs", "candy.svg"), "utf8"), /<path d=/);
+  assert.equal(formatCandybars({ project: 0, total: 7 }, {}), `${CANDYBAR_GLYPH} 0/7`);
+  assert.equal(formatCandybars({ project: 0, total: 7 }, { PJ_PROMPT_CANDYBAR_GLYPH: "🍫" }), "🍫 0/7", "override for a machine without the font");
   assert.equal(formatCrank({ enabled: false, interval: "5m", scope: "tab" }), "◌ crank off");
   assert.equal(formatCrank({ enabled: true, scope: "project" }), "⚡ crank");
 });
@@ -358,12 +363,12 @@ await test("prints cached segments inside a project; nothing outside", () => {
   const run = (cwd) => spawnSync(process.execPath, [bin], { cwd, env, encoding: "utf8" });
   const inside = run(proj);
   assert.equal(inside.status, 0);
-  assert.match(inside.stdout, /^e2e \(E2E\)( · \S+)? · 🍫 3\/124 · ⚡ crank 5m$/);
+  assert.match(inside.stdout, new RegExp(`^e2e \\(E2E\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank 5m$`, "u"));
   const outside = run(workspace);
   assert.equal(outside.stdout, "");
   // Expired cache: the identity line survives, the pipeline segments vanish.
   writeFileSync(cachePath, JSON.stringify({ ...cacheFile(), root: proj, writtenAtMs: Date.now() - PIPELINE_EXPIRE_AFTER_MS - 60_000 }));
-  assert.doesNotMatch(run(proj).stdout, /🍫|crank/);
+  assert.doesNotMatch(run(proj).stdout, new RegExp(`${CANDYBAR_GLYPH}|crank`, "u"));
   assert.equal(JSON.parse(readFileSync(cachePath, "utf8")).root, proj, "NO_REFRESH leaves the cache alone");
 });
 
@@ -385,7 +390,7 @@ await test("a stale cache spawns the detached refresher, which writes the cache 
     const run = () => spawnSync(process.execPath, [join(root, "dist", "prompt.js")], { cwd: proj, env, encoding: "utf8" });
     const first = run();
     assert.equal(first.status, 0);
-    assert.doesNotMatch(first.stdout, /🍫/, "nothing cached yet");
+    assert.doesNotMatch(first.stdout, new RegExp(CANDYBAR_GLYPH, "u"), "nothing cached yet");
     const cachePath = pipelineCachePath(proj, env);
     const deadline = Date.now() + 15_000;
     while (!(existsSync(cachePath) && !existsSync(`${cachePath}.lock`)) && Date.now() < deadline) {
@@ -396,7 +401,7 @@ await test("a stale cache spawns the detached refresher, which writes the cache 
     assert.deepEqual(cache.candybars, { project: 1, total: 2 });
     assert.equal(cache.crank, null, "Redis down => crank unknown");
     assert.equal(existsSync(`${cachePath}.lock`), false, "lock released");
-    assert.match(run().stdout, / · 🍫 1\/2$/);
+    assert.ok(run().stdout.endsWith(` · ${CANDYBAR_GLYPH} 1/2`));
   } finally {
     await new Promise((r) => server.close(r));
   }
