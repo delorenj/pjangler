@@ -330,7 +330,32 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
         edges: list(parsed.edges),
       };
     },
+    /**
+     * Crank v2's live projection of one session binding (crank.lua, "Crank v2 bindings"):
+     * crank_attach | crank_fire | crank_end on crank:b:<binding> + crank:idx:pane:<session>:<pane>.
+     * Candybar stays the registry; this is what the prompt reads. Throws on any failure.
+     */
+    binding: (fn: BindingFn, payload: Record<string, unknown>, by = "pj"): BindingWriteResult => {
+      const raw = fcall("FCALL", fn, JSON.stringify(payload), by);
+      let parsed: { error?: unknown; created?: unknown; ended?: unknown; edges?: unknown };
+      try {
+        parsed = JSON.parse(raw) as typeof parsed;
+      } catch {
+        throw new Error(`the crank arbiter answered ${fn} with something that is not JSON: ${raw.slice(0, 80)}`);
+      }
+      if (typeof parsed.error === "string") throw new Error(`the crank arbiter refused ${fn}: ${parsed.error}`);
+      return { created: parsed.created === true, ended: parsed.ended === true, edges: list(parsed.edges) };
+    },
   };
+}
+
+/** The crank v2 binding writers in crank.lua. */
+export type BindingFn = "crank_attach" | "crank_fire" | "crank_end";
+
+export interface BindingWriteResult {
+  created: boolean;
+  ended: boolean;
+  edges: unknown[];
 }
 
 export type CrankStore = ReturnType<typeof redis>;

@@ -25,7 +25,8 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realp
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { stringify as stringifyToml } from "smol-toml";
-import { intervalCron, type EffectiveCrankPolicy } from "./policy";
+import { redis, type BindingFn } from "./index";
+import { intervalCron, nextFire, type EffectiveCrankPolicy } from "./policy";
 
 export const BINDING_TAG = "crank-session";
 export const CRANK_TAG = "crank";
@@ -435,6 +436,62 @@ export const bbEmit: Emitter = (type, orderingKey, data) => {
   }
 };
 
+/**
+ * Writes the binding's live projection into Redis (crank.lua `crank_attach|crank_fire|crank_end`),
+ * which the shell prompt reads. Fail-open: Candybar is the registry and the clock, so a Redis that
+ * is down never breaks a crank. A failed write lands in `<state>/projection.jsonl`, never silently.
+ */
+export type Projector = (fn: BindingFn, payload: Record<string, unknown>) => void;
+
+export const redisProjector: Projector = (fn, payload) => {
+  try {
+    redis().binding(fn, payload);
+  } catch (caught) {
+    try {
+      const dir = stateDir();
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(join(dir, "projection.jsonl"), JSON.stringify({
+        ts: new Date().toISOString(), fn, binding: payload.binding,
+        error: (caught instanceof Error ? caught.message : String(caught)).slice(0, 300),
+      }) + "\n");
+    } catch {
+      // the receipt is best effort too
+    }
+  }
+};
+
+/** The facts every projection write carries, so a fire can re-create an expired hash. */
+export function projectionFacts(
+  record: Pick<BindingRecord, "name" | "cli" | "sessionId" | "pid" | "pidStart" | "projectSlug" | "projectRoot" | "zellijSession" | "paneId" | "interval" | "schedule" | "candybarId">,
+  nowMs = Date.now(),
+): Record<string, unknown> {
+  const schedule = record.schedule || (record.interval ? safeCron(record.interval, record.name) : "");
+  const next = schedule ? nextFire(schedule, nowMs) : undefined;
+  return {
+    binding: record.name,
+    cli: record.cli,
+    session_id: record.sessionId,
+    pid: record.pid,
+    pid_start: record.pidStart,
+    project: record.projectSlug,
+    root: record.projectRoot,
+    zellij_session: record.zellijSession,
+    pane: record.paneId,
+    interval: record.interval,
+    schedule,
+    candybar_id: record.candybarId,
+    ...(next !== undefined ? { next_due: next } : {}),
+  };
+}
+
+function safeCron(interval: string, seed: string): string {
+  try {
+    return intervalCron(interval, seed);
+  } catch {
+    return "";
+  }
+}
+
 function eventData(record: Pick<BindingRecord, "name" | "cli" | "sessionId" | "pid" | "paneId" | "zellijSession" | "projectSlug" | "interval">): Record<string, unknown> {
   return {
     binding: record.name,
@@ -491,9 +548,10 @@ export interface DetachResult {
 }
 
 /** Archive the candybar, remove the manifest, announce `binding.ended`. Idempotent. */
-export async function detachBinding(record: BindingRecord, reason: EndReason, deps: { client?: CandybarClient; emit?: Emitter; detail?: string } = {}): Promise<DetachResult> {
+export async function detachBinding(record: BindingRecord, reason: EndReason, deps: { client?: CandybarClient; emit?: Emitter; detail?: string; project?: Projector } = {}): Promise<DetachResult> {
   const client = deps.client ?? candybarClient();
   const emit = deps.emit ?? bbEmit;
+  const projector = deps.project ?? redisProjector;
   let error: string | undefined;
   try {
     await client.archive(record.candybarId);
@@ -508,7 +566,16 @@ export async function detachBinding(record: BindingRecord, reason: EndReason, de
       // a manifest we cannot remove is harmless: register --prune never sees it as an orphan of a live row
     }
   }
-  if (!error) emit("bloodbank.crank.binding.ended", `binding:${record.name}`, { ...eventData(record), reason, ...(deps.detail ? { detail: deps.detail.slice(0, 300) } : {}) });
+  if (!error) {
+    emit("bloodbank.crank.binding.ended", `binding:${record.name}`, { ...eventData(record), reason, ...(deps.detail ? { detail: deps.detail.slice(0, 300) } : {}) });
+    projector("crank_end", {
+      binding: record.name,
+      reason,
+      zellij_session: record.zellijSession,
+      pane: record.paneId,
+      ...(deps.detail ? { detail: deps.detail.slice(0, 300) } : {}),
+    });
+  }
   return { name: record.name, reason, archived: !error, error };
 }
 
@@ -529,10 +596,12 @@ export async function attachBinding(
   identity: AgentIdentity,
   policy: EffectiveCrankPolicy,
   project: { root: string; slug: string },
-  deps: { client?: CandybarClient; emit?: Emitter; now?: Date } = {},
+  deps: { client?: CandybarClient; emit?: Emitter; now?: Date; project?: Projector } = {},
 ): Promise<AttachResult> {
   const client = deps.client ?? candybarClient();
   const emit = deps.emit ?? bbEmit;
+  const projector = deps.project ?? redisProjector;
+  const nowMs = (deps.now ?? new Date()).getTime();
   const spec = manifestSpec(identity, policy, project, deps.now);
   const existing = await listBindings(client);
   const superseded: string[] = [];
@@ -540,10 +609,10 @@ export async function attachBinding(
   for (const record of existing) {
     if (record.name === spec.name) continue;
     if (record.pid === identity.pid && record.pidStart === identity.pidStart) {
-      await detachBinding(record, "superseded", { client, emit, detail: `session ${identity.sessionId.slice(0, 8)} took over pid ${identity.pid}` });
+      await detachBinding(record, "superseded", { client, emit, project: projector, detail: `session ${identity.sessionId.slice(0, 8)} took over pid ${identity.pid}` });
       superseded.push(record.name);
     } else if (!incarnationAlive(record.pid, record.pidStart)) {
-      await detachBinding(record, "orphan_reaped", { client, emit, detail: "agent process gone (found while attaching another session)" });
+      await detachBinding(record, "orphan_reaped", { client, emit, project: projector, detail: "agent process gone (found while attaching another session)" });
       reaped.push(record.name);
     }
   }
@@ -558,6 +627,7 @@ export async function attachBinding(
     if (drifted || !mine.manifestPath) {
       writeManifest(manifestPath(project.root, spec.name), renderManifest({ ...spec, schedule: mine.schedule, env: { ...spec.env, CRANK_INTERVAL: mine.interval || spec.env.CRANK_INTERVAL || "" } }));
     }
+    projector("crank_attach", projectionFacts({ ...mine, ...identity, name: spec.name, projectRoot: project.root, projectSlug: project.slug }, nowMs));
     return { status: "already", name: spec.name, schedule: mine.schedule, superseded, reaped };
   }
   const path = manifestPath(project.root, spec.name);
@@ -602,11 +672,15 @@ export async function attachBinding(
     schedule: spec.schedule,
     candybar_id: row.id,
   });
+  projector("crank_attach", projectionFacts({
+    ...identity, name: spec.name, projectRoot: project.root, projectSlug: project.slug,
+    interval: policy.interval, schedule: spec.schedule, candybarId: row.id,
+  }, nowMs));
   return { status: "attached", name: spec.name, schedule: spec.schedule, superseded, reaped };
 }
 
 /** Move one live crank onto a new interval: Candybar schedule + runner env + its manifest file. */
-export async function reclockBinding(record: BindingRecord, interval: string, client: CandybarClient = candybarClient()): Promise<string> {
+export async function reclockBinding(record: BindingRecord, interval: string, client: CandybarClient = candybarClient(), projector: Projector = redisProjector): Promise<string> {
   const schedule = intervalCron(interval, record.name);
   const runner = await client.runner(record.candybarId);
   const env = { ...(runner?.env ?? {}), CRANK_INTERVAL: interval };
@@ -618,16 +692,17 @@ export async function reclockBinding(record: BindingRecord, interval: string, cl
       .replace(/^CRANK_INTERVAL = .*$/m, `CRANK_INTERVAL = ${JSON.stringify(interval)}`);
     writeManifest(path, text);
   }
+  projector("crank_attach", projectionFacts({ ...record, interval, schedule }));
   return schedule;
 }
 
 /** End every binding whose agent process incarnation is gone. */
-export async function reapBindings(deps: { client?: CandybarClient; emit?: Emitter } = {}): Promise<DetachResult[]> {
+export async function reapBindings(deps: { client?: CandybarClient; emit?: Emitter; project?: Projector } = {}): Promise<DetachResult[]> {
   const client = deps.client ?? candybarClient();
   const out: DetachResult[] = [];
   for (const record of await listBindings(client)) {
     if (incarnationAlive(record.pid, record.pidStart)) continue;
-    out.push(await detachBinding(record, "orphan_reaped", { client, emit: deps.emit, detail: "agent process gone with no session end" }));
+    out.push(await detachBinding(record, "orphan_reaped", { client, emit: deps.emit, project: deps.project, detail: "agent process gone with no session end" }));
   }
   return out;
 }

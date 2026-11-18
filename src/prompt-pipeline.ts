@@ -10,6 +10,11 @@
 // refresher, no `zellij list-panes`: the answer is exactly as fresh as the engine's last */5 scan,
 // and nothing here re-implements the on/off rule.
 //
+// A pane bound to a crank v2 SESSION binding (pj crank, PJAN-214/215) wins over the legacy hash: the
+// same pipeline asks FCALL_RO crank_get <session> <pane>, which follows crank:idx:pane:<session>:<pane>
+// to crank:b:<binding>. That binding fires on its own Candybar schedule, so its staleness is judged by
+// its own last fire against its own interval, not by the legacy engine's heartbeat.
+//
 // Candybar (an HTTP API), and crank for a project OUTSIDE zellij (the project's resolved tab: needs
 // redis-cli and git), are not cheap. A prompt renders on every Enter, so the prompt NEVER computes
 // them: it reads a small JSON cache and, when that cache is stale, spawns `dist/prompt-refresh.js`
@@ -50,8 +55,11 @@ export interface CrankState {
   enabled: boolean;
   /** The interval the beat visits this tab at (5m|1h|6h|1d). */
   interval?: string;
-  /** What decided it: this pane's override, its tab, or the project's resolved tab (outside zellij). */
-  scope: "pane" | "tab" | "project";
+  /**
+   * What decided it: this pane's override, its tab, the project's resolved tab (outside zellij), or
+   * a crank v2 binding on the agent session running in this pane.
+   */
+  scope: "pane" | "tab" | "project" | "session";
   /**
    * Epoch ms crank has been ON without a break since: for a pane, the arbiter's `since` stamp (an
    * edge sets it, an idempotent enable keeps it); for a project outside zellij, the oldest `since`
@@ -60,8 +68,12 @@ export interface CrankState {
   onSinceMs?: number;
   /** Epoch ms of this tab's newest beat row; with `interval` it gives the next crank at render time. */
   lastRunMs?: number;
-  /** Epoch ms of the engine's last scan (crank:engine scan_ms). */
+  /** Epoch ms of the engine's last scan (crank:engine scan_ms); for a v2 session, its last fire. */
   engineScanMs?: number;
+  /** v2 session: epoch ms of the next scheduled fire as of the last write (rolled forward by intervalMs). */
+  nextDueMs?: number;
+  /** v2 session: the interval in ms (v2 intervals are any 1-59m, 1-23h or 1d). */
+  intervalMs?: number;
   /**
    * The engine had not scanned for CRANK_STALL_AFTER_MS when this was READ (judged at write time:
    * a cache shown 10m later must not turn a healthy engine's normal scan age into a false alarm).
@@ -125,7 +137,7 @@ function optionalMs(value: unknown): boolean {
 
 function isCrank(value: unknown): value is CrankState {
   const v = value as CrankState;
-  return !!v && typeof v.enabled === "boolean" && ["pane", "tab", "project"].includes(v.scope)
+  return !!v && typeof v.enabled === "boolean" && ["pane", "tab", "project", "session"].includes(v.scope)
     && (v.interval === undefined || typeof v.interval === "string")
     && optionalMs(v.onSinceMs) && optionalMs(v.lastRunMs) && optionalMs(v.engineScanMs)
     && (v.stalled === undefined || typeof v.stalled === "boolean");
@@ -208,6 +220,45 @@ export function crankFromArbiter(
   return state;
 }
 
+/** A v2 interval (`7m`, `2h`, `1d`) in ms, or undefined. Mirrors pjangler's policy.ts grammar. */
+export function v2IntervalMs(value: string | undefined): number | undefined {
+  const match = /^(\d+)([mhd])$/.exec(value ?? "");
+  if (!match) return undefined;
+  const n = Number(match[1]);
+  const unit = match[2];
+  if (unit === "m" && n >= 1 && n <= 59) return n * 60_000;
+  if (unit === "h" && n >= 1 && n <= 23) return n * 3_600_000;
+  if (unit === "d" && n === 1) return 86_400_000;
+  return undefined;
+}
+
+/**
+ * The crank segment for a pane bound to a crank v2 session (`binding` is the crank_get reply as a
+ * hash; empty = no binding here). A binding is ON while it exists. It is stalled when its last fire
+ * (or its attach, before the first fire) is older than two intervals plus five minutes, and never
+ * sooner than CRANK_STALL_AFTER_MS: Candybar has stopped firing it.
+ */
+export function crankFromBinding(binding: Record<string, string> | undefined, nowMs: number): CrankState | undefined {
+  if (!binding?.binding) return undefined;
+  const state: CrankState = { enabled: true, scope: "session" };
+  if (binding.interval) state.interval = binding.interval;
+  const intervalMs = v2IntervalMs(binding.interval);
+  if (intervalMs !== undefined) state.intervalMs = intervalMs;
+  const since = hashMs(binding.since);
+  if (since !== undefined) state.onSinceMs = since;
+  const lastFire = hashMs(binding.last_fire);
+  if (lastFire !== undefined) state.lastRunMs = lastFire;
+  const nextDue = hashMs(binding.next_due);
+  if (nextDue !== undefined) state.nextDueMs = nextDue;
+  const beat = lastFire ?? since;
+  if (beat !== undefined) {
+    state.engineScanMs = beat;
+    const allowed = Math.max(CRANK_STALL_AFTER_MS, 2 * (intervalMs ?? 300_000) + 5 * 60_000);
+    if (nowMs - beat > allowed) state.stalled = true;
+  }
+  return state;
+}
+
 /**
  * This pane's crank state, read straight from Redis (see the header). Never throws; undefined when
  * not in a zellij pane or Redis did not answer in time: an unreachable Redis is never read as OFF.
@@ -218,8 +269,12 @@ export async function readPaneCrank(env: NodeJS.ProcessEnv = process.env, nowMs:
   const replies = await redisPipeline(redisEndpoint(env), [
     ["HGETALL", `crank:p:${where.session}:${where.pane}`],
     ["HGETALL", "crank:engine"],
+    // An arbiter without crank_get (not reloaded yet) answers an error: no binding, the legacy hash decides.
+    ["FCALL_RO", "crank_get", "0", where.session, where.pane],
   ], CRANK_READ_TIMEOUT_MS);
   if (!replies) return undefined;
+  const session = crankFromBinding(replyToHash(replies[2]), nowMs);
+  if (session) return session;
   const pane = replyToHash(replies[0]);
   const engine = replyToHash(replies[1]);
   if (!pane || !engine) return undefined;
@@ -282,7 +337,11 @@ export function formatCrank(crank: CrankState, nowMs: number = Date.now()): stri
   if (crank.onSinceMs !== undefined) parts.push(`↑${formatSpan(nowMs - crank.onSinceMs)}`);
   if (interval) parts.push(interval);
   const parsed = parseInterval(crank.interval);
-  if (parsed) {
+  if (crank.nextDueMs !== undefined) {
+    let next = crank.nextDueMs;
+    if (crank.intervalMs && next < nowMs) next += Math.ceil((nowMs - next) / crank.intervalMs) * crank.intervalMs;
+    parts.push(`⏳${formatCountdown(next - nowMs)}`);
+  } else if (parsed) {
     const next = nextRunMs({ enabled: true, interval: parsed, lastRun: crank.lastRunMs, nowMs });
     if (next !== undefined) parts.push(`⏳${formatCountdown(next - nowMs)}`);
   }

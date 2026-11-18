@@ -16,7 +16,9 @@ import {
   incarnationAlive,
   listBindings,
   procStart,
+  projectionFacts,
   reclockBinding,
+  redisProjector,
   type AttachResult,
   type BindingRecord,
   type CandybarClient,
@@ -24,8 +26,11 @@ import {
   type DetachResult,
   type EndReason,
   type IdentifyInput,
+  type Projector,
 } from "./binding";
-import { loadPolicy, type EffectiveCrankPolicy } from "./policy";
+import { loadPolicy, nextFire, type EffectiveCrankPolicy } from "./policy";
+
+export { nextFire } from "./policy";
 
 export interface ProjectRef {
   root: string;
@@ -195,11 +200,28 @@ export interface FireOutcome {
   detail?: string;
 }
 
+/** What crank-pane left in its state file this fire: the class it saw and the officer's last run. */
+function engineFacts(name: string, env: NodeJS.ProcessEnv): Record<string, unknown> {
+  try {
+    const state = JSON.parse(readFileSync(join(stateDir(env), `${name}.json`), "utf8")) as {
+      last_class?: string; last_officer?: { ts?: string; class?: string; exit?: number };
+    };
+    const officerMs = state.last_officer?.ts ? Date.parse(state.last_officer.ts) : NaN;
+    return {
+      ...(state.last_class ? { last_class: state.last_class } : {}),
+      ...(state.last_officer?.class ? { last_officer: `${state.last_officer.class}${state.last_officer.exit ? ` (exit ${state.last_officer.exit})` : ""}` } : {}),
+      ...(Number.isFinite(officerMs) ? { last_officer_ms: officerMs } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 export function enginePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.CRANK_ENGINE?.trim() || join(env.HOME?.trim() || homedir(), ".local", "bin", "crank-pane");
 }
 
-export async function fireBinding(name: string, env: NodeJS.ProcessEnv = process.env, client: CandybarClient = candybarClient()): Promise<FireOutcome> {
+export async function fireBinding(name: string, env: NodeJS.ProcessEnv = process.env, client: CandybarClient = candybarClient(), projector: Projector = redisProjector): Promise<FireOutcome> {
   let record: BindingRecord | undefined;
   if (env.CRANK_BINDING === name && env.CANDYBAR_ID) {
     record = {
@@ -225,7 +247,7 @@ export async function fireBinding(name: string, env: NodeJS.ProcessEnv = process
 
   if (!incarnationAlive(record.pid, record.pidStart)) {
     const live = procStart(record.pid);
-    await detachBinding(record, "orphan_reaped", { client, detail: live ? `pid ${record.pid} now belongs to another process` : `pid ${record.pid} exited with no session end` });
+    await detachBinding(record, "orphan_reaped", { client, project: projector, detail: live ? `pid ${record.pid} now belongs to another process` : `pid ${record.pid} exited with no session end` });
     return { binding: name, outcome: "ended", reason: "orphan_reaped" };
   }
   let policy: EffectiveCrankPolicy;
@@ -235,7 +257,7 @@ export async function fireBinding(name: string, env: NodeJS.ProcessEnv = process
     throw new Error(`cannot read crank policy for ${record.projectRoot}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!policy.enabled) {
-    await detachBinding(record, "disabled", { client, detail: `crank turned off for ${record.projectSlug}` });
+    await detachBinding(record, "disabled", { client, project: projector, detail: `crank turned off for ${record.projectSlug}` });
     return { binding: name, outcome: "ended", reason: "disabled" };
   }
   const brief = {
@@ -243,6 +265,8 @@ export async function fireBinding(name: string, env: NodeJS.ProcessEnv = process
     root: record.projectRoot,
     cli: record.cli,
     session_id: record.sessionId,
+    pid: record.pid,
+    pid_start: record.pidStart,
     interval: policy.interval,
     prompt: policy.prompt ?? "",
     target: policy.target ?? "",
@@ -259,9 +283,10 @@ export async function fireBinding(name: string, env: NodeJS.ProcessEnv = process
   if (run.error) throw new Error(`crank engine ${enginePath(env)} failed to start: ${run.error.message}`);
   const detail = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim().split("\n").slice(-6).join("\n");
   if (run.status === 10) {
-    await detachBinding(record, "pane_closed", { client, detail: `pane terminal_${record.paneId} is gone` });
+    await detachBinding(record, "pane_closed", { client, project: projector, detail: `pane terminal_${record.paneId} is gone` });
     return { binding: name, outcome: "ended", reason: "pane_closed", engineExit: 10, detail };
   }
+  projector("crank_fire", { ...projectionFacts({ ...record, interval: record.interval || policy.interval }), ...engineFacts(name, env) });
   return { binding: name, outcome: "fired", engineExit: run.status ?? undefined, detail };
 }
 
@@ -332,39 +357,3 @@ export function engineLog(names: string[], tail: number): LogRow[] {
   return rows.sort((a, b) => a.ts.localeCompare(b.ts)).slice(-tail);
 }
 
-// ---------------------------------------------------------------------------
-// Next fire for the cron shapes intervalCron() writes (host-local wall clock)
-// ---------------------------------------------------------------------------
-
-function fieldMatches(field: string, value: number): boolean {
-  if (field === "*") return true;
-  return field.split(",").some((part) => {
-    const [range = "*", stepRaw] = part.split("/");
-    const step = stepRaw ? Number(stepRaw) : 1;
-    let lo: number;
-    let hi: number;
-    if (range === "*") {
-      lo = 0;
-      hi = 59;
-    } else if (range.includes("-")) {
-      [lo, hi] = range.split("-").map(Number) as [number, number];
-    } else {
-      lo = Number(range);
-      hi = stepRaw ? 59 : lo;
-    }
-    return value >= lo && value <= hi && (value - lo) % step === 0;
-  });
-}
-
-/** Next minute matching a `m h * * *` cron after `nowMs`, scanning at most two days. */
-export function nextFire(cron: string, nowMs: number): number | undefined {
-  const [minute, hour, dom, month, dow] = cron.trim().split(/\s+/);
-  if (!minute || !hour || dom !== "*" || month !== "*" || dow !== "*") return undefined;
-  const start = new Date(nowMs);
-  start.setSeconds(0, 0);
-  for (let i = 1; i <= 2 * 24 * 60; i++) {
-    const at = new Date(start.getTime() + i * 60_000);
-    if (fieldMatches(minute, at.getMinutes()) && fieldMatches(hour, at.getHours())) return at.getTime();
-  }
-  return undefined;
-}

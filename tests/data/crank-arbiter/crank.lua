@@ -21,6 +21,7 @@
 --   crank:t                     STREAM every transition (MAXLEN ~5000)
 --   crank:transitions           PUBSUB one JSON message per transition
 --   crank:engine                HASH   engine heartbeat: ts, scan_ms, panes, session (TTL 1d)
+-- Crank v2 session bindings (crank:b:*, crank:idx:pane:*): see "Crank v2 bindings" below.
 --
 -- The rule (the ONLY copy; zcrank.py, zcrankctl and pjangler ask crank_resolve):
 --   a pane override under ANY owner spelling decides (every one found must be 1);
@@ -393,6 +394,211 @@ local function crank_scan(keys, args)
   sk.heartbeat(ENGINE, PANE_TTL_MS, { scan_ms = now, session = session, by = by,
     panes = #(type(q.panes) == 'table' and q.panes or {}) })
   return cjson.encode({ verdicts = verdicts, edges = edges, gap = gap })
+end
+
+-- ---------------------------------------------------------------------------
+-- Crank v2 bindings (pjangler PJAN-214/215): one crank per live agent SESSION.
+-- The Candybar row is the registry and the clock; this is its live projection,
+-- what a prompt or a dashboard reads without asking Candybar.
+--   crank:b:<binding>               HASH   binding, cli, session_id, pid, pid_start,
+--                                          project, root, zellij_session, pane (terminal_N),
+--                                          interval, schedule, candybar_id, on=1,
+--                                          since (attach ms), last_fire (ms), fires,
+--                                          last_class, last_officer, last_officer_ms,
+--                                          next_due (ms), seq, updated_ms
+--                                          (TTL three intervals, at least 1h; every
+--                                          attach and fire refreshes it)
+--   crank:idx:pane:<session>:<pane> STRING the binding bound in that pane (same TTL)
+--   crank:idx:bindings              SET    every crank:b key
+--   crank:t:b:<binding>             STREAM that binding's transitions (MAXLEN ~500)
+-- Transitions also go to crank:t and crank:transitions, subject crank:b:<binding>.
+-- Kept apart from crank:p / crank:idx:panes on purpose: crank_scan rewrites every
+-- pane hash it sees and deletes the indexed ones it does not, so a v2 pane must
+-- never live under the legacy keys.
+do
+  local B_IDX = 'crank:idx:bindings'
+  local B_MIN_TTL_MS = 3600000
+  local B_FIELDS = { 'cli', 'session_id', 'pid', 'pid_start', 'project', 'root',
+                     'zellij_session', 'pane', 'interval', 'schedule', 'candybar_id',
+                     'next_due', 'last_class', 'last_officer', 'last_officer_ms' }
+  local B_EDGE_FIELDS = { 'subject', 'binding', 'session', 'pane', 'field', 'from', 'to',
+                          'since', 'cause', 'detail', 'by', 'ts', 'seq' }
+
+  local function b_name(v)
+    local name = sk.str(v)
+    if string.match(name, '^crank%-[%w%-]+$') then return name end
+    return nil
+  end
+
+  local function b_pane(v)
+    local p = sk.str(v)
+    if string.match(p, '^%d+$') then return 'terminal_' .. p end
+    if string.match(p, '^terminal_%d+$') then return p end
+    return nil
+  end
+
+  -- v2 intervals are pjangler's grammar (policy.ts normaliseInterval): 1-59m, 1-23h, 1d.
+  local function b_interval_s(v)
+    local n, unit = string.match(sk.str(v), '^(%d+)([mhd])$')
+    n = tonumber(n)
+    if not n then return nil end
+    if unit == 'm' and n >= 1 and n <= 59 then return n * 60 end
+    if unit == 'h' and n >= 1 and n <= 23 then return n * 3600 end
+    if unit == 'd' and n == 1 then return 86400 end
+    return nil
+  end
+
+  local function b_ttl(interval)
+    local s = b_interval_s(interval) or INTERVALS[DEFAULT_INTERVAL]
+    return math.max(B_MIN_TTL_MS, s * 3000)
+  end
+
+  local function b_edge(name, where, field, from, to, since, cause, by, now, seq, detail)
+    local rec = { subject = 'crank:b:' .. name, binding = name, session = where.zellij_session,
+                  pane = where.pane, field = field, from = from, to = to, since = since,
+                  cause = cause, by = by, ts = now, seq = seq }
+    if detail and detail ~= '' then rec.detail = string.sub(detail, 1, 300) end
+    local fields = {}
+    for _, k in ipairs(B_EDGE_FIELDS) do
+      if rec[k] ~= nil then
+        fields[#fields + 1] = k
+        fields[#fields + 1] = rec[k]
+      end
+    end
+    sk.emit('crank:t:b:' .. name, PANE_STREAM, fields, nil, nil)
+    sk.emit('crank:t', ALL_STREAM, fields, CHANNEL, cjson.encode(rec))
+    return rec
+  end
+
+  local function b_pointer(session, pane)
+    return 'crank:idx:pane:' .. session .. ':' .. pane
+  end
+
+  -- attach and fire share one upsert: a fire whose hash expired (Redis restarted,
+  -- a 1d crank outlived its TTL) re-creates it from the facts the fire carries.
+  local function b_upsert(q, by, cause)
+    local name = b_name(q.binding)
+    if not name then return cjson.encode({ error = 'binding must be crank-<cli>-<sid8>-<pid>' }) end
+    local bkey = 'crank:b:' .. name
+    local now = sk.now_ms()
+    local cur = sk.hgetall(bkey)
+    local info = {}
+    for _, k in ipairs(B_FIELDS) do
+      if sk.present(q[k]) and sk.str(q[k]) ~= '' then info[k] = sk.str(q[k]) end
+    end
+    if info.pane then info.pane = b_pane(info.pane) end
+    if info.interval and not b_interval_s(info.interval) then info.interval = nil end
+    local session = info.zellij_session or cur.zellij_session
+    local pane = info.pane or cur.pane
+    local interval = info.interval or cur.interval
+    local seq = tonumber(cur.seq) or 0
+    local edges = {}
+    local where = { zellij_session = session, pane = pane }
+    local created = cur.binding == nil
+    if created then
+      seq = seq + 1
+      info.on, info.since = '1', now
+      edges[#edges + 1] = b_edge(name, where, 'on', '', '1', now,
+        cause == 'fire' and 'reappear' or 'attach', by, now, seq)
+    else
+      if info.interval and cur.interval and info.interval ~= cur.interval then
+        seq = seq + 1
+        edges[#edges + 1] = b_edge(name, where, 'interval', cur.interval, info.interval,
+          tonumber(cur.since) or now, cause, by, now, seq)
+      end
+      if info.pane and cur.pane and info.pane ~= cur.pane then
+        seq = seq + 1
+        edges[#edges + 1] = b_edge(name, where, 'pane', cur.pane, info.pane,
+          tonumber(cur.since) or now, cause, by, now, seq)
+        local old = b_pointer(cur.zellij_session or session or '', cur.pane)
+        if redis.call('GET', old) == name then redis.call('DEL', old) end
+      end
+    end
+    if cause == 'fire' then
+      info.last_fire = now
+      info.fires = (tonumber(cur.fires) or 0) + 1
+    end
+    info.binding, info.seq, info.updated_ms = name, seq, now
+    sk.hset(bkey, info)
+    local ttl = b_ttl(interval)
+    redis.call('PEXPIRE', bkey, ttl)
+    redis.call('SADD', B_IDX, bkey)
+    if session and session ~= '' and pane then
+      redis.call('SET', b_pointer(session, pane), name, 'PX', ttl)
+    end
+    return cjson.encode({ binding = name, created = created, seq = seq, ttl_ms = ttl, edges = edges })
+  end
+
+  -- FCALL crank_attach 0 <json> <by>
+  -- json: {binding, cli, session_id, pid, pid_start, project, root, zellij_session,
+  --        pane, interval, schedule, candybar_id, next_due?}
+  -- Idempotent: a repeat keeps `since` and emits only real changes (interval, pane).
+  -- Returns JSON {binding, created, seq, ttl_ms, edges}.
+  local function crank_attach(keys, args)
+    return b_upsert(cjson.decode(args[1] or '{}'), args[2] or 'pj', 'attach')
+  end
+
+  -- FCALL crank_fire 0 <json> <by>
+  -- json: the attach facts plus {last_class, last_officer?, last_officer_ms?, next_due}.
+  -- Stamps last_fire, counts fires, refreshes the TTL.
+  local function crank_fire(keys, args)
+    return b_upsert(cjson.decode(args[1] or '{}'), args[2] or 'pj', 'fire')
+  end
+
+  -- FCALL crank_end 0 <json> <by>
+  -- json: {binding, reason, detail?, zellij_session?, pane?} (the pane facts drop the
+  -- pointer even when the hash already expired). Emits on: <was> -> ended, cause
+  -- = the reason (explicit|session_end|superseded|disabled|pane_closed|orphan_reaped).
+  -- Returns JSON {binding, ended, edges}.
+  local function crank_end(keys, args)
+    local q = cjson.decode(args[1] or '{}')
+    local by = args[2] or 'pj'
+    local name = b_name(q.binding)
+    if not name then return cjson.encode({ error = 'binding must be crank-<cli>-<sid8>-<pid>' }) end
+    local bkey = 'crank:b:' .. name
+    local now = sk.now_ms()
+    local cur = sk.hgetall(bkey)
+    local session = cur.zellij_session or (sk.present(q.zellij_session) and sk.str(q.zellij_session)) or ''
+    local pane = cur.pane or b_pane(q.pane)
+    local edges = {}
+    local reason = sk.str(q.reason)
+    if cur.binding ~= nil then
+      edges[1] = b_edge(name, { zellij_session = session, pane = pane }, 'on', cur.on or '1', 'ended',
+        now, reason ~= '' and reason or 'ended', by, now, (tonumber(cur.seq) or 0) + 1, sk.str(q.detail))
+    end
+    if session ~= '' and pane then
+      local ptr = b_pointer(session, pane)
+      if redis.call('GET', ptr) == name then redis.call('DEL', ptr) end
+    end
+    redis.call('DEL', bkey)
+    redis.call('SREM', B_IDX, bkey)
+    return cjson.encode({ binding = name, ended = cur.binding ~= nil, edges = edges })
+  end
+
+  -- FCALL_RO crank_get 0 <session> <pane>
+  -- The binding bound in that zellij pane, as a flat HGETALL reply; an empty reply
+  -- when none is (or the pointer outlived a hash that now names another pane).
+  -- pane: N or terminal_N. One round trip: the prompt pipelines this with its other reads.
+  local function crank_get(keys, args)
+    local session, pane = sk.str(args[1]), b_pane(args[2])
+    if session == '' or not pane then return {} end
+    local name = redis.call('GET', b_pointer(session, pane))
+    if not name then return {} end
+    local flat = redis.call('HGETALL', 'crank:b:' .. name)
+    for i = 1, #flat, 2 do
+      if flat[i] == 'pane' then
+        if flat[i + 1] == pane then return flat end
+        return {}
+      end
+    end
+    return {}
+  end
+
+  redis.register_function('crank_attach', crank_attach)
+  redis.register_function('crank_fire', crank_fire)
+  redis.register_function('crank_end', crank_end)
+  redis.register_function{ function_name = 'crank_get', callback = crank_get,
+                           flags = { 'no-writes' } }
 end
 
 redis.register_function('crank_apply', crank_apply)
