@@ -1,0 +1,169 @@
+{
+  "description": "Actual captured command stdout/stderr; path-prefix substitutions only (repository, operator scratch, operator home). The rerun log additionally omits a Node assertion payload of Lua source strings, with omission marked in place; raw source SHA-256 retained for verification. Exit files are captured process exits, not inferred from log text. Original aggregate failure metadata response was not captured; cause unknown.",
+  "receipts": [
+    {
+      "name": "build",
+      "source_log": "pjan57-build.log",
+      "source_log_sha256": "872964882472aeec0ed3e68e8be2aa6714ba78bb2608e7c951d0ac418f74a887",
+      "redacted_log_sha256": "872964882472aeec0ed3e68e8be2aa6714ba78bb2608e7c951d0ac418f74a887",
+      "exit": 0
+    },
+    {
+      "name": "recipes",
+      "source_log": "pjan57-recipes.log",
+      "source_log_sha256": "cb199756e7a0f8d10b899e7fc42406ad834736b236f871ff1e2af58bc463194f",
+      "redacted_log_sha256": "cb199756e7a0f8d10b899e7fc42406ad834736b236f871ff1e2af58bc463194f",
+      "exit": 0
+    },
+    {
+      "name": "dogfood",
+      "source_log": "pjan57-dogfood.log",
+      "source_log_sha256": "a80bceaa5940e8c16771e55d3c9287602b6578ecc93d09c8322ec58a011e8636",
+      "redacted_log_sha256": "a80bceaa5940e8c16771e55d3c9287602b6578ecc93d09c8322ec58a011e8636",
+      "exit": 0
+    },
+    {
+      "name": "generated",
+      "source_log": "pjan57-generated.log",
+      "source_log_sha256": "fc21b530a0f7ab0984bd5a1a6bdaa386e7520f49144c28cf446168c941806108",
+      "redacted_log_sha256": "fc21b530a0f7ab0984bd5a1a6bdaa386e7520f49144c28cf446168c941806108",
+      "exit": 0
+    },
+    {
+      "name": "probe-build",
+      "source_log": "pjan57-probe-build.log",
+      "source_log_sha256": "5830f0b4f4e249fb855175a05dfc675c4162c77be14f34bf9f4367c1bba57257",
+      "redacted_log_sha256": "d09a7fd8bdbd88568064c620d0777ce837dc4d11989a362e1a302873d8505235",
+      "exit": 0
+    },
+    {
+      "name": "tree-probe",
+      "source_log": "pjan57-tree-probe.log",
+      "source_log_sha256": "2330d4d314389dd9d0a45953ab190f1ded583369ae4dbd7c7847fb799d00bc7a",
+      "redacted_log_sha256": "2330d4d314389dd9d0a45953ab190f1ded583369ae4dbd7c7847fb799d00bc7a",
+      "exit": 0
+    },
+    {
+      "name": "tree-probe-repro",
+      "source_log": "pjan57-tree-probe-repro.log",
+      "source_log_sha256": "2330d4d314389dd9d0a45953ab190f1ded583369ae4dbd7c7847fb799d00bc7a",
+      "redacted_log_sha256": "2330d4d314389dd9d0a45953ab190f1ded583369ae4dbd7c7847fb799d00bc7a",
+      "exit": 0
+    },
+    {
+      "name": "typecheck",
+      "source_log": "pjan57-typecheck.log",
+      "source_log_sha256": "cb25c22044fdf8939d8afa39d27b4043f55474852dafe277c977ec9616064e17",
+      "redacted_log_sha256": "cb25c22044fdf8939d8afa39d27b4043f55474852dafe277c977ec9616064e17",
+      "exit": 0
+    },
+    {
+      "name": "lock",
+      "source_log": "pjan57-lock.log",
+      "source_log_sha256": "06d101f3b5c6b96962a66dc3b1013743a2ef5280b43ba2d65046fbae31b9f2fd",
+      "redacted_log_sha256": "06d101f3b5c6b96962a66dc3b1013743a2ef5280b43ba2d65046fbae31b9f2fd",
+      "exit": 0
+    },
+    {
+      "name": "submodules",
+      "source_log": "pjan57-submodules.log",
+      "source_log_sha256": "a23328366f55f2764596a5d8f48f475ac1da610152587746ed6f673cdaedd4bb",
+      "redacted_log_sha256": "a23328366f55f2764596a5d8f48f475ac1da610152587746ed6f673cdaedd4bb",
+      "exit": 0
+    },
+    {
+      "name": "tracked-secrets",
+      "source_log": "pjan57-tracked-secrets.log",
+      "source_log_sha256": "2add5abd2e8a9f662aee09b64ad50904796e4d70125d4e8db563fc461372d478",
+      "redacted_log_sha256": "2add5abd2e8a9f662aee09b64ad50904796e4d70125d4e8db563fc461372d478",
+      "exit": 0
+    },
+    {
+      "name": "package-submodules",
+      "source_log": "pjan57-package-submodules.log",
+      "source_log_sha256": "2ff45fc5725adbe5466f90593f0edc55aeb7f4e6e626c0bfae5b6fce7775f64c",
+      "redacted_log_sha256": "2ff45fc5725adbe5466f90593f0edc55aeb7f4e6e626c0bfae5b6fce7775f64c",
+      "exit": 0
+    },
+    {
+      "name": "bmad-real",
+      "source_log": "pjan57-bmad-real.log",
+      "source_log_sha256": "f5626afc90c3d8293994512bab90f846aefbc5730faccd3efdff84a835e368bc",
+      "redacted_log_sha256": "f5626afc90c3d8293994512bab90f846aefbc5730faccd3efdff84a835e368bc",
+      "exit": 0
+    },
+    {
+      "name": "full-test",
+      "source_log": "pjan57-full-test.log",
+      "source_log_sha256": "bac81e31197a4ed0b8f9223fec713798ce152694b9a46657a8b6d9ba208c7b9e",
+      "redacted_log_sha256": "7ef6dcea1ccecab4431bc969523cb2468aafe27d2fa9d1d5b70b37e31b0ff16b",
+      "exit": 1
+    },
+    {
+      "name": "npm-pack",
+      "source_log": "pjan57-npm-pack.log",
+      "source_log_sha256": "f2f9594ae58382f95a74db7c6b1bff23f16e319014085a1d783e48cbc7c490b0",
+      "redacted_log_sha256": "f2f9594ae58382f95a74db7c6b1bff23f16e319014085a1d783e48cbc7c490b0",
+      "exit": 0
+    },
+    {
+      "name": "published-inspect",
+      "source_log": "pjan57-published-inspect.log",
+      "source_log_sha256": "81658a58ce60709e0c5b232c849943b0851054d80a6d2ea5c09178c1b4648be3",
+      "redacted_log_sha256": "e3e7d5516c586e956c8e9dff9f01b39f66585ac0dc56a44fa16a40a46304db28",
+      "exit": 0
+    },
+    {
+      "name": "tarball-digest",
+      "source_log": "pjan57-tarball-digest.log",
+      "source_log_sha256": "4671add64f6256dcf9dab8d6aa31b6db0d279a5253ea00e2d736e03174cbc3df",
+      "redacted_log_sha256": "4671add64f6256dcf9dab8d6aa31b6db0d279a5253ea00e2d736e03174cbc3df",
+      "exit": 0
+    },
+    {
+      "name": "no-secret",
+      "source_log": "pjan57-no-secret.log",
+      "source_log_sha256": "31d82ed4a475dbab124c2a17d2eb7b144123247479897858db4f80afa48909d2",
+      "redacted_log_sha256": "b210928c148927b8854495201366d2ffa6762fac08b8f49fad0990feb5105cdf",
+      "exit": 0
+    },
+    {
+      "name": "attestation",
+      "source_log": "pjan57-attestation.log",
+      "source_log_sha256": "d3f4c96208f8f1576d0eefad3e9309dd7212a6ee5ede13c9171c9a4868f9e556",
+      "redacted_log_sha256": "d3f4c96208f8f1576d0eefad3e9309dd7212a6ee5ede13c9171c9a4868f9e556",
+      "exit": 0
+    },
+    {
+      "name": "opt-out",
+      "source_log": "pjan57-opt-out.log",
+      "source_log_sha256": "d0397e339e050485c2967bb923457b0845ef998d863b299a3118843516085ac0",
+      "redacted_log_sha256": "d0397e339e050485c2967bb923457b0845ef998d863b299a3118843516085ac0",
+      "exit": 0
+    },
+    {
+      "name": "bmad-config-authority",
+      "source_log": "pjan57-bmad-config-authority.log",
+      "source_log_sha256": "22c70cfa838edecbcf1310bd73b63d085511fd7b3a9c52a32bf55d0e53c42d6d",
+      "redacted_log_sha256": "22c70cfa838edecbcf1310bd73b63d085511fd7b3a9c52a32bf55d0e53c42d6d",
+      "exit": 0
+    },
+    {
+      "name": "full-test-rerun",
+      "source_log": "pjan57-full-test-rerun.log",
+      "source_log_sha256": "23fe7b9f22fd323bbd49154a4a3ed280daa0dfabbbb32caa25832a4504a0750d",
+      "redacted_log_sha256": "60e59e977d9a0e93100ae9a459c4a06ab6a52b09b1f5cf04f39e91f70752792d",
+      "exit": 1
+    },
+    {
+      "name": "initial-spec-review",
+      "source_log": "pjan57-spec-review.md",
+      "source_log_sha256": "90fc3832ed47ba8f1ce93ae8e6769dc374a1a3fc7420a877f7177f66ec09de82"
+    },
+    {
+      "name": "initial-quality-review",
+      "source_log": "pjan57-quality-review.md",
+      "source_log_sha256": "9b3ce3aefd8de452840b3e3ac7f89c55a91d07b9f45191fa5a79a515783b1a31"
+    }
+  ]
+}

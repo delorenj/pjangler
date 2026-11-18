@@ -1,0 +1,242 @@
+npm notice run @delorenj/pjangler@1.5.47 test
+npm notice run node scripts/run-tests.mjs
+gate  typecheck ... ok (2.7s)
+gate  build ... ok (369ms)
+[ 1/120] check:lock ... PASS (26ms)
+[ 2/120] check:submodules ... PASS (60ms)
+[ 3/120] check:submodule-checkout ... PASS (44ms)
+[ 4/120] check:tracked-secrets ... PASS (3.7s)
+[ 5/120] check:hermetic-test-env ... PASS (954ms)
+[ 6/120] pjan-165-import-regressions ... PASS (6.8s)
+[ 7/120] pjan-165-import-receipt-recovery ... PASS (15.0s)
+[ 8/120] pjan-80-cli-regressions ... PASS (2.9s)
+[ 9/120] pjan-80-bootstrap-regressions ... PASS (228ms)
+[10/120] pjan-80-registry-consumers ... PASS (549ms)
+[11/120] pjan-80-consumer-concurrency ... PASS (1.0s)
+[12/120] pjan-80-migration-regressions ... PASS (1.6s)
+[13/120] pjan-80-registry-regressions ... PASS (698ms)
+[14/120] registry-bind-host-regressions ... PASS (118ms)
+[15/120] project-json-home-repo-path-regressions ... PASS (2.8s)
+[16/120] package-lock-parity-regressions ... PASS (65ms)
+[17/120] portable-test-paths-regressions ... PASS (28ms)
+[18/120] release-regressions ... PASS (121ms)
+[19/120] pjan-160-release-version-regressions ... PASS (1.3s)
+[20/120] pjan-189-release-push-regressions ... PASS (2.3s)
+[21/120] submodule-contract-regressions ... PASS (2.6s)
+[22/120] secret-publication-gate-regressions ... PASS (2.8s)
+[23/120] bmad-version-surface-regressions ... PASS (48ms)
+[24/120] bmad-authority-regressions ... PASS (40ms)
+[25/120] coverage-ratchet-regressions ... PASS (317ms)
+[26/120] coverage-path-audit-regressions ... PASS (77ms)
+[27/120] parity-migrate-regressions ... PASS (20.6s)
+[28/120] pjan-208-bmad-pin-currency-regressions ... PASS (3.1s)
+[29/120] pjan-127-skills-core-regressions ... PASS (7.9s)
+[30/120] pjan-128-skills-wiring-regressions ... PASS (894ms)
+[31/120] pjan-135-skill-roots-regressions ... PASS (1.7s)
+[32/120] pjan-135-skill-roots-safety-regressions ... PASS (12.2s)
+[33/120] pjan-135-skill-roots-property ... PASS (42.0s)
+[34/120] pjan-135-guidance-commands-regressions ... PASS (16.7s)
+[35/120] pjan-135-mise-hooks-regressions ... PASS (222ms)
+[36/120] pjan-135-mise-rewrite-regressions ... PASS (3.1s)
+[37/120] pjan-141-142-skills-parity-regressions ... PASS (694ms)
+[38/120] pjan-176-bmad-installer-skills-regressions ... PASS (1.8s)
+[39/120] pjan-166-bmad-setup-scripts-regressions ... FAIL (13.1s)
+✔ PJAN-166: pinned installer provenance, preview no-write, apply from package, repeat convergence (1153.40208ms)
+✔ PJAN-166: missing one script restores only that script, preserving operator data (4.190112ms)
+✔ PJAN-166: a foreign symlink refuses before mutation; a manifest that attests other bytes withholds only that script (5.069889ms)
+✔ PJAN-166: same-byte foreign inode survives rollback after later publish fails (2.568848ms)
+✔ PJAN-166: EEXIST on a foreign hard link to staged inode preserves that collision (2.80317ms)
+✔ PJAN-166: exception after link leaves ambiguous output, rolling back confirmed links only (3.063179ms)
+✔ PJAN-166: swapped script directory never redirects publication or rollback into symlink target (5.021087ms)
+✔ PJAN-166: swapped new directory reports retained directory honestly (3.210177ms)
+✔ PJAN-166: parent swap never removes foreign staging content and retains owned stage honestly (2.397365ms)
+✔ PJAN-166: foreign additions in owned stage survive cleanup with incomplete recovery reported (2.583195ms)
+✔ PJAN-166: replaced stage pathname never deletes foreign stage or follows its contents (3.052349ms)
+✔ PJAN-166: replaced staged entry is never published; owned outputs roll back and foreign stage survives (3.394504ms)
+✔ PJAN-166: same-inode staged content mutation is refused, with truthful retention (2.923506ms)
+✔ PJAN-166: mutation of already published inode blocks success and does not erase it (3.149923ms)
+✔ PJAN-166: foreign stage addition after last publish invalidates success and rolls back outputs (3.340843ms)
+✔ PJAN-166: failed publish leaves no partial scripts or staging and retains foreign files (3.02128ms)
+✔ PJAN-166: every pinned sha256 is the real package's, for each pinned version and every script (0.266732ms)
+✔ PJAN-166: the inspection decides from the disk alone, by the pinned bytes, and restorable means attested (0.78563ms)
+✔ PJAN-166: manifest rows that are not exactly the installer's attestation decline that script, never restore it (9.098377ms)
+✔ PJAN-166: an install whose manifest.yaml names the pinned version and whose scripts are missing fails fixably, lists the paths, and migrates to a pass (407.322942ms)
+✔ PJAN-166: restorability is the manifest row's bytes, not the manifest.yaml version label (1713.382377ms)
+✔ PJAN-166: `pj migrate --all --dry-run` (the built CLI) reports bmad.setup-scripts applied for a manifest-labelled pinned install, never blocked (1753.676505ms)
+✔ PJAN-166: the real install used below really is the shape the review measured (15.211882ms)
+✔ PJAN-166: healthy real installs are present at any mode, version or manifest, and never resolve the package (14.339699ms)
+✔ PJAN-166: `pj audit` on real installs is ok, runs no npx, and never reports a fail (1441.604209ms)
+✔ PJAN-166: a missing memlog.py on a real install at another version skips with a remedy that is not the no-op bmad.version, resolving and writing nothing (18.992572ms)
+✔ PJAN-166: a real install at another version missing every script restores the four it can attest and declines memlog.py, with the reason and the remedy (627.060212ms)
+✔ PJAN-166: an install whose manifest has no row for a missing script skips without a probe, and is told the remedy that works for its shape (perth and alpha) (10.059918ms)
+✔ PJAN-166: a declined script that bmad.scaffold needs is never called optional, while the other scripts are still restored (197.359127ms)
+✖ PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary) (245.53121ms)
+✔ PJAN-166: a manifest that attests other bytes than the pinned package skips with the remedy, never fails (3.139032ms)
+✔ PJAN-166: a malformed manifest is a visible failure decided from the disk, never a decline or a write (42.767062ms)
+✔ PJAN-166: an unreachable pinned package is a skip naming the network remedy, never a fail (real npx, offline, cold cache) (480.424724ms)
+✔ PJAN-166: the resolver keeps its 180s default, honours a given timeout, and reads only an exact version from the npx cache (7.415227ms)
+✔ PJAN-166: the audit waits at most the probe cap for the package, and a migrate waits the resolver's default (441.349415ms)
+✔ PJAN-166: with npx hung, the audit skips at its cap naming the network remedy, and migrate declines the same way (hermetic: a local shim, killed fast) (1204.585026ms)
+✔ PJAN-166: a migrate handed the audit's give-up finding retries with its own wait, and restores (782.529923ms)
+✔ PJAN-166: each package-side decline names its own remedy, and only a resolver failure suggests waiting for npm (127.685838ms)
+✔ PJAN-166: a mistyped or non-package PJ_BMAD_INSTALLER skips and says to fix or unset it (1.181065ms)
+✔ PJAN-166: a pre-manifest install (no files-manifest.csv) skips with the install remedy, never fails or writes (0.761765ms)
+✔ PJAN-166: scripts and manifest both missing skips, says the scripts are missing, and names the install remedy (13.981554ms)
+✔ PJAN-166: a g33-enabled project is pointed at bmad.scaffold, never at a bare installer run, and told the g33 prerequisite while its adapter is unavailable (52.756478ms)
+✔ PJAN-166: a dangling or live symlinked _config is a visible refusal naming the path and the missing scripts, not an absent manifest (21.47584ms)
+✔ PJAN-166: scripts that appear while the package is being resolved (a concurrent installer) read as present, never a decline or a double write (13.306112ms)
+✔ PJAN-166: a symlink, directory or symlinked directory where a script belongs stays a visible refusal (31.450547ms)
+ℹ tests 45
+ℹ suites 0
+ℹ pass 44
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10895.844128
+
+✖ failing tests:
+
+test at tests/pjan-166-bmad-setup-scripts-regressions.mjs:837:1
+✖ PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary) (245.53121ms)
+  AssertionError [ERR_ASSERTION]: 6.3.1-next.13 is not a published bmad-method release
+      at TestContext.<anonymous> (file://<REPO>/tests/pjan-166-bmad-setup-scripts-regressions.mjs:849:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+[40/120] pjan-166-config-authority-regressions ... PASS (31.0s)
+[41/120] pjan-144-registry-field-regressions ... PASS (452ms)
+[42/120] pjan-145-waiver-regressions ... PASS (89ms)
+[43/120] pjan-147-env-materialization-opt-out-regressions ... PASS (3.8s)
+[44/120] pjan-57-lifecycle-recipes-regressions ... PASS (317ms)
+[45/120] pjan-167-g33-companion ... PASS (14.2s)
+[46/120] pjan-188-hermetic-canary-regressions ... PASS (183ms)
+[47/120] pjan-193-env-allowlist-regressions ... PASS (1.3s)
+[48/120] pjan-196-suite-env-probe ... PASS (83ms)
+[49/120] pjan-196-suite-env-canary ... PASS (1.1s)
+[50/120] pjan-198-operator-home-guard ... PASS (265ms)
+[51/120] pjan-198-pjan75-cli-src ... PASS (18.2s)
+[52/120] pjan-198-installer-env-sentinel ... PASS (192ms)
+[53/120] pjan-167-enrollment ... PASS (1.3s)
+[54/120] pjan-177-g33-enrollment ... PASS (3.5s)
+[55/120] pjan-178-g33-scoped-contract ... PASS (687ms)
+[56/120] pjan-179-g33-preupdate-gap ... PASS (5.8s)
+[57/120] pjan-180-scoped-rollback ... PASS (1.6s)
+[58/120] pjan-181-reserved-manifest-modules ... PASS (6.7s)
+[59/120] pjan-184-tree-primitives-regressions ... PASS (209ms)
+[60/120] pjan-57-dogfood-regressions ... PASS (6.5s)
+[61/120] generated-project-lifecycle-regressions ... PASS (3.7s)
+[62/120] pjan-23-regressions ... PASS (1.4s)
+[63/120] pjan-24-regressions ... PASS (2.7s)
+[64/120] pjan-30-regressions ... PASS (304ms)
+[65/120] pjan-31a-regressions ... PASS (732ms)
+[66/120] pjan-169-obsidian-plugin-regressions ... PASS (8.4s)
+[67/120] pjan-36-regressions ... PASS (3.6s)
+[68/120] pjan-43-regressions ... PASS (16.8s)
+[69/120] pjan-49-regressions ... PASS (1.1s)
+[70/120] pjan-50-regressions ... PASS (1.3s)
+[71/120] pjan-65-regressions ... PASS (5.7s)
+[72/120] pjan-67-lifecycle-preflight-regressions ... PASS (310ms)
+[73/120] pjan-67-regressions ... PASS (278ms)
+[74/120] pjan-67-trusted-lifecycle-regressions ... PASS (3.1s)
+[75/120] pjan-71-regressions ... PASS (5.4s)
+[76/120] pjan-72-regressions ... PASS (770ms)
+[77/120] pjan-75-regressions ... PASS (18.3s)
+[78/120] pjan-76-regressions ... PASS (813ms)
+[79/120] pjan-87-board-read-regressions ... PASS (3.4s)
+[80/120] pjan-17-provider-parity-regressions ... PASS (154ms)
+[81/120] pjan-17-canonical-binding-regressions ... PASS (1.7s)
+[82/120] board-schema-regressions ... PASS (10.1s)
+[83/120] pjan-126-gitignore-policy-regressions ... PASS (954ms)
+[84/120] skillex-init-regressions ... PASS (8.8s)
+[85/120] pjan-84-registry-flag-regressions ... PASS (3.0s)
+[86/120] pjan-84-finding-scope-regressions ... PASS (2.4s)
+[87/120] pjan-84-orphan-adoption-regressions ... PASS (4.2s)
+[88/120] pjan-130-init-target-regressions ... PASS (4.2s)
+[89/120] pjan-209-init-bootstrap-regressions ... PASS (9.5s)
+[90/120] pjan-210-hub-versioning-regressions ... PASS (4.5s)
+[91/120] pjan-211-init-preflight-regressions ... PASS (8.7s)
+[92/120] mcp-catalog-regressions ... PASS (25ms)
+[93/120] mcp-server-regressions ... PASS (340ms)
+[94/120] project-registry-regressions ... PASS (6.7s)
+[95/120] shared-board-scope-regressions ... PASS (93ms)
+[96/120] init-board-ingress-regressions ... PASS (8.0s)
+[97/120] pjan-199-project-rename ... PASS (5.8s)
+[98/120] pjan-199-project-rename-unit ... PASS (530ms)
+[99/120] project-identity-regressions ... PASS (840ms)
+[100/120] project-identity-implicit-regressions ... PASS (751ms)
+[101/120] pg-registry-regressions ... PASS (754ms)
+[102/120] momo-lifecycle-plane-regressions ... PASS (938ms)
+[103/120] pjan-77-notebook-domain-regressions ... PASS (1.7s)
+[104/120] pjan-77-notebook-adapter-contract ... PASS (2.7s)
+[105/120] pjan-77-notebook-lifecycle-regressions ... PASS (394ms)
+[106/120] pjan-77-notebook-cli-contract ... PASS (764ms)
+[107/120] pjan-77-notebook-hooks-capture ... PASS (22.4s)
+[108/120] pjan-77-notebook-security-isolation ... PASS (525ms)
+[109/120] pjan-77-notebook-release-gates ... PASS (2.6s)
+[110/120] pjan-144-journal-notebook-service ... PASS (2.1s)
+[111/120] pjan-174-crank-regressions ... PASS (499ms)
+[112/120] pjan-184-crank-units ... PASS (3.8s)
+[113/120] pjan-214-crank-v2 ... PASS (4.6s)
+[114/120] pjan-186-crank-error-replies ... PASS (2.3s)
+[115/120] crank-arbiter-regressions ... PASS (2.5s)
+[116/120] crank-arbiter-drift ... FAIL (33ms)
+vendored arbiter: the composed library equals the installed one
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: tests/data/crank-arbiter is stale. Refresh it: cp <HOME>/.agents/tools/jev-clairic/bin/crank.lua <REPO>/tests/data/crank-arbiter/crank.lua && cp <HOME>/code/33GOD/bloodbank/services/agent-hooks/core/statekit_prelude.lua <REPO>/tests/data/crank-arbiter/statekit_prelude.lua
++ actual - expected
+... Skipped lines
+
+  '#!lua name=crank\n' +
+    '-- statekit_prelude.lua -- shared conventions for 33GOD Redis state machines.\n' +
+    '--\n' +
+    '-- Prepended (by core/statekit.py) to every arbiter body: asm.lua (an EVAL\n' +
+    '-- script) and crank.lua (a Redis Functions library). It defines ONE local\n' +
+...
+    '--   crank:engine                HASH   engine heartbeat: ts, scan_ms, panes, session (TTL 1d)\n' +
+-   '-- Crank v2 session bindings (crank:b:*, crank:idx:pane:*): see "Crank v2 bindings" below.\n' +
+    '--\n' +
+    '-- The rule (the ONLY copy; zcrank.py, zcrankctl and pjangler ask crank_resolve):\n' +
+    '--   a pane override under ANY owner spelling decides (every one found must be 1);\n' +
+    '--   else the tab: every governing key must have enabled=1 (any OFF wins);\n' +
+    '--   no key at all = OFF ("unlisted"). Interval: the LONGEST set on any key, else\n' +
+...
+    '  local on = bool01(r.on)\n' +
++   '  if cur.on ~= on then\n' +
++   '    seq = seq + 1\n' +
++   '    upd.on, upd.since = on, now\n' +
++   '    edges[#edges + '... 12058 more characters
+-   ' '... 21639 more characters
+
+    at file://<REPO>/tests/crank-arbiter-drift.mjs:24:10
+    at ModuleJob.run (node:internal/modules/esm/module_job:447:25)
+    at async node:internal/modules/esm/loader:646:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: '#!lua name=crank\n' +
+[REDACTED: 501 lines of Node assertion actual/expected Lua string payload omitted; original raw SHA-256 in manifest]
+Node.js v26.4.0
+[117/120] prompt-pipeline-regressions ... PASS (3.5s)
+[118/120] pjan-187-tui-load ... PASS (2.3s)
+[119/120] pjan-191-pty-run-regressions ... PASS (8.3s)
+[120/120] pjan-202-crank-panes ... PASS (16.1s)
+
+========================================================================
+SUMMARY  attempted 120  passed 118  failed 2  quarantined-failing 0  (505.7s)
+========================================================================
+FAIL      pjan-166-bmad-setup-scripts-regressions
+FAIL      crank-arbiter-drift

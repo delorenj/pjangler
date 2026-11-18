@@ -1,0 +1,3 @@
+npm notice run @delorenj/pjangler@1.5.47 check:submodules
+npm notice run node scripts/check-submodule-contract.mjs
+submodule-contract: verified

@@ -1,0 +1,2 @@
+{"treeEntriesIncludingHidden":81,"hiddenTopLevel":[".agents/",".claude/",".codex/",".copier-answers.yml",".copilot/",".env.op",".gemini/",".github/",".gitignore",".kimi/",".kimi-code/",".mise/",".opencode/",".project.json",".zcode/"],"repeatInitDelta":[],"migrationDeltas":[[],[]],"supportedRoots":[".claude",".codex",".gemini",".copilot",".opencode",".kimi-code",".zcode"],"unsupportedPresent":[],"auditOk":true,"installerFixture":"6.12.1"}
+PJAN-57 packed generated-project lifecycle: PASS (delorenj-pjangler-1.5.47.tgz, 724993 bytes, 70 entries)

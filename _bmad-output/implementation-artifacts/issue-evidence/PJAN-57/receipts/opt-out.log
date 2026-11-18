@@ -1,0 +1,12 @@
+✔ opted out, the installed materializer is a finding, not parity (554.042832ms)
+✔ opted out, migrate removes the hook and the script, keeps the repo's own hook, and never touches .env (661.439906ms)
+✔ opted out and already clean, the rule passes and migrate is a noop (723.2818ms)
+✔ without the opt-out (absent, or any value but false) the materializer is still required (1786.547585ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3729.504589

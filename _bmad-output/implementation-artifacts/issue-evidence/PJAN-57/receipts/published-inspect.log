@@ -1,0 +1,3 @@
+tarball <SCRATCH>/pjan57-published/delorenj-pjangler-1.3.0.tgz members 77
+lifecycle content ['package/dist/index.js', 'package/templates/commonproject/template/.mise/scripts/materialize-env.sh', 'package/templates/commonproject/copier.yml']
+bundle markers [('RecipeRegistry', True), ('secrets.env-op', True), ('mise-op-inject', True), ('migrateRules', True), ('project_name', True)]

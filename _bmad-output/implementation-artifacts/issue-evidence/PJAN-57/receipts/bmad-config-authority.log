@@ -1,0 +1,3 @@
+npm notice run @delorenj/pjangler@1.5.47 test:bmad-config-authority
+npm notice run node tests/pjan-166-bmb-setup-contract.mjs
+PJAN-166 BMB config-authority contract passed (real bmad-method install, real bmad-bmb-setup scripts, Contract A rows 1-7 on real trees, repeat setup/repair x3 each checked against the model, scripts-only restore with no reinstall)

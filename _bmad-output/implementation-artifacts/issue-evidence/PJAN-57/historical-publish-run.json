@@ -1,0 +1,30 @@
+{
+  "url": "https://github.com/delorenj/pjangler/actions/runs/31897731391",
+  "headSha": "65e54c0fe594d57f949164527d57c5f48db06638",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "publish",
+      "conclusion": "success",
+      "steps": [
+        {
+          "name": "Run npm run typecheck",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run npm run test:bmad-installer-contract",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run npm test",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run npm publish --provenance",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+npm notice run @delorenj/pjangler@1.5.47 build
+npm notice run esbuild src/index.ts src/mcp-server.ts src/prompt.ts src/prompt-refresh.ts src/project-registry-service.ts src/notebook/journal-service-main.ts --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && esbuild src/crank/tui.tsx --bundle --packages=external --platform=node --format=esm --sourcemap --outbase=src --outdir=dist && node scripts/export-project-notebook-skill.mjs
+
+  dist/index.js                                1.2mb ⚠️
+  dist/mcp-server.js                         884.9kb
+  dist/notebook/journal-service-main.js      286.6kb
+  dist/prompt-refresh.js                      64.8kb
+  dist/project-registry-service.js            40.5kb
+  dist/prompt.js                              26.5kb
+  dist/index.js.map                            2.6mb
+  dist/mcp-server.js.map                       1.9mb
+  dist/notebook/journal-service-main.js.map  759.3kb
+  dist/prompt-refresh.js.map                 472.5kb
+  dist/project-registry-service.js.map        83.4kb
+  dist/prompt.js.map                          82.9kb
+
+⚡ Done in 35ms
+
+  dist/crank/tui.js      16.0kb
+  dist/crank/tui.js.map  52.3kb
+
+⚡ Done in 3ms
+project-notebook skill: verified tracked packed export
