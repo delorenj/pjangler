@@ -405,12 +405,18 @@ end
 --                                          interval, schedule, candybar_id, on=1,
 --                                          since (attach ms), last_fire (ms), fires,
 --                                          last_class, last_officer, last_officer_ms,
---                                          next_due (ms), seq, updated_ms
+--                                          next_due (ms), reclocked_ms, seq, updated_ms
 --                                          (TTL three intervals, at least 1h; every
 --                                          attach and fire refreshes it)
---   crank:idx:pane:<session>:<pane> STRING the binding bound in that pane (same TTL)
---   crank:idx:bindings              SET    every crank:b key
---   crank:t:b:<binding>             STREAM that binding's transitions (MAXLEN ~500)
+--   crank:idx:pane:<session>:<pane> STRING the binding bound in that pane (TWICE the hash
+--                                          TTL: a pointer whose hash expired reads as a
+--                                          crank that stopped firing, never as "off")
+--   crank:idx:bindings              SET    every crank:b key (attach prunes expired ones)
+--   crank:t:b:<binding>             STREAM that binding's transitions (MAXLEN ~500,
+--                                          expires with the binding)
+--   crank:b:<binding>:ended         STRING tombstone: the end reason (TTL 3d, the longest
+--                                          a hash can live). An ended binding never comes back:
+--                                          a fire that finishes after its end is refused.
 -- Transitions also go to crank:t and crank:transitions, subject crank:b:<binding>.
 -- Kept apart from crank:p / crank:idx:panes on purpose: crank_scan rewrites every
 -- pane hash it sees and deletes the indexed ones it does not, so a v2 pane must
@@ -418,6 +424,7 @@ end
 do
   local B_IDX = 'crank:idx:bindings'
   local B_MIN_TTL_MS = 3600000
+  local B_TOMB_TTL_MS = 3 * 86400000
   local B_FIELDS = { 'cli', 'session_id', 'pid', 'pid_start', 'project', 'root',
                      'zellij_session', 'pane', 'interval', 'schedule', 'candybar_id',
                      'next_due', 'last_class', 'last_officer', 'last_officer_ms' }
@@ -453,7 +460,8 @@ do
     return math.max(B_MIN_TTL_MS, s * 3000)
   end
 
-  local function b_edge(name, where, field, from, to, since, cause, by, now, seq, detail)
+  -- One transition: the binding's own stream (expiring with it), crank:t and the channel.
+  local function b_edge(name, where, field, from, to, since, cause, by, now, seq, ttl, detail)
     local rec = { subject = 'crank:b:' .. name, binding = name, session = where.zellij_session,
                   pane = where.pane, field = field, from = from, to = to, since = since,
                   cause = cause, by = by, ts = now, seq = seq }
@@ -465,7 +473,9 @@ do
         fields[#fields + 1] = rec[k]
       end
     end
-    sk.emit('crank:t:b:' .. name, PANE_STREAM, fields, nil, nil)
+    local tkey = 'crank:t:b:' .. name
+    sk.emit(tkey, PANE_STREAM, fields, nil, nil)
+    redis.call('PEXPIRE', tkey, ttl)
     sk.emit('crank:t', ALL_STREAM, fields, CHANNEL, cjson.encode(rec))
     return rec
   end
@@ -474,11 +484,20 @@ do
     return 'crank:idx:pane:' .. session .. ':' .. pane
   end
 
+  local function b_tomb(name)
+    return 'crank:b:' .. name .. ':ended'
+  end
+
   -- attach and fire share one upsert: a fire whose hash expired (Redis restarted,
   -- a 1d crank outlived its TTL) re-creates it from the facts the fire carries.
+  -- An ENDED binding (tombstone) is refused: its last fire may finish after its end.
   local function b_upsert(q, by, cause)
     local name = b_name(q.binding)
     if not name then return cjson.encode({ error = 'binding must be crank-<cli>-<sid8>-<pid>' }) end
+    local ended = redis.call('GET', b_tomb(name))
+    if ended then
+      return cjson.encode({ binding = name, refused = 'ended', reason = ended, created = false })
+    end
     local bkey = 'crank:b:' .. name
     local now = sk.now_ms()
     local cur = sk.hgetall(bkey)
@@ -491,6 +510,7 @@ do
     local session = info.zellij_session or cur.zellij_session
     local pane = info.pane or cur.pane
     local interval = info.interval or cur.interval
+    local ttl = b_ttl(interval)
     local seq = tonumber(cur.seq) or 0
     local edges = {}
     local where = { zellij_session = session, pane = pane }
@@ -499,17 +519,18 @@ do
       seq = seq + 1
       info.on, info.since = '1', now
       edges[#edges + 1] = b_edge(name, where, 'on', '', '1', now,
-        cause == 'fire' and 'reappear' or 'attach', by, now, seq)
+        cause == 'fire' and 'reappear' or 'attach', by, now, seq, ttl)
     else
       if info.interval and cur.interval and info.interval ~= cur.interval then
         seq = seq + 1
+        info.reclocked_ms = now
         edges[#edges + 1] = b_edge(name, where, 'interval', cur.interval, info.interval,
-          tonumber(cur.since) or now, cause, by, now, seq)
+          tonumber(cur.since) or now, cause, by, now, seq, ttl)
       end
       if info.pane and cur.pane and info.pane ~= cur.pane then
         seq = seq + 1
         edges[#edges + 1] = b_edge(name, where, 'pane', cur.pane, info.pane,
-          tonumber(cur.since) or now, cause, by, now, seq)
+          tonumber(cur.since) or now, cause, by, now, seq, ttl)
         local old = b_pointer(cur.zellij_session or session or '', cur.pane)
         if redis.call('GET', old) == name then redis.call('DEL', old) end
       end
@@ -520,11 +541,21 @@ do
     end
     info.binding, info.seq, info.updated_ms = name, seq, now
     sk.hset(bkey, info)
-    local ttl = b_ttl(interval)
     redis.call('PEXPIRE', bkey, ttl)
+    redis.call('PEXPIRE', 'crank:t:b:' .. name, ttl)
     redis.call('SADD', B_IDX, bkey)
     if session and session ~= '' and pane then
-      redis.call('SET', b_pointer(session, pane), name, 'PX', ttl)
+      local ptr = b_pointer(session, pane)
+      local holder = redis.call('GET', ptr)
+      -- attach claims the pane; a fire only keeps its own claim (never takes a successor's)
+      if cause == 'attach' or not holder or holder == name then
+        redis.call('SET', ptr, name, 'PX', 2 * ttl)
+      end
+    end
+    if cause == 'attach' then
+      for _, k in ipairs(redis.call('SMEMBERS', B_IDX)) do
+        if redis.call('EXISTS', k) == 0 then redis.call('SREM', B_IDX, k) end
+      end
     end
     return cjson.encode({ binding = name, created = created, seq = seq, ttl_ms = ttl, edges = edges })
   end
@@ -533,7 +564,7 @@ do
   -- json: {binding, cli, session_id, pid, pid_start, project, root, zellij_session,
   --        pane, interval, schedule, candybar_id, next_due?}
   -- Idempotent: a repeat keeps `since` and emits only real changes (interval, pane).
-  -- Returns JSON {binding, created, seq, ttl_ms, edges}.
+  -- Returns JSON {binding, created, seq, ttl_ms, edges} or {binding, refused="ended", reason}.
   local function crank_attach(keys, args)
     return b_upsert(cjson.decode(args[1] or '{}'), args[2] or 'pj', 'attach')
   end
@@ -548,8 +579,8 @@ do
   -- FCALL crank_end 0 <json> <by>
   -- json: {binding, reason, detail?, zellij_session?, pane?} (the pane facts drop the
   -- pointer even when the hash already expired). Emits on: <was> -> ended, cause
-  -- = the reason (explicit|session_end|superseded|disabled|pane_closed|orphan_reaped).
-  -- Returns JSON {binding, ended, edges}.
+  -- = the reason (explicit|session_end|superseded|disabled|pane_closed|orphan_reaped),
+  -- and leaves the tombstone. Returns JSON {binding, ended, edges}.
   local function crank_end(keys, args)
     local q = cjson.decode(args[1] or '{}')
     local by = args[2] or 'pj'
@@ -562,22 +593,26 @@ do
     local pane = cur.pane or b_pane(q.pane)
     local edges = {}
     local reason = sk.str(q.reason)
+    if reason == '' then reason = 'ended' end
     if cur.binding ~= nil then
       edges[1] = b_edge(name, { zellij_session = session, pane = pane }, 'on', cur.on or '1', 'ended',
-        now, reason ~= '' and reason or 'ended', by, now, (tonumber(cur.seq) or 0) + 1, sk.str(q.detail))
+        now, reason, by, now, (tonumber(cur.seq) or 0) + 1, B_TOMB_TTL_MS, sk.str(q.detail))
     end
     if session ~= '' and pane then
       local ptr = b_pointer(session, pane)
       if redis.call('GET', ptr) == name then redis.call('DEL', ptr) end
     end
+    redis.call('SET', b_tomb(name), reason, 'PX', B_TOMB_TTL_MS)
     redis.call('DEL', bkey)
     redis.call('SREM', B_IDX, bkey)
     return cjson.encode({ binding = name, ended = cur.binding ~= nil, edges = edges })
   end
 
   -- FCALL_RO crank_get 0 <session> <pane>
-  -- The binding bound in that zellij pane, as a flat HGETALL reply; an empty reply
-  -- when none is (or the pointer outlived a hash that now names another pane).
+  -- The binding bound in that zellij pane, as a flat HGETALL reply. Empty when none is,
+  -- or when the pointer outlived a hash that now names another pane. A pointer whose hash
+  -- EXPIRED (no fire refreshed it for three intervals, and it was never ended) answers
+  -- {binding, pane, expired=1}: a crank that stopped firing, which a reader shows as stalled.
   -- pane: N or terminal_N. One round trip: the prompt pipelines this with its other reads.
   local function crank_get(keys, args)
     local session, pane = sk.str(args[1]), b_pane(args[2])
@@ -585,6 +620,10 @@ do
     local name = redis.call('GET', b_pointer(session, pane))
     if not name then return {} end
     local flat = redis.call('HGETALL', 'crank:b:' .. name)
+    if #flat == 0 then
+      if redis.call('EXISTS', b_tomb(name)) == 1 then return {} end
+      return { 'binding', name, 'pane', pane, 'expired', '1' }
+    end
     for i = 1, #flat, 2 do
       if flat[i] == 'pane' then
         if flat[i + 1] == pane then return flat end

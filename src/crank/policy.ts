@@ -16,6 +16,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
+export { nextFire } from "./schedule";
+
 /** The radio choices the TUI and the `enable` picker offer. Any `<N>m|<N>h|1d` is accepted on the CLI. */
 export const CRANK_INTERVAL_CHOICES = ["5m", "15m", "1h", "6h", "1d"] as const;
 export const DEFAULT_INTERVAL = "5m";
@@ -114,43 +116,6 @@ export function intervalCron(interval: string, seed: string): string {
     return `${minute} ${stagger(`${seed}:h`, n)}-23/${n} * * *`;
   }
   return `${minute} ${9 + stagger(`${seed}:d`, 10)} * * *`;
-}
-
-// ---------------------------------------------------------------------------
-// Next fire for the cron shapes intervalCron() writes (host-local wall clock)
-// ---------------------------------------------------------------------------
-
-function fieldMatches(field: string, value: number): boolean {
-  if (field === "*") return true;
-  return field.split(",").some((part) => {
-    const [range = "*", stepRaw] = part.split("/");
-    const step = stepRaw ? Number(stepRaw) : 1;
-    let lo: number;
-    let hi: number;
-    if (range === "*") {
-      lo = 0;
-      hi = 59;
-    } else if (range.includes("-")) {
-      [lo, hi] = range.split("-").map(Number) as [number, number];
-    } else {
-      lo = Number(range);
-      hi = stepRaw ? 59 : lo;
-    }
-    return value >= lo && value <= hi && (value - lo) % step === 0;
-  });
-}
-
-/** Next minute matching a `m h * * *` cron after `nowMs`, scanning at most two days. */
-export function nextFire(cron: string, nowMs: number): number | undefined {
-  const [minute, hour, dom, month, dow] = cron.trim().split(/\s+/);
-  if (!minute || !hour || dom !== "*" || month !== "*" || dow !== "*") return undefined;
-  const start = new Date(nowMs);
-  start.setSeconds(0, 0);
-  for (let i = 1; i <= 2 * 24 * 60; i++) {
-    const at = new Date(start.getTime() + i * 60_000);
-    if (fieldMatches(minute, at.getMinutes()) && fieldMatches(hour, at.getHours())) return at.getTime();
-  }
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------

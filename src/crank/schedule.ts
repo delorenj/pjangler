@@ -50,3 +50,42 @@ export function nextRunMs(input: { enabled: boolean; interval: CrankInterval; la
   }
   return Math.ceil(earliest / tick) * tick;
 }
+
+// ---------------------------------------------------------------------------
+// Next fire for the cron shapes intervalCron() writes (host-local wall clock)
+// ---------------------------------------------------------------------------
+
+function fieldMatches(field: string, value: number): boolean {
+  if (field === "*") return true;
+  return field.split(",").some((part) => {
+    const [range = "*", stepRaw] = part.split("/");
+    const step = stepRaw ? Number(stepRaw) : 1;
+    let lo: number;
+    let hi: number;
+    if (range === "*") {
+      lo = 0;
+      hi = 59;
+    } else if (range.includes("-")) {
+      [lo, hi] = range.split("-").map(Number) as [number, number];
+    } else {
+      lo = Number(range);
+      hi = stepRaw ? 59 : lo;
+    }
+    return value >= lo && value <= hi && (value - lo) % step === 0;
+  });
+}
+
+/** Next minute matching a `m h * * *` cron after `nowMs`, scanning at most two days. */
+/** (Import-free so the prompt can count down to a v2 binding's own cron.) */
+export function nextFire(cron: string, nowMs: number): number | undefined {
+  const [minute, hour, dom, month, dow] = cron.trim().split(/\s+/);
+  if (!minute || !hour || dom !== "*" || month !== "*" || dow !== "*") return undefined;
+  const start = new Date(nowMs);
+  start.setSeconds(0, 0);
+  for (let i = 1; i <= 2 * 24 * 60; i++) {
+    const at = new Date(start.getTime() + i * 60_000);
+    if (fieldMatches(minute, at.getMinutes()) && fieldMatches(hour, at.getHours())) return at.getTime();
+  }
+  return undefined;
+}
+

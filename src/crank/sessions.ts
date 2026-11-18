@@ -28,9 +28,10 @@ import {
   type IdentifyInput,
   type Projector,
 } from "./binding";
-import { loadPolicy, nextFire, type EffectiveCrankPolicy } from "./policy";
+import { loadPolicy, type EffectiveCrankPolicy } from "./policy";
+import { nextFire } from "./schedule";
 
-export { nextFire } from "./policy";
+export { nextFire } from "./schedule";
 
 export interface ProjectRef {
   root: string;

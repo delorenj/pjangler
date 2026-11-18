@@ -26,7 +26,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { stringify as stringifyToml } from "smol-toml";
 import { redis, type BindingFn } from "./index";
-import { intervalCron, nextFire, type EffectiveCrankPolicy } from "./policy";
+import { intervalCron, type EffectiveCrankPolicy } from "./policy";
+import { nextFire } from "./schedule";
 
 export const BINDING_TAG = "crank-session";
 export const CRANK_TAG = "crank";

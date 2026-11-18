@@ -337,14 +337,19 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
      */
     binding: (fn: BindingFn, payload: Record<string, unknown>, by = "pj"): BindingWriteResult => {
       const raw = fcall("FCALL", fn, JSON.stringify(payload), by);
-      let parsed: { error?: unknown; created?: unknown; ended?: unknown; edges?: unknown };
+      let parsed: { error?: unknown; created?: unknown; ended?: unknown; refused?: unknown; edges?: unknown };
       try {
         parsed = JSON.parse(raw) as typeof parsed;
       } catch {
         throw new Error(`the crank arbiter answered ${fn} with something that is not JSON: ${raw.slice(0, 80)}`);
       }
       if (typeof parsed.error === "string") throw new Error(`the crank arbiter refused ${fn}: ${parsed.error}`);
-      return { created: parsed.created === true, ended: parsed.ended === true, edges: list(parsed.edges) };
+      return {
+        created: parsed.created === true,
+        ended: parsed.ended === true,
+        ...(typeof parsed.refused === "string" ? { refused: parsed.refused } : {}),
+        edges: list(parsed.edges),
+      };
     },
   };
 }
@@ -355,6 +360,8 @@ export type BindingFn = "crank_attach" | "crank_fire" | "crank_end";
 export interface BindingWriteResult {
   created: boolean;
   ended: boolean;
+  /** "ended": the binding was already ended (tombstone); a late fire never brings it back. */
+  refused?: string;
   edges: unknown[];
 }
 

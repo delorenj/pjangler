@@ -34,7 +34,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { redisEndpoint } from "./crank/redisEndpoint";
 import { redisPipeline, replyToHash } from "./crank/resp";
-import { nextRunMs, parseInterval } from "./crank/schedule";
+import { nextFire, nextRunMs, parseInterval } from "./crank/schedule";
 
 export const PIPELINE_CACHE_VERSION = 1;
 /** Older than this, the prompt asks for a refresh (and keeps showing what it has). */
@@ -74,6 +74,8 @@ export interface CrankState {
   nextDueMs?: number;
   /** v2 session: the interval in ms (v2 intervals are any 1-59m, 1-23h or 1d). */
   intervalMs?: number;
+  /** v2 session: the binding's own Candybar cron; the countdown reads it at render time. */
+  schedule?: string;
   /**
    * The engine had not scanned for CRANK_STALL_AFTER_MS when this was READ (judged at write time:
    * a cache shown 10m later must not turn a healthy engine's normal scan age into a false alarm).
@@ -234,13 +236,16 @@ export function v2IntervalMs(value: string | undefined): number | undefined {
 
 /**
  * The crank segment for a pane bound to a crank v2 session (`binding` is the crank_get reply as a
- * hash; empty = no binding here). A binding is ON while it exists. It is stalled when its last fire
- * (or its attach, before the first fire) is older than two intervals plus five minutes, and never
- * sooner than CRANK_STALL_AFTER_MS: Candybar has stopped firing it.
+ * hash; empty = no binding here). A binding is ON while it exists. It is stalled when its newest
+ * beat (last fire, else attach; a reclock restarts the clock) is older than two intervals plus five
+ * minutes, and never sooner than CRANK_STALL_AFTER_MS: Candybar has stopped firing it. A pointer
+ * whose hash expired (`expired=1`, never ended) is stalled outright: absence is never OFF.
  */
 export function crankFromBinding(binding: Record<string, string> | undefined, nowMs: number): CrankState | undefined {
   if (!binding?.binding) return undefined;
+  if (binding.expired === "1") return { enabled: true, scope: "session", stalled: true };
   const state: CrankState = { enabled: true, scope: "session" };
+  if (binding.schedule) state.schedule = binding.schedule;
   if (binding.interval) state.interval = binding.interval;
   const intervalMs = v2IntervalMs(binding.interval);
   if (intervalMs !== undefined) state.intervalMs = intervalMs;
@@ -250,7 +255,8 @@ export function crankFromBinding(binding: Record<string, string> | undefined, no
   if (lastFire !== undefined) state.lastRunMs = lastFire;
   const nextDue = hashMs(binding.next_due);
   if (nextDue !== undefined) state.nextDueMs = nextDue;
-  const beat = lastFire ?? since;
+  const beats = [lastFire, since, hashMs(binding.reclocked_ms)].filter((v): v is number => v !== undefined);
+  const beat = beats.length ? Math.max(...beats) : undefined;
   if (beat !== undefined) {
     state.engineScanMs = beat;
     const allowed = Math.max(CRANK_STALL_AFTER_MS, 2 * (intervalMs ?? 300_000) + 5 * 60_000);
@@ -337,7 +343,10 @@ export function formatCrank(crank: CrankState, nowMs: number = Date.now()): stri
   if (crank.onSinceMs !== undefined) parts.push(`↑${formatSpan(nowMs - crank.onSinceMs)}`);
   if (interval) parts.push(interval);
   const parsed = parseInterval(crank.interval);
-  if (crank.nextDueMs !== undefined) {
+  const scheduled = crank.schedule ? nextFire(crank.schedule, nowMs) : undefined;
+  if (scheduled !== undefined) {
+    parts.push(`⏳${formatCountdown(scheduled - nowMs)}`);
+  } else if (crank.nextDueMs !== undefined) {
     let next = crank.nextDueMs;
     if (crank.intervalMs && next < nowMs) next += Math.ceil((nowMs - next) / crank.intervalMs) * crank.intervalMs;
     parts.push(`⏳${formatCountdown(next - nowMs)}`);

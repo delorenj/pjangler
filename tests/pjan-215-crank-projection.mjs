@@ -101,6 +101,22 @@ await test("formatCrank rolls a passed next_due forward by whole intervals", () 
   assert.equal(formatCrank(state, now), "⚡ crank ↑10m ↻5m ⏳4m");
 });
 
+await test("the countdown reads the binding's own cron (a 7m cron wraps at the hour; whole-interval math would not)", () => {
+  const now = new Date(2026, 10, 18, 12, 59, 30).getTime();
+  const state = crankFromBinding({ binding: NAME, interval: "7m", schedule: "3-59/7 * * * *", since: String(now - 600_000), last_fire: String(now - 300_000), next_due: String(now - 120_000) }, now);
+  assert.equal(nextFire("3-59/7 * * * *", now), new Date(2026, 10, 18, 13, 3, 0).getTime());
+  assert.equal(formatCrank(state, now), "⚡ crank ↑10m ↻7m ⏳3m");
+});
+
+await test("a reclock restarts the stall clock; an expired pointer is stalled, never off", () => {
+  const now = 1_800_000_000_000;
+  const reclocked = crankFromBinding({ binding: NAME, interval: "5m", since: String(now - 3 * 3_600_000), last_fire: String(now - 2 * 3_600_000), reclocked_ms: String(now - 60_000) }, now);
+  assert.equal(reclocked.stalled, undefined);
+  const expired = crankFromBinding({ binding: NAME, pane: "terminal_19", expired: "1" }, now);
+  assert.deepEqual(expired, { enabled: true, scope: "session", stalled: true });
+  assert.equal(formatCrank(expired, now), "⚠ crank stalled");
+});
+
 await test("projectionFacts derives the staggered schedule and next fire when the record has none (a fire from runner env)", () => {
   const now = Date.parse("2026-11-18T12:00:30Z");
   const out = projectionFacts({ name: NAME, cli: "claude", sessionId: "s", pid: 1, pidStart: "2", projectSlug: "p", projectRoot: "/r", zellijSession: "Workspace", paneId: "19", interval: "5m", schedule: "", candybarId: "c" }, now);
@@ -123,6 +139,7 @@ const hash = (key) => {
   return out;
 };
 const bkey = `crank:b:${NAME}`;
+const N4 = "crank-claude-44444444-4";
 const ptr = "crank:idx:pane:Workspace:terminal_19";
 
 try {
@@ -155,7 +172,9 @@ try {
     assert.equal(h.last_class, "working");
     assert.equal(h.interval, "2h");
     assert.ok(Number(rs.cli("PTTL", bkey)) > 5.9 * 3_600_000, "TTL is three intervals");
-    assert.ok(Number(rs.cli("PTTL", ptr)) > 5.9 * 3_600_000, "the pointer shares it");
+    assert.ok(Number(rs.cli("PTTL", ptr)) > 11.9 * 3_600_000, "the pointer lives twice as long (an expired hash reads as stalled)");
+    assert.ok(Number(rs.cli("PTTL", `crank:t:b:${NAME}`)) > 5.9 * 3_600_000, "the binding's stream expires with it");
+    assert.ok(Number(h.reclocked_ms) > 0, "an interval change restarts the stall clock");
     fcall("crank_fire", facts({ interval: "2h", last_class: "waiting" }));
     assert.equal(hash(bkey).fires, "2");
     assert.equal(hash(bkey).last_class, "waiting");
@@ -210,6 +229,46 @@ try {
     rs.cli("DEL", ptr);
   });
 
+  await test("an ended binding never comes back: a late fire is refused and cannot take the successor's pane", () => {
+    const successor = "crank-claude-cccc2222-200";
+    fcall("crank_attach", facts({ binding: successor, interval: "1d" }));
+    assert.equal(rs.cli("GET", ptr), successor);
+    const late = fcall("crank_fire", facts());
+    assert.equal(late.refused, "ended");
+    assert.equal(late.reason, "orphan_reaped", "the tombstone holds the LAST end reason");
+    assert.equal(rs.cli("EXISTS", bkey), "0");
+    assert.equal(rs.cli("GET", ptr), successor);
+    const tombTtl = Number(rs.cli("PTTL", `crank:b:${NAME}:ended`));
+    assert.ok(tombTtl > 2.9 * 86_400_000, `tombstone outlives any hash (3d), got ${tombTtl}`);
+    assert.ok(Number(rs.cli("PTTL", `crank:t:b:${NAME}`)) > 0, "the ended binding's stream still expires");
+    fcall("crank_end", { binding: successor, reason: "explicit" });
+  });
+
+  await test("a fire never steals a pane another binding holds; attach does claim it", () => {
+    const a = "crank-claude-aaaa0001-301";
+    const b = "crank-claude-bbbb0002-302";
+    const pane3 = "crank:idx:pane:Workspace:terminal_3";
+    fcall("crank_attach", facts({ binding: a, pane: "3" }));
+    fcall("crank_attach", facts({ binding: b, pane: "3" }));
+    assert.equal(rs.cli("GET", pane3), b);
+    fcall("crank_fire", facts({ binding: a, pane: "3" }));
+    assert.equal(rs.cli("GET", pane3), b);
+    for (const name of [a, b]) fcall("crank_end", { binding: name, reason: "explicit" });
+  });
+
+  await test("an attach prunes index members whose hash expired; a pointer that outlived its hash reads expired", () => {
+    const gone = "crank-claude-dddd0004-404";
+    fcall("crank_attach", facts({ binding: gone, pane: "4" }));
+    rs.cli("DEL", `crank:b:${gone}`);
+    assert.equal(rs.cli("FCALL_RO", "crank_get", "0", "Workspace", "4").split("\n").join(" "), `binding ${gone} pane terminal_4 expired 1`);
+    const other = "crank-claude-eeee0005-505";
+    fcall("crank_attach", facts({ binding: other, pane: "5" }));
+    assert.equal(rs.cli("SISMEMBER", "crank:idx:bindings", `crank:b:${gone}`), "0");
+    fcall("crank_end", { binding: gone, reason: "orphan_reaped", zellij_session: "Workspace", pane: "4" });
+    assert.equal(rs.cli("FCALL_RO", "crank_get", "0", "Workspace", "4"), "", "ended: no pointer, nothing to say");
+    fcall("crank_end", { binding: other, reason: "explicit" });
+  });
+
   await test("a malformed binding name is refused", () => {
     assert.equal(fcall("crank_attach", facts({ binding: "zcrank:tab:x" })).error, "binding must be crank-<cli>-<sid8>-<pid>");
   });
@@ -220,9 +279,11 @@ try {
 
   await test("the store's binding() writes through the arbiter and throws on a refusal", () => {
     const store = redis({ port: rs.port });
-    assert.equal(store.binding("crank_attach", facts()).created, true);
+    const n2 = "crank-claude-22222222-2";
+    assert.equal(store.binding("crank_attach", facts({ binding: n2 })).created, true);
     assert.throws(() => store.binding("crank_attach", facts({ binding: "nope" })), /refused crank_attach/);
-    assert.equal(store.binding("crank_end", { binding: NAME, reason: "explicit" }).ended, true);
+    assert.equal(store.binding("crank_end", { binding: n2, reason: "explicit" }).ended, true);
+    assert.equal(store.binding("crank_fire", facts({ binding: n2 })).refused, "ended", "a refusal by tombstone is an answer, not a throw");
   });
 
   await test("redisProjector is fail-open: a dead Redis leaves a receipt in projection.jsonl, never a throw", () => {
@@ -231,14 +292,14 @@ try {
     process.env.CRANK_STATE_DIR = state;
     try {
       process.env.ZCRANK_REDIS_PORT = String(rs.port);
-      redisProjector("crank_attach", facts());
-      assert.equal(rs.cli("GET", ptr), NAME, "the live path wrote");
+      redisProjector("crank_attach", facts({ binding: N4 }));
+      assert.equal(rs.cli("GET", ptr), N4, "the live path wrote");
       process.env.ZCRANK_REDIS_PORT = "1";
-      assert.doesNotThrow(() => redisProjector("crank_fire", facts()));
+      assert.doesNotThrow(() => redisProjector("crank_fire", facts({ binding: N4 })));
       const rows = readFileSync(join(state, "projection.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
       assert.equal(rows.length, 1);
       assert.equal(rows[0].fn, "crank_fire");
-      assert.equal(rows[0].binding, NAME);
+      assert.equal(rows[0].binding, N4);
       assert.match(rows[0].error, /not answering/);
     } finally {
       for (const [k, v] of [["ZCRANK_REDIS_PORT", saved.port], ["CRANK_STATE_DIR", saved.state]]) {
@@ -264,7 +325,7 @@ try {
   });
 
   await test("prompt: once the binding ends the legacy hash decides again", async () => {
-    fcall("crank_end", { binding: NAME, reason: "explicit" });
+    fcall("crank_end", { binding: N4, reason: "explicit" });
     const state = await readPaneCrank(paneEnv, Date.now());
     assert.equal(state.enabled, false);
     assert.equal(state.scope, "tab");
