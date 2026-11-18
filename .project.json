@@ -50,5 +50,9 @@
   },
   "created_at": "2026-07-07T09:55:28.313Z",
   "updated_at": "2026-07-07T09:55:28.313Z",
-  "project_id": "pjangler"
+  "project_id": "pjangler",
+  "crank": {
+    "enabled": true,
+    "interval": "5m"
+  }
 }
