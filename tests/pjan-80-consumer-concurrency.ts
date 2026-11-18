@@ -43,7 +43,7 @@ try {
     await delay(50);
   }
   assert.ok(url, output);
-  write({ project_id: "px", project_name: "Pilot", ticket_provider: { type: "plane", workspace: "33god", identifier: "PX", board_id: "initial-board", state: "planned", x_provider: "keep" }, notebook: { policy: { enabled: false, session_capture_enabled: false }, binding: { state: "linked", notebook_id: "initial-notebook", overview_note_id: "overview", x_extension: "keep" } }, x_unknown: { keep: true } });
+  write({ project_id: "px", project_name: "Pilot", ticket_provider: { type: "plane", workspace: "33god", identifier: "PX", board_id: "", state: "planned", x_provider: "keep" }, notebook: { policy: { enabled: false, session_capture_enabled: false }, binding: { state: "linked", notebook_id: "initial-notebook", overview_note_id: "overview", x_extension: "keep" } }, x_unknown: { keep: true } });
   registryRequest(url, "POST", "/v1/index", { manifest_path: path });
 
   let resolved = resolveNotebookProjectBySlug("PX", url);
@@ -71,10 +71,10 @@ try {
 
   globalThis.fetch = async () => {
     write({ ...read(), x_unknown: { ...read().x_unknown, during_provider_lookup: true } });
-    return new Response(JSON.stringify([{ id: "target-board", identifier: "PX", name: "Pilot" }]));
+    return new Response(JSON.stringify([{ id: "operator-board", identifier: "PX", name: "Pilot" }]));
   };
-  await linkProjectBoard({ slug: "px", boardId: "target-board", registryPath: url, apply: true, env: { PLANE_API_KEY: "test-placeholder", PLANE_BASE_URL: "http://unused.test" }, home: temporary });
-  assert.equal(read().ticket_provider.board_id, "target-board");
+  await linkProjectBoard({ slug: "px", boardId: "operator-board", registryPath: url, apply: true, env: { PLANE_API_KEY: "test-placeholder", PLANE_BASE_URL: "http://unused.test" }, home: temporary });
+  assert.equal(read().ticket_provider.board_id, "operator-board");
   assert.equal(read().ticket_provider.x_provider, "keep");
   assert.equal(read().x_unknown.during_provider_lookup, true);
   assert.equal(read().notebook.policy.session_capture_enabled, true);

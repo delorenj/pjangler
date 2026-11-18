@@ -405,6 +405,8 @@ server.listen(0, "127.0.0.1", () => console.log(server.address().port));
       ["absent", undefined, "plane"],
       ["malformed", { type: 2, board_id: "old" }, "plane"],
       ["other-board", { type: "plane", board_id: "manifest-board" }, "plane"],
+      ["requested-board", { type: "plane", board_id: "manifest-board" }, "plane"],
+      ["requested-trello-board", { type: "trello", board_id: "manifest-board" }, "trello"],
       ["other-workspace", { type: "plane", workspace: "manifest-space", board_id: "" }, "plane"],
     ]) {
       const slug = `link-${label}`;

@@ -1352,6 +1352,9 @@ export async function linkProjectBoard(options: {
     if (typeof manifestBoard === "string" && manifestBoard && current.board_id && manifestBoard !== current.board_id) {
       throw new BoardError(`Cannot link board: registry board ${current.board_id} conflicts with canonical manifest board ${manifestBoard}`);
     }
+    if (typeof manifestBoard === "string" && manifestBoard && manifestBoard !== boardId) {
+      throw new BoardError(`Cannot link board: requested board ${boardId} conflicts with canonical manifest board ${manifestBoard}`);
+    }
   }
   const type = current.type?.trim().toLowerCase();
   if (type !== "plane" && type !== "trello") {
