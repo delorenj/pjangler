@@ -8,8 +8,9 @@
 // own startup floor.
 //
 // Contract with starship: print ONE line and exit 0 when the cwd is inside a
-// pjangler project, print NOTHING otherwise. Starship renders a custom
-// module's format wrapper even when the command fails, so "no output" — not a
+// pjangler project (or, in a zellij pane outside every project, a crank-only
+// line once the crank answer is known: crank mode belongs to the pane), print
+// NOTHING otherwise. Starship renders a custom module's format wrapper even when the command fails, so "no output" — not a
 // non-zero exit — is what makes the extra prompt line disappear cleanly.
 //
 // `--url [ref]` is the second contract: print the board (or work-item) URL for
@@ -33,6 +34,7 @@ import {
   formatCrank,
   freshSegments,
   maybeRefresh,
+  PANE_ONLY_ROOT,
   pipelineCachePath,
   readPipelineCache,
   type CandybarCounts,
@@ -88,8 +90,8 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
   };
 }
 
-/** `pjangler (PJAN) · 3m · <candy> 3/124 · ⚡ crank 5m` — deliberately terse; a prompt is not a report. */
-export function formatPromptLine(facts: PromptFacts): string {
+/** `pjangler (PJAN) · 3m · <candy> 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m` — deliberately terse; a prompt is not a report. */
+export function formatPromptLine(facts: PromptFacts, nowMs: number = Date.now()): string {
   const parts = [facts.slug];
   // The board prefix is context, not a competing identity. PJAN-80 collapsed
   // project identity onto the manifest's `project_id` and dropped this badge on
@@ -105,22 +107,36 @@ export function formatPromptLine(facts: PromptFacts): string {
   // The pipeline segments sit after the age: identity first, then the 33GOD machinery around it.
   // Each is omitted (never guessed) when its source did not answer or the cache has expired.
   if (facts.candybars) segments.push(formatCandybars(facts.candybars));
-  if (facts.crank) segments.push(formatCrank(facts.crank));
+  // Crank stays the LAST segment: it is the one that moves (the countdown), so it ends the line.
+  if (facts.crank) segments.push(formatCrank(facts.crank, nowMs));
   return segments.join(" · ");
+}
+
+/**
+ * A zellij pane outside every pjangler project: crank mode is the pane's, not a project's, so the
+ * line is just the crank segment (`⚡ crank ↑22m ↻5m ⏳4m`), or nothing until the refresher knows.
+ */
+export function paneOnlyLine(nowMs: number, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!env.ZELLIJ_PANE_ID) return undefined;
+  const cachePath = pipelineCachePath(PANE_ONLY_ROOT, env);
+  const cache = readPipelineCache(cachePath, PANE_ONLY_ROOT);
+  const { crank } = freshSegments(cache, nowMs);
+  maybeRefresh(PANE_ONLY_ROOT, cachePath, cache, nowMs, env);
+  return crank ? formatCrank(crank, nowMs) : undefined;
 }
 
 /** Returns the line to print, or undefined when there is nothing to say. */
 export function promptLine(cwd: string, now?: Date, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const root = findProjectRoot(cwd);
-  if (!root) return undefined;
-  const facts = readPromptFacts(root, now);
   const nowMs = (now ?? new Date()).getTime();
+  const root = findProjectRoot(cwd);
+  if (!root) return paneOnlyLine(nowMs, env);
+  const facts = readPromptFacts(root, now);
   const cachePath = pipelineCachePath(root, env);
   const cache = readPipelineCache(cachePath, root);
   Object.assign(facts, freshSegments(cache, nowMs));
   // Stale-while-revalidate: print what the cache says now, refresh behind the prompt.
   maybeRefresh(root, cachePath, cache, nowMs, env);
-  return formatPromptLine(facts);
+  return formatPromptLine(facts, nowMs);
 }
 
 function main(): void {

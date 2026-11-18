@@ -46,6 +46,15 @@ import { cyan, dim, green, heading, yellow } from "../utils/style";
 import { engineSummary, type EngineStatus } from "./engine";
 
 export * from "./engine";
+export * from "./schedule";
+import {
+  INTERVAL_SECONDS,
+  ZCRANK_DEFAULT_INTERVAL,
+  isDue,
+  nextRunMs,
+  parseInterval,
+  type CrankInterval,
+} from "./schedule";
 
 export const ZCRANK_REDIS_HOST = "127.0.0.1";
 export const ZCRANK_REDIS_PORT = 6379;
@@ -96,26 +105,11 @@ export function canon(name: string | undefined): string {
 // Intervals, last runs, due / next-run math (PJAN-182)
 // ---------------------------------------------------------------------------
 //
-// Keep in sync with zcrank.py: the engine applies exactly this rule when it picks which
-// tabs a */5 tick may crank. pjangler only DISPLAYS "due" and "next run"; the engine decides.
+// The pure interval/due/next-run math lives in ./schedule (no imports) so the shell prompt can
+// use it without this module; re-exported here so every caller keeps one import path.
 
-export const ZCRANK_INTERVALS = ["5m", "1h", "6h", "1d"] as const;
-export type CrankInterval = (typeof ZCRANK_INTERVALS)[number];
-/** The global default when zcrank:config has no (valid) interval: "every tick", today's behaviour. */
-export const ZCRANK_DEFAULT_INTERVAL: CrankInterval = "5m";
-export const INTERVAL_SECONDS: Record<CrankInterval, number> = { "5m": 300, "1h": 3600, "6h": 21600, "1d": 86400 };
-/** The Hermes crank cron (777c511a009c) ticks every 5 minutes. */
-export const ZCRANK_CRON_SECONDS = 300;
-/** A slow tab fires on the first tick at/after interval - GRACE, so a 1h tab slips to 55m, not 65m. */
-export const ZCRANK_GRACE_SECONDS = 300;
 /** Log states pjangler itself writes; every other state is a crank beat row from `zcrankctl log`. */
 export const PJANGLER_LOG_STATES: readonly string[] = ["enabled", "disabled", "interval", "renamed"];
-
-/** An interval string, or undefined for anything outside the four (garbage reads as absent). */
-export function parseInterval(value: string | undefined | null): CrankInterval | undefined {
-  const v = (value ?? "").trim();
-  return (ZCRANK_INTERVALS as readonly string[]).includes(v) ? (v as CrankInterval) : undefined;
-}
 
 /** The longest valid interval among several keys' values, or undefined when none is set. */
 export function longestInterval(values: (string | undefined | null)[]): CrankInterval | undefined {
@@ -185,28 +179,6 @@ export function beatRows(rawLogs: string[][]): LogRow[] {
 export function lastRunMs(rawLogs: string[][]): number | undefined {
   const newest = beatRows(rawLogs)[0];
   return newest && newest.tsMs > 0 ? newest.tsMs : undefined;
-}
-
-/** Due rule: <= 5m is always due; slower tabs are due once now >= last run + interval - GRACE. */
-export function isDue(interval: CrankInterval, lastRun: number | undefined, nowMs: number): boolean {
-  if (INTERVAL_SECONDS[interval] <= ZCRANK_CRON_SECONDS) return true;
-  if (lastRun === undefined) return true;
-  return nowMs >= lastRun + (INTERVAL_SECONDS[interval] - ZCRANK_GRACE_SECONDS) * 1000;
-}
-
-/**
- * Display-only next run: undefined when crank is OFF, else the first 5-minute wall-clock tick
- * at or after max(now, last run + interval - GRACE). A tick landing exactly on `now` counts
- * as "now" (the cron is firing). For <= 5m that is just the next tick.
- */
-export function nextRunMs(input: { enabled: boolean; interval: CrankInterval; lastRun: number | undefined; nowMs: number }): number | undefined {
-  if (!input.enabled) return undefined;
-  const tick = ZCRANK_CRON_SECONDS * 1000;
-  let earliest = input.nowMs;
-  if (INTERVAL_SECONDS[input.interval] > ZCRANK_CRON_SECONDS && input.lastRun !== undefined) {
-    earliest = Math.max(earliest, input.lastRun + (INTERVAL_SECONDS[input.interval] - ZCRANK_GRACE_SECONDS) * 1000);
-  }
-  return Math.ceil(earliest / tick) * tick;
 }
 
 /** "4m 12s", "1h 03m", "2d 3h"; seconds granularity under an hour. */

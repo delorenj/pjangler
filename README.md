@@ -165,23 +165,40 @@ state reflects your last fetch — nothing here touches the network.
 ## Shell prompt
 
 `pjangler-prompt` prints one compact line when the working directory is inside a
-pjangler project, and nothing at all when it is not:
+pjangler project. Outside every project it prints nothing, except in a zellij
+pane, where it prints the pane's crank segment alone once that is known: crank
+mode belongs to the pane, not the project.
 
 ```
-pjangler (PJAN) · 3m · 🍬 3/124 · ⚡ crank 5m
+pjangler (PJAN) · 3m · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
 ```
 
-After the slug, board prefix and age come two 33GOD pipeline segments:
+After the slug, board prefix and age come two 33GOD pipeline segments, crank last:
 
 - `🍬 3/124` — candybars registered (non-archived) for this repo / in the whole
   Candybar registry (`GET $CANDYBAR_API_URL/candybars`, default
   `http://127.0.0.1:8700`; the project is the `project:<repo>` tag, where
   `<repo>` is the main checkout's basename, exactly as `candybar ls` resolves it).
-- `⚡ crank 5m` / `◌ crank off` — whether the crank beat may type into **this
-  pane**, decided by the engine's rule (`zcrank.py crank_enabled`): a
+- `◌ crank off`, or `⚡ crank ↑3d4h ↻5m ⏳2m` — whether the crank beat may type
+  into **this pane**, decided by the engine's rule (`zcrank.py crank_enabled`): a
   `zcrank:pane` override wins, else every key naming the live tab must be ON.
   Outside the `Workspace` zellij session it shows the project's own switch, as
-  `pj crank` resolves it. The interval is the one the beat visits the tab at.
+  `pj crank` resolves it. When ON, three numbers follow:
+  - `↑3d4h` how long crank has been ON **without a break** (`22m`, `5h22m`,
+    `3d4h`, `1w3d`). In a Workspace pane that is the engine's own record,
+    `~/.local/state/zcrank/on_since.json`: the pane open and ON at every 5m scan
+    since then, sharpened to the `enabled` log row that started the run. It
+    restarts when the pane closes, crank goes OFF for it, its tab is renamed, or
+    the engine stops scanning. Outside Workspace: the tab's last `enabled` row
+    with no `disabled` after it. Unknown = left out.
+  - `↻5m` the interval the beat visits the tab at.
+  - `⏳2m` the countdown to the next crank: minutes, then seconds (`42s`) in the
+    last minute, then `now`. Worked out at render time from the interval and the
+    tab's last beat (`pj crank`'s next-run rule), so it keeps counting between
+    cache refreshes.
+
+  If the engine has not scanned for 15 minutes it is not cranking anything,
+  whatever Redis says, and the segment reads `⚠ crank stalled 25m ↻5m`.
 
 The candybar icon (shown as 🍬 above) is really the `outline/candy` icon from
 [delorenj/icons](https://github.com/delorenj/icons), vendored in

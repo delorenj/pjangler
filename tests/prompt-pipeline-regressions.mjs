@@ -3,7 +3,9 @@ import "./helpers/hermetic-suite.mjs";
 //   - the cache contract: a foreign/garbage/wrong-version cache is ignored, an expired one is
 //     hidden, a stale one is shown AND refreshed;
 //   - the refresh lock: exclusive, and a dead child's lock is taken over;
-//   - the formatting: `<candy U+10EF0D> project/total`, `⚡ crank 5m` / `◌ crank off`, omitted when unknown;
+//   - the formatting: `<candy U+10EF0D> project/total`, `⚡ crank ↑3d4h ↻5m ⏳2m` / `◌ crank off`, parts
+//     omitted when unknown, `⚠ crank stalled` when the engine stopped scanning;
+//   - crank uptime: the engine's per-pane continuity (on_since.json) sharpened by `enabled` rows;
 //   - the refresher's pure halves: candybar counting and the engine's crank_enabled rule;
 //   - end to end: the built dist/prompt.js prints the cached segments, and stays silent off-project.
 
@@ -26,7 +28,7 @@ writeFileSync(
   [
     `export * from ${JSON.stringify(join(root, "src/prompt-pipeline.ts"))};`,
     `export { formatPromptLine } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
-    `export { candybarProjectName, countCandybars, engineCrankFor, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
+    `export { candybarProjectName, countCandybars, engineCrankFor, paneOnSinceMs, readCandybars, readCrank, readEngineContinuity, sweepCacheDir, tabOnSinceMs, writeCacheAtomically, zcrankStateDir } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
   ].join("\n"),
 );
 const kitOut = join(workspace, "kit.mjs");
@@ -45,6 +47,8 @@ const {
   pipelineCacheDir, pipelineCachePath, readPipelineCache, freshSegments, needsRefresh,
   formatCandybars, formatCrank, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine,
   countCandybars, engineCrankFor, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically, candybarProjectName,
+  formatSpan, formatCountdown, CRANK_STALL_AFTER_MS, PANE_ONLY_ROOT,
+  paneOnSinceMs, tabOnSinceMs, readEngineContinuity, zcrankStateDir,
 } = kit;
 
 let passed = 0;
@@ -156,8 +160,9 @@ await test("segments follow the age, in order, joined by ·", () => {
   const base = { root: projectRoot, slug: "pjangler", identifier: "PJAN", age: "3m", active: true };
   assert.equal(formatPromptLine(base), "pjangler (PJAN) · 3m");
   assert.equal(
-    formatPromptLine({ ...base, candybars: { project: 3, total: 124 }, crank: { enabled: true, interval: "1h", scope: "tab" } }),
-    `pjangler (PJAN) · 3m · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank 1h`,
+    formatPromptLine({ ...base, candybars: { project: 3, total: 124 }, crank: { enabled: true, interval: "1h", scope: "tab" } }, NOW + 60_000),
+    `pjangler (PJAN) · 3m · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻1h ⏳4m`,
+    "crank is the LAST segment: a 1h tab that never ran is due at the next 5m tick",
   );
   assert.equal(formatPromptLine({ ...base, age: undefined, candybars: null, crank: { enabled: false, scope: "pane" } }), "pjangler (PJAN) · ◌ crank off");
 });
@@ -170,6 +175,105 @@ await test("unknown is omitted, OFF is explicit", () => {
   assert.equal(formatCandybars({ project: 0, total: 7 }, { PJ_PROMPT_CANDYBAR_GLYPH: "🍫" }), "🍫 0/7", "override for a machine without the font");
   assert.equal(formatCrank({ enabled: false, interval: "5m", scope: "tab" }), "◌ crank off");
   assert.equal(formatCrank({ enabled: true, scope: "project" }), "⚡ crank");
+});
+await test("uptime spans: two largest units, a zero second unit dropped", () => {
+  const m = 60_000, h = 60 * m, d = 24 * h;
+  assert.equal(formatSpan(0), "<1m");
+  assert.equal(formatSpan(59_999), "<1m");
+  assert.equal(formatSpan(22 * m + 59_000), "22m");
+  assert.equal(formatSpan(5 * h), "5h");
+  assert.equal(formatSpan(5 * h + 22 * m), "5h22m");
+  assert.equal(formatSpan(3 * d + 4 * h + 59 * m), "3d4h");
+  assert.equal(formatSpan(7 * d), "1w");
+  assert.equal(formatSpan(10 * d + 5 * h), "1w3d");
+  assert.equal(formatSpan(-5), "<1m", "a clock skew never prints a negative span");
+});
+await test("countdown: minutes, then seconds in the last minute, then now", () => {
+  assert.equal(formatCountdown(4 * 60_000 + 59_999), "4m");
+  assert.equal(formatCountdown(60_000), "1m");
+  assert.equal(formatCountdown(59_999), "59s");
+  assert.equal(formatCountdown(1_000), "1s");
+  assert.equal(formatCountdown(999), "now");
+  assert.equal(formatCountdown(-5_000), "now");
+  assert.equal(formatCountdown(65 * 60_000), "1h5m");
+  assert.equal(formatCountdown(6 * 3600_000), "6h");
+});
+await test("ON: uptime, interval, countdown — each from its own fact, each omitted when unknown", () => {
+  const tick = 300_000;
+  const on = { enabled: true, interval: "5m", scope: "tab", onSinceMs: NOW - (3 * 24 + 4) * 3600_000, engineScanMs: NOW - 60_000 };
+  assert.equal(formatCrank(on, NOW + 2 * 60_000 + 30_000), "⚡ crank ↑3d4h ↻5m ⏳2m");
+  assert.equal(formatCrank(on, NOW + tick - 42_000), "⚡ crank ↑3d4h ↻5m ⏳42s");
+  assert.equal(formatCrank(on, NOW), "⚡ crank ↑3d4h ↻5m ⏳now", "a tick landing on now is the cron firing");
+  assert.equal(formatCrank({ ...on, onSinceMs: undefined }, NOW + 1_000), "⚡ crank ↻5m ⏳4m");
+  // A 1h tab that ran 20m ago: next at the first tick at/after last + 55m.
+  const hourly = { enabled: true, interval: "1h", scope: "pane", lastRunMs: NOW - 20 * 60_000, onSinceMs: NOW - 22 * 60_000 };
+  assert.equal(formatCrank(hourly, NOW), "⚡ crank ↑22m ↻1h ⏳35m");
+  assert.equal(formatCrank({ ...hourly, interval: "banana" }, NOW), "⚡ crank ↑22m ↻banana", "no countdown for an interval we cannot schedule");
+  assert.equal(formatCrank({ enabled: false, scope: "tab", onSinceMs: NOW - 1 }, NOW), "◌ crank off");
+});
+await test("an engine that stopped scanning is not cranking: stalled, judged when the cache was written", () => {
+  const on = { enabled: true, interval: "5m", scope: "tab", onSinceMs: NOW - 3600_000, engineScanMs: NOW - 4 * 60_000 };
+  assert.match(formatCrank(on, NOW + 14 * 60_000), /^⚡ crank ↑1h/, "an old cache of a healthy engine is not an alarm");
+  assert.equal(formatCrank({ ...on, stalled: true, engineScanMs: NOW - 25 * 60_000 }, NOW), "⚠ crank stalled 25m ↻5m");
+  assert.equal(formatCrank({ enabled: true, scope: "tab", stalled: true }, NOW), "⚠ crank stalled");
+});
+await test("the cache carries the timing facts, and drops garbage ones with the whole crank", () => {
+  mkdirSync(cacheDir, { recursive: true });
+  const path = join(cacheDir, "timing.json");
+  const crank = { enabled: true, interval: "5m", scope: "pane", onSinceMs: NOW - 1, lastRunMs: NOW - 2, engineScanMs: NOW - 3 };
+  writeFileSync(path, JSON.stringify(cacheFile({ crank })));
+  assert.deepEqual(readPipelineCache(path, projectRoot).crank, crank);
+  for (const bad of [{ onSinceMs: "yesterday" }, { lastRunMs: -1 }, { engineScanMs: Number.POSITIVE_INFINITY }, { onSinceMs: 0 }, { stalled: "yes" }]) {
+    writeFileSync(path, JSON.stringify(cacheFile({ crank: { ...crank, ...bad } })));
+    assert.equal(readPipelineCache(path, projectRoot).crank, null, JSON.stringify(bad));
+  }
+});
+
+console.log("crank uptime");
+await test("pane: the engine's since, sharpened by the enable log", () => {
+  const since = NOW, m = 60_000;
+  assert.equal(paneOnSinceMs(since, {}, NOW), since);
+  assert.equal(paneOnSinceMs(since, { enabledMs: since - 4 * m }, NOW), since - 4 * m, "enabled at :01, first seen at :05");
+  assert.equal(paneOnSinceMs(since, { enabledMs: since - 5 * m }, NOW), since, "a tick or more earlier is an older run");
+  assert.equal(paneOnSinceMs(since, { enabledMs: since + 3 * m }, NOW), since, "an idempotent re-enable changes nothing");
+  assert.equal(paneOnSinceMs(since, { disabledMs: since + 2 * m, enabledMs: since + 3 * m }, NOW), since + 3 * m, "OFF then ON between two scans: a new run");
+  assert.equal(paneOnSinceMs(since, { enabledMs: since + 2 * m, disabledMs: since + 3 * m }, NOW), since, "OFF last (a pane override keeps it ON): the engine's run");
+  // Already ON when tracking began: reach back to the enable, unless an OFF came after it.
+  assert.equal(paneOnSinceMs(since, { enabledMs: since - 9 * 24 * 60 * m }, NOW, since), since - 9 * 24 * 60 * m);
+  assert.equal(paneOnSinceMs(since, { enabledMs: since - 9e6, disabledMs: since - 5e6 }, NOW, since), since);
+  assert.equal(paneOnSinceMs(since + 5 * m, { enabledMs: since - 9e6 }, NOW, since), since + 5 * m, "turned ON after tracking began");
+  // Not seen by the engine yet: only an enable newer than its last scan.
+  assert.equal(paneOnSinceMs(undefined, { enabledMs: NOW - 1_000 }, NOW - 2_000), NOW - 1_000);
+  assert.equal(paneOnSinceMs(undefined, { enabledMs: NOW - 3_000 }, NOW - 2_000), undefined, "the engine scanned after and did not see it ON");
+  assert.equal(paneOnSinceMs(undefined, {}, NOW), undefined);
+  assert.equal(paneOnSinceMs(undefined, { enabledMs: NOW - 1_000 }, undefined), NOW - 1_000, "no engine record at all");
+});
+await test("project (no pane): the oldest engine-tracked run on its tab; the log alone is unknown", () => {
+  const engine = { scanMs: NOW, panes: { terminal_1: { sinceMs: NOW - 9e6, tab: "heyma" }, terminal_2: { sinceMs: NOW - 5e6, tab: "heyma" }, terminal_3: { sinceMs: NOW - 9e7, tab: "other" } } };
+  assert.equal(tabOnSinceMs(engine, "HeyMa 🟢"), NOW - 9e6);
+  assert.equal(tabOnSinceMs(engine, "Nowhere"), undefined);
+  assert.equal(tabOnSinceMs(undefined, "HeyMa"), undefined);
+});
+await test("on_since.json: v1 shape only; junk rows dropped, junk files ignored", () => {
+  const dir = join(workspace, "zstate");
+  mkdirSync(dir, { recursive: true });
+  const env = { ZCRANK_STATE_DIR: dir };
+  assert.equal(zcrankStateDir(env), dir);
+  assert.equal(zcrankStateDir({ HOME: "/h" }), "/h/.local/state/zcrank");
+  assert.equal(readEngineContinuity(env), undefined, "absent");
+  writeFileSync(join(dir, "on_since.json"), JSON.stringify({
+    v: 1, scan_ts: "2026-11-18T16:10:00Z", fresh_since: "2026-11-17T00:00:00Z",
+    panes: { terminal_2: { since: "2026-11-15T12:00:00Z", tab: "gruvato" }, terminal_3: { since: "soon" }, terminal_4: null },
+  }));
+  assert.deepEqual(readEngineContinuity(env), {
+    scanMs: Date.parse("2026-11-18T16:10:00Z"),
+    panes: { terminal_2: { sinceMs: Date.parse("2026-11-15T12:00:00Z"), tab: "gruvato" } },
+    freshSinceMs: Date.parse("2026-11-17T00:00:00Z"),
+  });
+  for (const junk of ["nope", "[]", JSON.stringify({ v: 2, scan_ts: "2026-11-18T16:10:00Z", panes: {} }), JSON.stringify({ v: 1, scan_ts: "2026-11-18T16:10:00.5Z", panes: {} })]) {
+    writeFileSync(join(dir, "on_since.json"), junk);
+    assert.equal(readEngineContinuity(env), undefined, junk);
+  }
 });
 
 console.log("refresher: candybar");
@@ -295,7 +399,9 @@ console.log("refresher: crank against a throwaway Redis and a fake zellij");
   writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "heyma", project_name: "HeyMa" }));
   const savedCwd = process.cwd();
   process.chdir(proj);
-  const paneEnv = { ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "9" };
+  const zstate = join(workspace, "zstate-live");
+  mkdirSync(zstate, { recursive: true });
+  const paneEnv = { ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "9", ZCRANK_STATE_DIR: zstate };
   try {
     redisServer.cli("HSET", "zcrank:tab:HeyMa", "enabled", "1", "interval", "1h");
     await test("this pane's live tab decides, status suffix stripped, interval read", () => {
@@ -307,6 +413,31 @@ console.log("refresher: crank against a throwaway Redis and a fake zellij");
       assert.deepEqual(readCrank(paneEnv), { enabled: false, interval: "1h", scope: "pane" });
       redisServer.cli("DEL", "zcrank:pane:HeyMa:terminal_9");
     });
+    await test("ON: uptime from the engine's record for THIS pane, last run from the beat log", () => {
+      const now = Date.now();
+      const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+      const since = Math.floor((now - 3 * 24 * 3600_000) / 1000) * 1000;
+      const scan = Math.floor((now - 60_000) / 1000) * 1000;
+      const ran = Math.floor((now - 20 * 60_000) / 1000) * 1000;
+      writeFileSync(join(zstate, "on_since.json"), JSON.stringify({ v: 1, scan_ts: iso(scan), panes: { terminal_9: { since: iso(since), tab: "heyma" }, terminal_8: { since: iso(now - 60_000), tab: "heyma" } } }));
+      redisServer.cli("RPUSH", "zcrank:log:HeyMa", JSON.stringify({ ts: iso(ran), state: "sent", action: "x" }));
+      assert.deepEqual(readCrank(paneEnv), { enabled: true, interval: "1h", scope: "tab", onSinceMs: since, lastRunMs: ran, engineScanMs: scan });
+      // The engine stopped scanning 20m ago: stalled, decided now (at write time).
+      const old = scan - 20 * 60_000;
+      writeFileSync(join(zstate, "on_since.json"), JSON.stringify({ v: 1, scan_ts: iso(old), panes: { terminal_9: { since: iso(since), tab: "heyma" } } }));
+      assert.equal(readCrank(paneEnv).stalled, true);
+      // OFF carries no timing at all.
+      redisServer.cli("SET", "zcrank:pane:HeyMa:terminal_9", "0");
+      assert.deepEqual(readCrank(paneEnv), { enabled: false, interval: "1h", scope: "pane" });
+      redisServer.cli("DEL", "zcrank:pane:HeyMa:terminal_9", "zcrank:log:HeyMa");
+      rmSync(join(zstate, "on_since.json"));
+    });
+    await test("pane-only (no project): the pane's answer, never the project fallback", () => {
+      assert.equal(readCrank(paneEnv, Date.now(), { paneOnly: true }).enabled, true);
+      fakeZellij("fail");
+      assert.equal(readCrank({}, Date.now(), { paneOnly: true }), null);
+      fakeZellij("ok");
+    });
     await test("a Workspace pane that cannot see itself has NO answer (never the project's)", () => {
       fakeZellij("fail");
       assert.equal(readCrank(paneEnv), null);
@@ -315,7 +446,7 @@ console.log("refresher: crank against a throwaway Redis and a fake zellij");
     });
     await test("outside the Workspace session: the project's own switch", () => {
       fakeZellij("fail");
-      const v = readCrank({});
+      const v = readCrank({ ZCRANK_STATE_DIR: zstate });
       assert.equal(v.scope, "project");
       assert.equal(v.enabled, true);
     });
@@ -363,9 +494,19 @@ await test("prints cached segments inside a project; nothing outside", () => {
   const run = (cwd) => spawnSync(process.execPath, [bin], { cwd, env, encoding: "utf8" });
   const inside = run(proj);
   assert.equal(inside.status, 0);
-  assert.match(inside.stdout, new RegExp(`^e2e \\(E2E\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank 5m$`, "u"));
+  assert.match(inside.stdout, new RegExp(`^e2e \\(E2E\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻5m ⏳\\S+$`, "u"));
   const outside = run(workspace);
   assert.equal(outside.stdout, "");
+  // Outside every project but inside a zellij pane: the pane's crank line alone.
+  const paneEnv = hermeticEnv({ PJ_PROMPT_CACHE_DIR: e2eCache, PJ_PROMPT_NO_REFRESH: "1", ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "41" });
+  const panePath = pipelineCachePath(PANE_ONLY_ROOT, paneEnv);
+  const runPane = () => spawnSync(process.execPath, [bin], { cwd: workspace, env: paneEnv, encoding: "utf8" });
+  assert.equal(runPane().stdout, "", "nothing cached for this pane yet");
+  writeFileSync(panePath, JSON.stringify({ ...cacheFile(), root: PANE_ONLY_ROOT, candybars: null, writtenAtMs: Date.now(),
+    crank: { enabled: true, interval: "5m", scope: "tab", onSinceMs: Date.now() - 22 * 60_000 - 5_000 } }));
+  assert.match(runPane().stdout, /^⚡ crank ↑22m ↻5m ⏳\S+$/u);
+  assert.equal(run(workspace).stdout, "", "no pane, no project: silent");
+  assert.notEqual(panePath, pipelineCachePath(PANE_ONLY_ROOT, { ...paneEnv, ZELLIJ_PANE_ID: "42" }), "keyed per pane");
   // Expired cache: the identity line survives, the pipeline segments vanish.
   writeFileSync(cachePath, JSON.stringify({ ...cacheFile(), root: proj, writtenAtMs: Date.now() - PIPELINE_EXPIRE_AFTER_MS - 60_000 }));
   assert.doesNotMatch(run(proj).stdout, new RegExp(`${CANDYBAR_GLYPH}|crank`, "u"));

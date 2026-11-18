@@ -10,7 +10,7 @@
 // (stale-while-revalidate). The first prompt in a new place shows no pipeline
 // segments; the next one does.
 //
-// This module imports node builtins only. It is bundled into dist/prompt.js,
+// This module imports node builtins (and the import-free ./crank/schedule) only. It is bundled into dist/prompt.js,
 // whose whole reason to exist is a boot near node's own floor; the heavy crank
 // and HTTP code lives in ./prompt-refresh.ts, a separate bundle that only the
 // detached child ever loads.
@@ -21,6 +21,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, wri
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { nextRunMs, parseInterval } from "./crank/schedule";
 
 export const PIPELINE_CACHE_VERSION = 1;
 /** Older than this, the prompt asks for a refresh (and keeps showing what it has). */
@@ -43,7 +44,31 @@ export interface CrankState {
   interval?: string;
   /** What decided it: this pane's override, its live tab, or the project's resolved tab (outside zellij). */
   scope: "pane" | "tab" | "project";
+  /**
+   * Epoch ms crank has been ON without a break since: for a pane, open AND ON at every engine scan
+   * since then (zcrank.py on_since.json, sharpened by the `enabled` log row that started it); for a
+   * project outside zellij, its tab's last `enabled` row with no `disabled` after it. Absent = unknown.
+   */
+  onSinceMs?: number;
+  /** Epoch ms of this tab's newest beat row; with `interval` it gives the next crank at render time. */
+  lastRunMs?: number;
+  /** Epoch ms of the engine's last scan (on_since.json scan_ts). */
+  engineScanMs?: number;
+  /**
+   * The engine had not scanned for CRANK_STALL_AFTER_MS when this was READ (judged at write time:
+   * a cache shown 10m later must not turn a healthy engine's normal scan age into a false alarm).
+   */
+  stalled?: boolean;
 }
+
+/**
+ * The cache "root" of a zellij pane outside any pjangler project. Crank mode belongs to the pane,
+ * not the project, so such a pane still gets a crank-only line; its cache is keyed by pane alone.
+ */
+export const PANE_ONLY_ROOT = "(pane)";
+
+/** The engine scans every 5m tick; three missed ticks means it is not cranking anything. */
+export const CRANK_STALL_AFTER_MS = 15 * 60_000;
 
 export interface PipelineCache {
   v: number;
@@ -77,10 +102,16 @@ function isCounts(value: unknown): value is CandybarCounts {
   return !!v && Number.isInteger(v.project) && Number.isInteger(v.total) && v.project >= 0 && v.total >= 0;
 }
 
+function optionalMs(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value > 0);
+}
+
 function isCrank(value: unknown): value is CrankState {
   const v = value as CrankState;
   return !!v && typeof v.enabled === "boolean" && ["pane", "tab", "project"].includes(v.scope)
-    && (v.interval === undefined || typeof v.interval === "string");
+    && (v.interval === undefined || typeof v.interval === "string")
+    && optionalMs(v.onSinceMs) && optionalMs(v.lastRunMs) && optionalMs(v.engineScanMs)
+    && (v.stalled === undefined || typeof v.stalled === "boolean");
 }
 
 /** The cache at `path` for `root`, or undefined when absent, unreadable, foreign or the wrong version. */
@@ -130,10 +161,53 @@ export function formatCandybars(counts: CandybarCounts, env: NodeJS.ProcessEnv =
   return `${glyph} ${counts.project}/${counts.total}`;
 }
 
-/** `⚡ crank 5m` when ON, `◌ crank off` when OFF. Always shown when known: absence must not read as OFF. */
-export function formatCrank(crank: CrankState): string {
+/** How long crank has run: `22m`, `5h22m`, `3d4h`, `1w3d` (two largest units, a zero second unit dropped). */
+export function formatSpan(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return "<1m";
+  const units: [string, number][] = [["w", 7 * 1440], ["d", 1440], ["h", 60], ["m", 1]];
+  const first = units.findIndex(([, size]) => minutes >= size);
+  const [bigName, bigSize] = units[first] as [string, number];
+  const big = Math.floor(minutes / bigSize);
+  const next = units[first + 1];
+  const rest = next ? Math.floor((minutes % bigSize) / next[1]) : 0;
+  return next && rest ? `${big}${bigName}${rest}${next[0]}` : `${big}${bigName}`;
+}
+
+/** Time to the next crank: minutes (`14m`, `2h5m`) until the last minute, then seconds (`42s`), then `now`. */
+export function formatCountdown(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds <= 0) return "now";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const rest = minutes % 60;
+  return rest ? `${Math.floor(minutes / 60)}h${rest}m` : `${Math.floor(minutes / 60)}h`;
+}
+
+/**
+ * `◌ crank off` when OFF. When ON: `⚡ crank ↑3d4h ↻5m ⏳2m` — how long it has been ON without a
+ * break, the interval it cranks at, and the countdown to the next crank (computed at render time,
+ * so it keeps counting between cache refreshes). A part whose fact is unknown is left out, never
+ * guessed. When the engine had not scanned for CRANK_STALL_AFTER_MS (as the refresher read it) it
+ * is not cranking anything, whatever Redis says: `⚠ crank stalled 25m ↻5m`. Always shown when known: absence must not read as OFF.
+ */
+export function formatCrank(crank: CrankState, nowMs: number = Date.now()): string {
   if (!crank.enabled) return "◌ crank off";
-  return crank.interval ? `⚡ crank ${crank.interval}` : "⚡ crank";
+  const interval = crank.interval ? `↻${crank.interval}` : undefined;
+  if (crank.stalled) {
+    const since = crank.engineScanMs !== undefined ? formatSpan(nowMs - crank.engineScanMs) : undefined;
+    return ["⚠ crank stalled", since, interval].filter(Boolean).join(" ");
+  }
+  const parts = ["⚡ crank"];
+  if (crank.onSinceMs !== undefined) parts.push(`↑${formatSpan(nowMs - crank.onSinceMs)}`);
+  if (interval) parts.push(interval);
+  const parsed = parseInterval(crank.interval);
+  if (parsed) {
+    const next = nextRunMs({ enabled: true, interval: parsed, lastRun: crank.lastRunMs, nowMs });
+    if (next !== undefined) parts.push(`⏳${formatCountdown(next - nowMs)}`);
+  }
+  return parts.join(" ");
 }
 
 /**
@@ -182,7 +256,7 @@ export function maybeRefresh(root: string, cachePath: string, cache: PipelineCac
   if (!takeRefreshLock(cachePath, nowMs)) return false;
   try {
     const child = spawn(process.execPath, [refreshScriptPath(), root, cachePath], {
-      cwd: root,
+      cwd: root === PANE_ONLY_ROOT ? homedir() : root,
       detached: true,
       stdio: "ignore",
       env,
