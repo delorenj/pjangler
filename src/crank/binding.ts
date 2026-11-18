@@ -21,7 +21,7 @@
 //           "terminated non-explicitly" announcement).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { stringify as stringifyToml } from "smol-toml";
@@ -398,15 +398,41 @@ export function candybarClient(base = candybarBaseUrl()): CandybarClient {
 
 export type Emitter = (type: string, orderingKey: string, data: Record<string, unknown>) => void;
 
-/** Fail-open publish through bb-emit (a dead bus never breaks a crank). */
+export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CRANK_STATE_DIR?.trim() || join(env.XDG_STATE_HOME?.trim() || join(env.HOME?.trim() || homedir(), ".local", "state"), "crank");
+}
+
+/**
+ * Publish through bb-emit. A dead bus never breaks a crank, but it is never silent either: every
+ * attempt lands in `<state>/events.jsonl` with the event id or the reason it was not published.
+ */
 export const bbEmit: Emitter = (type, orderingKey, data) => {
-  spawnSync("bb-emit", [
+  const out = spawnSync("bb-emit", [
     "--type", type,
     "--service", "crank",
     "--producer", "pjangler",
     "--source", "urn:33god:service:crank",
     "--ordering-key", orderingKey,
+    "--strict",
+    "--print-ids",
   ], { input: JSON.stringify({ schema_version: 1, ...data }), encoding: "utf8", timeout: 10_000 });
+  let id: string | undefined;
+  try {
+    id = (JSON.parse(out.stdout?.trim().split("\n").at(-1) ?? "") as { id?: string }).id;
+  } catch {
+    id = undefined;
+  }
+  const ok = out.status === 0;
+  try {
+    const dir = stateDir();
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "events.jsonl"), JSON.stringify({
+      ts: new Date().toISOString(), type, ordering_key: orderingKey, ok, id,
+      ...(ok ? {} : { error: (out.error?.message ?? out.stderr ?? "").trim().split("\n").slice(-2).join(" | ").slice(0, 300) }),
+    }) + "\n");
+  } catch {
+    // the receipt is best effort; the event itself already went or did not
+  }
 };
 
 function eventData(record: Pick<BindingRecord, "name" | "cli" | "sessionId" | "pid" | "paneId" | "zellijSession" | "projectSlug" | "interval">): Record<string, unknown> {
@@ -524,7 +550,14 @@ export async function attachBinding(
   const mine = existing.find((record) => record.name === spec.name);
   if (mine) {
     if (!mine.enabled) await client.setEnabled(mine.candybarId, true);
-    if (!mine.manifestPath) writeManifest(manifestPath(project.root, spec.name), renderManifest(spec));
+    // The fire argv names the pj install that attached it. A pj reinstalled elsewhere (another node
+    // prefix, a new node) re-points the live crank instead of leaving it firing a dead path.
+    const runner = await client.runner(mine.candybarId);
+    const drifted = !runner || JSON.stringify(runner.argv ?? []) !== JSON.stringify(spec.argv);
+    if (drifted) await client.patch(mine.candybarId, { runner: { ...(runner ?? { kind: "exec", timeout_s: 600, env: spec.env }), argv: spec.argv } });
+    if (drifted || !mine.manifestPath) {
+      writeManifest(manifestPath(project.root, spec.name), renderManifest({ ...spec, schedule: mine.schedule, env: { ...spec.env, CRANK_INTERVAL: mine.interval || spec.env.CRANK_INTERVAL || "" } }));
+    }
     return { status: "already", name: spec.name, schedule: mine.schedule, superseded, reaped };
   }
   const path = manifestPath(project.root, spec.name);

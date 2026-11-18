@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolveProject } from "../project/boardQuery";
 import {
+  stateDir,
   agentAncestor,
   attachBinding,
   candybarClient,
@@ -44,9 +45,7 @@ export function tryProjectAt(cwd: string): ProjectRef | undefined {
   }
 }
 
-export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.CRANK_STATE_DIR?.trim() || join(env.XDG_STATE_HOME?.trim() || join(env.HOME?.trim() || homedir(), ".local", "state"), "crank");
-}
+export { stateDir } from "./binding";
 
 /** One line per hook decision, so "why did my session not get a crank?" has an answer. */
 export function hookLog(line: Record<string, unknown>): void {
