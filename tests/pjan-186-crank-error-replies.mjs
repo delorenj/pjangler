@@ -77,8 +77,13 @@ try {
     const store = redis({ port: rs.port });
     const WT = "WRONGTYPE Operation against a key holding the wrong kind of value";
     throws(() => store.tabRoot("victim"), new RegExp(`^Redis error reply at 127\\.0\\.0\\.1:${rs.port}: ${WT} \\(HGET zcrank:tab:victim root\\)$`));
-    // the rule is the arbiter's: a wrong-typed key under it is the same error reply, naming the call
-    throws(() => store.resolve({ keys: ["victim"] }), new RegExp(`^Redis error reply at 127\\.0\\.0\\.1:${rs.port}: WRONGTYPE Operation against .* \\(FCALL_RO crank_resolve 0 `));
+    // the rule is the arbiter's, and the arbiter reads with pcall (jev-clairic engine-4, 2026-11-18): a
+    // wrong-typed registry key is ABSENT to the rule (not "1"), so that tab reads closed and one
+    // malformed key no longer fails every pane's resolve. The error reply is not swallowed for the
+    // operator's own reads above (tabRoot/tabInterval/getKey/logRows still throw).
+    const closed = store.resolve({ keys: ["victim"] });
+    assert.equal(closed.on, false, "a wrong-typed tab key is not ON");
+    assert.equal(closed.decidedBy, "tab", "listed but unreadable: decided off by the tab rule");
     throws(() => store.tabInterval("victim"), /WRONGTYPE Operation against .* \(HGET zcrank:tab:victim interval\)$/);
     throws(() => store.getKey("zcrank:pane:victim"), /WRONGTYPE Operation against .* \(GET zcrank:pane:victim\)$/);
     throws(() => store.logRows("victim"), /WRONGTYPE Operation against .* \(LRANGE zcrank:log:victim 0 -1\)$/);
