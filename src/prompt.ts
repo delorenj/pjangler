@@ -9,7 +9,7 @@
 //
 // Contract with starship: print ONE line and exit 0 when the cwd is inside a
 // pjangler project (or, in a zellij pane outside every project, a crank-only
-// line once the crank answer is known: crank mode belongs to the pane), print
+// line: crank mode belongs to the pane, read straight from the arbiter's hash), print
 // NOTHING otherwise. Starship renders a custom module's format wrapper even when the command fails, so "no output" — not a
 // non-zero exit — is what makes the extra prompt line disappear cleanly.
 //
@@ -34,9 +34,10 @@ import {
   formatCrank,
   freshSegments,
   maybeRefresh,
-  PANE_ONLY_ROOT,
   pipelineCachePath,
+  readPaneCrank,
   readPipelineCache,
+  zellijPane,
   type CandybarCounts,
   type CrankState,
 } from "./prompt-pipeline";
@@ -49,7 +50,7 @@ export interface PromptFacts {
   active: boolean;
   /** 33GOD pipeline (cached, see ./prompt-pipeline): this project's / all registered candybars. */
   candybars?: CandybarCounts | null;
-  /** 33GOD pipeline (cached): crank mode for this pane. */
+  /** 33GOD pipeline: crank mode for this pane (read directly in zellij, cached outside it). */
   crank?: CrankState | null;
 }
 
@@ -112,34 +113,30 @@ export function formatPromptLine(facts: PromptFacts, nowMs: number = Date.now())
   return segments.join(" · ");
 }
 
-/**
- * A zellij pane outside every pjangler project: crank mode is the pane's, not a project's, so the
- * line is just the crank segment (`⚡ crank ↑22m ↻5m ⏳4m`), or nothing until the refresher knows.
- */
-export function paneOnlyLine(nowMs: number, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  if (!env.ZELLIJ_PANE_ID) return undefined;
-  const cachePath = pipelineCachePath(PANE_ONLY_ROOT, env);
-  const cache = readPipelineCache(cachePath, PANE_ONLY_ROOT);
-  const { crank } = freshSegments(cache, nowMs);
-  maybeRefresh(PANE_ONLY_ROOT, cachePath, cache, nowMs, env);
-  return crank ? formatCrank(crank, nowMs) : undefined;
-}
-
 /** Returns the line to print, or undefined when there is nothing to say. */
-export function promptLine(cwd: string, now?: Date, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export async function promptLine(cwd: string, now?: Date, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   const nowMs = (now ?? new Date()).getTime();
+  // Start the Redis read first: it waits on the network while the project facts below hit the disk.
+  const paneCrank = zellijPane(env) ? readPaneCrank(env, nowMs) : undefined;
   const root = findProjectRoot(cwd);
-  if (!root) return paneOnlyLine(nowMs, env);
+  if (!root) {
+    // A zellij pane outside every project: crank mode is the pane's, so the line is the crank segment alone
+    // (`⚡ crank ↑22m ↻5m ⏳4m`), or nothing when the arbiter has no answer for this pane.
+    const crank = await paneCrank;
+    return crank ? formatCrank(crank, nowMs) : undefined;
+  }
   const facts = readPromptFacts(root, now);
   const cachePath = pipelineCachePath(root, env);
   const cache = readPipelineCache(cachePath, root);
   Object.assign(facts, freshSegments(cache, nowMs));
+  // In a zellij pane crank is read directly (above), never from the cache.
+  if (paneCrank) facts.crank = (await paneCrank) ?? null;
   // Stale-while-revalidate: print what the cache says now, refresh behind the prompt.
   maybeRefresh(root, cachePath, cache, nowMs, env);
   return formatPromptLine(facts, nowMs);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   try {
     const args = process.argv.slice(2);
     if (args[0] === "--url") {
@@ -150,7 +147,7 @@ function main(): void {
       else process.exitCode = 1;
       return;
     }
-    const line = promptLine(process.cwd());
+    const line = await promptLine(process.cwd());
     if (line) process.stdout.write(line);
   } catch {
     // A prompt must never be the thing that breaks a shell.
@@ -171,4 +168,4 @@ function isMainModule(): boolean {
   }
 }
 
-if (isMainModule()) main();
+if (isMainModule()) void main();

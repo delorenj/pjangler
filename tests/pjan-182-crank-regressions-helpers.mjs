@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { EventEmitter } from "node:events";
+import { vendoredArbiterCode } from "./helpers/crank-arbiter.mjs";
 import { createServer } from "node:net";
 import { Writable } from "node:stream";
 
@@ -19,8 +20,12 @@ export async function freePort() {
   });
 }
 
-/** Start `redis-server` on a free port with persistence off; resolves { port, stop() }. */
-export async function startThrowawayRedis() {
+/**
+ * Start `redis-server` on a free port with persistence off; resolves { port, cli, stop() }. The crank
+ * arbiter (crank.lua) is loaded, because pjangler's crank store only speaks FCALL crank_apply /
+ * crank_resolve; `{ arbiter: false }` starts a bare server (the "arbiter not loaded" cases).
+ */
+export async function startThrowawayRedis({ arbiter = true } = {}) {
   const port = await freePort();
   if (port === 6379) throw new Error("refusing to use the live crank Redis port");
   const child = spawn("redis-server", ["--port", String(port), "--bind", "127.0.0.1", "--save", "", "--appendonly", "no"], {
@@ -36,6 +41,13 @@ export async function startThrowawayRedis() {
     if (i === 99) {
       child.kill("SIGKILL");
       throw new Error("throwaway redis-server did not come up");
+    }
+  }
+  if (arbiter) {
+    const loaded = spawnSync("redis-cli", ["--raw", "-h", "127.0.0.1", "-p", String(port), "FUNCTION", "LOAD", "REPLACE", vendoredArbiterCode()], { encoding: "utf8", env: hermeticEnv() });
+    if (loaded.status !== 0 || !/^crank/.test(loaded.stdout.trim())) {
+      child.kill("SIGKILL");
+      throw new Error(`could not load the crank arbiter into the throwaway redis: ${loaded.stdout}${loaded.stderr}`);
     }
   }
   return {

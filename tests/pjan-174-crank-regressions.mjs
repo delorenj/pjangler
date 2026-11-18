@@ -213,11 +213,18 @@ console.log("resolution: agent candidates also reach redis-exact and live-prefix
 // Redis shell seam
 // ---------------------------------------------------------------------------
 
-/** A fake redis-cli: hash + list store, exact command log. */
+/**
+ * A fake redis-cli: hash + list store, exact command log. `FCALL crank_resolve` answers a
+ * deliberately minimal stand-in for the arbiter's rule (tab level: every key's `enabled` must be 1,
+ * no key = unlisted, the key's own interval else 5m): the REAL rule is crank.lua's and is exercised
+ * against a real redis-server in tests/crank-arbiter-store-regressions.mjs. `FCALL crank_apply`
+ * is only recorded (`applied`); this fake never mutates state on a write.
+ */
 function fakeRedis() {
   const hashes = new Map(); // key -> { field: value }
   const lists = new Map();  // key -> string[]
   const calls = [];
+  const applied = []; // every crank_apply op list, in call order
   const shell = (command, args) => {
     calls.push([command, ...args].join(" "));
     if (command !== "redis-cli") return { stdout: "", status: 127 };
@@ -232,34 +239,26 @@ function fakeRedis() {
       const [key, field] = rest;
       return { stdout: `${hashes.get(key)?.[field] ?? ""}\n`, status: 0 };
     }
-    if (op === "HSET") {
-      const [key, field, value] = rest;
-      const h = hashes.get(key) ?? {};
-      h[field] = value;
-      hashes.set(key, h);
-      return { stdout: "0\n", status: 0 };
+    if (op === "FCALL") {
+      applied.push(JSON.parse(rest[2]));
+      return { stdout: JSON.stringify({ changed: 1, results: [true], edges: {} }) + "\n", status: 0 };
+    }
+    if (op === "FCALL_RO") {
+      const { keys } = JSON.parse(rest[2]);
+      const intervals = keys.map((k) => hashes.get(`zcrank:tab:${k}`)?.interval).filter(Boolean);
+      const body = {
+        on: keys.length > 0 && keys.every((k) => hashes.get(`zcrank:tab:${k}`)?.enabled === "1"),
+        decided_by: keys.length ? "tab" : "unlisted",
+        interval: intervals[0] ?? "5m",
+        inherited: intervals.length === 0,
+      };
+      return { stdout: JSON.stringify(body) + "\n", status: 0 };
     }
     if (op === "KEYS") {
       const [pattern] = rest;
       const prefix = pattern.replace(/\*$/, "");
       const keys = [...hashes.keys()].filter((k) => k.startsWith(prefix));
       return { stdout: keys.length ? `${keys.join("\n")}\n` : "", status: 0 };
-    }
-    if (op === "RPUSH") {
-      const [key, row] = rest;
-      const list = lists.get(key) ?? [];
-      list.push(row);
-      lists.set(key, list);
-      return { stdout: `${list.length}\n`, status: 0 };
-    }
-    if (op === "LTRIM") {
-      // apply the cap so the 500-row contract is exercised
-      const [key, start] = rest;
-      const list = lists.get(key) ?? [];
-      if (start === "-500") {
-        lists.set(key, list.slice(-500));
-      }
-      return { stdout: "OK\n", status: 0 };
     }
     if (op === "LRANGE") {
       const [key] = rest;
@@ -268,41 +267,41 @@ function fakeRedis() {
     }
     return { stdout: "", status: 0 };
   };
-  return { shell, hashes, lists, calls };
+  return { shell, hashes, lists, calls, applied };
 }
 
-console.log("redis seam: enable writes HSET enabled 1, logs enabled, caps at 500");
+console.log("redis seam: a write is ONE FCALL crank_apply <ops_json> pj, never a bare HSET/RPUSH");
 {
   const fake = fakeRedis();
   const store = redis({ shell: fake.shell });
   assert.equal(store.ping(), true, "the fake must answer PING");
-  store.setTabEnabled("Holocene", true);
-  store.pushLog("Holocene", "enabled", "pj crank enable", crankTimestamp(new Date("2026-10-20T12:00:00Z")));
-  assert.equal(fake.hashes.get("zcrank:tab:Holocene").enabled, "1");
-  assert.equal(fake.lists.get("zcrank:log:Holocene").length, 1);
-  assert.deepEqual(
-    JSON.parse(fake.lists.get("zcrank:log:Holocene")[0]),
-    { ts: "2026-10-20T12:00:00Z", state: "enabled", action: "pj crank enable" },
-  );
-  // cap: 502 rows -> 500 survive
-  for (let i = 0; i < 501; i++) store.pushLog("Holocene", "beat", `row ${i}`, crankTimestamp(new Date()));
-  assert.equal(fake.lists.get("zcrank:log:Holocene").length, 500);
+  const ts = crankTimestamp(new Date("2026-10-20T12:00:00Z"));
+  const ops = [{ op: "tab", key: "Holocene", enabled: true, ts, action: "pj crank enable" }];
+  const result = store.apply(ops);
+  assert.deepEqual(result, { changed: 1, results: [true], edges: [] }, "cjson's {} for an empty edge list reads as []");
+  const writes = fake.calls.filter((call) => /FCALL/.test(call) && !call.endsWith("--help"));
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0], `redis-cli --raw -e -h 127.0.0.1 -p 6379 FCALL crank_apply 0 ${JSON.stringify(ops)} pj`);
+  assert.deepEqual(fake.applied, [ops]);
+  assert.ok(!fake.calls.some((call) => /HSET|RPUSH|LTRIM|RENAME| DEL /.test(call)), "no direct write reaches Redis");
 }
 
 console.log("redis seam: absent key reads as undefined, not 0");
 {
   const fake = fakeRedis();
   const store = redis({ shell: fake.shell });
-  assert.equal(store.tabEnabled("nothing"), undefined);
+  assert.equal(store.tabRoot("nothing"), undefined);
+  assert.equal(store.tabInterval("nothing"), undefined);
+  assert.equal(store.getKey("nothing"), undefined);
 }
 
 console.log("redis seam: commands go to 127.0.0.1:6379 with --raw and -e (the error-reply exit code, PJAN-186)");
 {
   const fake = fakeRedis();
   const store = redis({ shell: fake.shell });
-  store.tabEnabled("x");
+  store.tabRoot("x");
   const commands = fake.calls.filter((call) => !call.endsWith("--help"));
-  assert.match(commands[0], /^redis-cli --raw -e -h 127\.0\.0\.1 -p 6379 HGET zcrank:tab:x enabled$/);
+  assert.match(commands[0], /^redis-cli --raw -e -h 127\.0\.0\.1 -p 6379 HGET zcrank:tab:x root$/);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +354,7 @@ console.log("list: every registry project gets a row; orphans are separate; ON/O
     ],
     live: [],
     storedTabs: ["gruvato", "Holocene", "IPM"],
-    tabEnabled: (tab) => store.tabEnabled(tab),
+    resolve: (keys) => store.resolve({ keys }),
   });
   assert.equal(report.rows.length, 3);
   const bySlug = Object.fromEntries(report.rows.map((row) => [row.slug, row]));
@@ -388,7 +387,7 @@ console.log("list: an agent-matched tab is consumed, not orphaned");
     ],
     live: [{ name: "Pile of Dumb Things", position: 2 }],
     storedTabs: ["Pile of Dumb Things"],
-    tabEnabled: (tab) => store.tabEnabled(tab),
+    resolve: (keys) => store.resolve({ keys }),
   });
   assert.equal(report.rows.length, 1);
   assert.equal(report.rows[0].tab, "Pile of Dumb Things");
@@ -408,7 +407,7 @@ console.log("list: two projects resolving to one tab share it without orphaning"
     ],
     live: [{ name: "IntelliForia", position: 4 }],
     storedTabs: ["IntelliForia"],
-    tabEnabled: (tab) => store.tabEnabled(tab),
+    resolve: (keys) => store.resolve({ keys }),
   });
   assert.equal(report.rows.length, 2);
   assert.ok(report.rows.every((row) => row.tab === "IntelliForia"));

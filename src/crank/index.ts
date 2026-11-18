@@ -44,6 +44,7 @@ import { dirname, join } from "node:path";
 import { resolveProject, type ProjectHandle } from "../project/boardQuery";
 import { cyan, dim, green, heading, yellow } from "../utils/style";
 import { engineSummary, type EngineStatus } from "./engine";
+import { redisEndpoint } from "./redisEndpoint";
 
 export * from "./engine";
 export * from "./schedule";
@@ -56,21 +57,7 @@ import {
   type CrankInterval,
 } from "./schedule";
 
-export const ZCRANK_REDIS_HOST = "127.0.0.1";
-export const ZCRANK_REDIS_PORT = 6379;
-
-/**
- * Where Redis lives: the defaults, unless ZCRANK_REDIS_HOST / ZCRANK_REDIS_PORT say
- * otherwise (zcrank.py honours the same two variables, so tests can aim both sides at a
- * throwaway redis-server instead of the live engine's). Read per call, not at import.
- */
-export function redisEndpoint(env: NodeJS.ProcessEnv = process.env): { host: string; port: number } {
-  const port = Number.parseInt(env.ZCRANK_REDIS_PORT ?? "", 10);
-  return {
-    host: env.ZCRANK_REDIS_HOST?.trim() || ZCRANK_REDIS_HOST,
-    port: Number.isInteger(port) && port > 0 && port < 65536 ? port : ZCRANK_REDIS_PORT,
-  };
-}
+export { ZCRANK_REDIS_HOST, ZCRANK_REDIS_PORT, redisEndpoint } from "./redisEndpoint";
 export const ZCRANK_SESSION = "Workspace";
 export const ZCRANK_LOG_CAP = 500;
 
@@ -111,7 +98,11 @@ export function canon(name: string | undefined): string {
 /** Log states pjangler itself writes; every other state is a crank beat row from `zcrankctl log`. */
 export const PJANGLER_LOG_STATES: readonly string[] = ["enabled", "disabled", "interval", "renamed"];
 
-/** The longest valid interval among several keys' values, or undefined when none is set. */
+/**
+ * The longest valid interval among several keys' values, or undefined when none is set. Only the
+ * enable-time rename migration uses it (which interval to CARRY onto the merged key); the interval
+ * a tab actually runs at is the arbiter's (crank_resolve).
+ */
 export function longestInterval(values: (string | undefined | null)[]): CrankInterval | undefined {
   let best: CrankInterval | undefined;
   for (const value of values) {
@@ -119,15 +110,6 @@ export function longestInterval(values: (string | undefined | null)[]): CrankInt
     if (parsed && (!best || INTERVAL_SECONDS[parsed] > INTERVAL_SECONDS[best])) best = parsed;
   }
   return best;
-}
-
-/** The interval a tab runs at: its own (longest across its keys) override, else the global default. */
-export function effectiveInterval(
-  keyIntervals: (string | undefined | null)[],
-  global: CrankInterval,
-): { interval: CrankInterval; inherited: boolean } {
-  const own = longestInterval(keyIntervals);
-  return own ? { interval: own, inherited: false } : { interval: global, inherited: true };
 }
 
 export interface LogRow {
@@ -247,6 +229,34 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
     return result.stdout.replace(/\r?\n$/, "");
   };
   const lines = (out: string): string[] => out.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean);
+  // The crank arbiter (a Redis Functions library, bin/crank.lua in ~/.agents jev-clairic) is the ONLY
+  // writer of crank state and the ONLY copy of the on/off + interval rule. Redis forgets functions
+  // when it loses its dataset, so a "Function not found" reply is met ONCE with `zcrankctl
+  // arbiter-load` and a retry; with no zcrankctl on PATH (or a load that fails) the error names the fix.
+  let arbiterReloaded = false;
+  const fcall = (verb: "FCALL" | "FCALL_RO", fn: string, ...args: string[]): string => {
+    const invoke = () => run(verb, fn, "0", ...args);
+    try {
+      return invoke();
+    } catch (error) {
+      if (!(error instanceof Error) || !/function not found/i.test(error.message)) throw error;
+      const fix = "run `zcrankctl arbiter-load`";
+      if (!arbiterReloaded) {
+        arbiterReloaded = true;
+        const loaded = shell("zcrankctl", ["arbiter-load"]);
+        if (loaded.status === 0) {
+          try {
+            return invoke();
+          } catch (retry) {
+            if (!(retry instanceof Error) || !/function not found/i.test(retry.message)) throw retry;
+          }
+        }
+      }
+      throw new Error(`the crank arbiter is not loaded in Redis at ${host}:${port} (${fn}: function not found) — ${fix}`);
+    }
+  };
+  /** cjson encodes an EMPTY list as {}: a reader must treat a non-array "edges"/"results" as []. */
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
   return {
     /** "host:port" this store talks to, for error messages. */
     endpoint: `${host}:${port}`,
@@ -261,40 +271,13 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
       const v = run("GET", key);
       return v === "" ? undefined : v;
     },
-    /** SET a plain string key (pane overrides). */
-    setKey: (key: string, value: string): void => {
-      run("SET", key, value);
-    },
-    /** HGET zcrank:tab:<tab> enabled -> "0"|"1"|undefined (absent). */
-    tabEnabled: (tab: string): string | undefined => {
-      const v = run("HGET", `zcrank:tab:${tab}`, "enabled");
-      return v === "" || v == null ? undefined : v;
-    },
-    /** HSET zcrank:tab:<tab> enabled 0|1. */
-    setTabEnabled: (tab: string, enabled: boolean): void => {
-      run("HSET", `zcrank:tab:${tab}`, "enabled", enabled ? "1" : "0");
-    },
     /** HGET zcrank:tab:<tab> root -> the owning project identity, or undefined (legacy key / absent). */
     tabRoot: (tab: string): string | undefined => {
       const v = run("HGET", `zcrank:tab:${tab}`, "root");
       return v === "" || v == null ? undefined : v;
     },
-    /** HSET zcrank:tab:<tab> root <project identity> (PJAN-201). */
-    setTabRoot: (tab: string, root: string): void => {
-      run("HSET", `zcrank:tab:${tab}`, "root", root);
-    },
     /** HGET zcrank:tab:<tab> interval -> a valid interval, else undefined (absent or garbage). */
     tabInterval: (tab: string): CrankInterval | undefined => parseInterval(run("HGET", `zcrank:tab:${tab}`, "interval")),
-    /** HSET zcrank:tab:<tab> interval <5m|1h|6h|1d>. */
-    setTabInterval: (tab: string, interval: CrankInterval): void => {
-      run("HSET", `zcrank:tab:${tab}`, "interval", interval);
-    },
-    /** HDEL zcrank:tab:<tab> interval — the tab follows the global default again. */
-    clearTabInterval: (tab: string): void => {
-      run("HDEL", `zcrank:tab:${tab}`, "interval");
-    },
-    /** HGET zcrank:config interval, falling back to 5m (garbage reads as absent). */
-    globalInterval: (): CrankInterval => parseInterval(run("HGET", "zcrank:config", "interval")) ?? ZCRANK_DEFAULT_INTERVAL,
     /** All zcrank:tab:* keys (raw key per line). */
     tabKeys: (): string[] => lines(run("KEYS", "zcrank:tab:*")),
     /** zcrank:pane:<tab>:<terminal_id> keys of exactly this tab (never a colon-named sibling's). */
@@ -302,36 +285,96 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
       const prefix = `zcrank:pane:${tab}:`;
       return lines(run("KEYS", `${redisGlobEscape(prefix)}*`)).filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes(":"));
     },
-    /** DEL the given keys (no-op for none). */
-    deleteKeys: (...keys: string[]): void => {
-      if (keys.length) run("DEL", ...keys);
-    },
-    /** RPUSH a log row, then LTRIM to the zcrankctl cap. */
-    pushLog: (tab: string, state: string, action: string, ts: string): void => {
-      run("RPUSH", `zcrank:log:${tab}`, JSON.stringify({ ts, state, action }));
-      run("LTRIM", `zcrank:log:${tab}`, String(-ZCRANK_LOG_CAP), "-1");
-    },
     /** LRANGE 0 -1, oldest first (newest last) — zcrankctl's display order. */
     logRows: (tab: string): string[] => lines(run("LRANGE", `zcrank:log:${tab}`, "0", "-1")),
     /**
-     * Replace a whole log list atomically (RPUSH to a scratch key, then RENAME over the
-     * real one), so the engine's own `zcrankctl log` never sees a half-written list.
+     * The rule: ask the arbiter (FCALL_RO crank_resolve) whether crank is ON for these governing
+     * keys (and, with `pane`, that pane's override under any of `owners`) and at what interval.
+     * Name matching that produces `keys` stays in pjangler; the verdict never does.
      */
-    replaceLog: (tab: string, rows: string[]): void => {
-      const dest = `zcrank:log:${tab}`;
-      if (!rows.length) {
-        run("DEL", dest);
-        return;
+    resolve: (query: { keys: string[]; owners?: string[]; pane?: string }): CrankVerdict => {
+      const raw = fcall("FCALL_RO", "crank_resolve", JSON.stringify({
+        keys: query.keys,
+        owners: query.owners ?? [],
+        ...(query.pane ? { pane: query.pane } : {}),
+      }));
+      return parseVerdict(raw);
+    },
+    /**
+     * DEL of a stale zcrank:* key the arbiter's `del` op REFUSES (its registry_key guard rejects any
+     * name holding a redis glob character, `*` or `?`, though DEL does not glob). The ONE write that
+     * does not go through crank_apply, used only to finish a rename migration whose old tab key is
+     * named like that; delete this once crank.lua's guard allows such names.
+     */
+    purge: (key: string): void => {
+      if (!key.startsWith("zcrank:")) throw new Error(`refusing to purge a key outside zcrank:*: ${key}`);
+      run("DEL", key);
+    },
+    /**
+     * Every crank write, as ONE atomic FCALL crank_apply. The Lua appends the enabled / interval
+     * log rows (only when the value really changed), re-resolves every pane and emits edges.
+     * Throws on any failure: a write that did not land never reads as success.
+     */
+    apply: (ops: CrankOp[], by = "pj"): CrankApplyResult => {
+      if (!ops.length) return { changed: 0, results: [], edges: [] };
+      const raw = fcall("FCALL", "crank_apply", JSON.stringify(ops), by);
+      let parsed: { changed?: unknown; results?: unknown; edges?: unknown };
+      try {
+        parsed = JSON.parse(raw) as typeof parsed;
+      } catch {
+        throw new Error(`the crank arbiter answered crank_apply with something that is not JSON: ${raw.slice(0, 80)}`);
       }
-      const scratch = `zcrank:logtmp:${process.pid}:${Date.now()}`;
-      run("DEL", scratch);
-      run("RPUSH", scratch, ...rows);
-      run("RENAME", scratch, dest);
+      return {
+        changed: typeof parsed.changed === "number" ? parsed.changed : 0,
+        results: list(parsed.results).map((r) => r === true),
+        edges: list(parsed.edges),
+      };
     },
   };
 }
 
 export type CrankStore = ReturnType<typeof redis>;
+
+/** What crank_resolve answers: ON/OFF, what decided it, and the interval (own or inherited). */
+export interface CrankVerdict {
+  on: boolean;
+  decidedBy: "pane" | "tab" | "unlisted";
+  interval: CrankInterval;
+  /** True when the interval is the global default rather than a key's own. */
+  inherited: boolean;
+}
+
+function parseVerdict(raw: string): CrankVerdict {
+  let parsed: { on?: unknown; decided_by?: unknown; interval?: unknown; inherited?: unknown };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    throw new Error(`the crank arbiter answered crank_resolve with something that is not JSON: ${raw.slice(0, 80)}`);
+  }
+  const decidedBy = parsed.decided_by === "pane" || parsed.decided_by === "tab" ? parsed.decided_by : "unlisted";
+  return {
+    on: parsed.on === true,
+    decidedBy,
+    interval: parseInterval(typeof parsed.interval === "string" ? parsed.interval : undefined) ?? ZCRANK_DEFAULT_INTERVAL,
+    inherited: parsed.inherited === true,
+  };
+}
+
+/** One crank_apply op (see the header of crank.lua, the single writer). */
+export type CrankOp =
+  | { op: "tab"; key: string; enabled?: boolean; interval?: CrankInterval | ""; root?: string; root_if_absent?: string; action?: string; interval_action?: string; ts?: string }
+  | { op: "pane"; owner: string; pane: string; value: "1" | "0" | "" }
+  | { op: "clear_panes"; owner: string }
+  | { op: "config"; interval: CrankInterval }
+  | { op: "log"; key: string; row: string }
+  | { op: "replace_log"; key: string; rows: string[] }
+  | { op: "del"; key: string };
+
+export interface CrankApplyResult {
+  changed: number;
+  results: boolean[];
+  edges: unknown[];
+}
 
 /** Escape redis glob metacharacters so a tab name matches itself in KEYS. */
 export function redisGlobEscape(text: string): string {
@@ -918,14 +961,15 @@ export interface CrankSnapshot {
   readAtMs: number;
 }
 
-/** Read one tab's crank state. Pure reads: never writes. */
+/** Read one tab's crank state. Pure reads: never writes. ON/OFF and the interval are the arbiter's verdict. */
 export function snapshotCrank(store: CrankStore, tab: string, storedKeys: string[], nowMs: number, beatLimit = 5, scope: KeyScope = {}): CrankSnapshot {
   const keys = keysNamingTab(tab, storedKeys, scope);
   const readKeys = keys.length ? keys : [tab];
-  const enabledValues = keys.map((key) => store.tabEnabled(key)).filter((v): v is string => v !== undefined);
-  const enabled = enabledValues.length ? keys.length > 0 && keys.every((key) => store.tabEnabled(key) === "1") : undefined;
-  const global = store.globalInterval();
-  const { interval, inherited } = effectiveInterval(readKeys.map((key) => store.tabInterval(key)), global);
+  const verdict = store.resolve({ keys });
+  const enabled = verdict.decidedBy === "unlisted" ? undefined : verdict.on;
+  const { interval, inherited } = verdict;
+  // An inherited interval IS the global default; an own one needs a second question to learn it.
+  const global = inherited ? interval : store.resolve({ keys: [] }).interval;
   const logs = readKeys.map((key) => store.logRows(key));
   const lastRun = lastRunMs(logs);
   return {
@@ -1001,27 +1045,38 @@ export function mergeLogRows(others: string[][], base: string[], cap: number = Z
 }
 
 /**
- * Apply a RenamePlan to Redis: carry interval, merge logs, move pane overrides, drop old tab/log keys.
- * A pane override under an old spelling is MOVED onto the target (a pane turned OFF stays OFF); when
- * both spellings carry one, any OFF wins, which is what the engine does across spellings.
+ * The crank_apply ops of a RenamePlan: merge every old key's log onto the target (one replace_log),
+ * MOVE pane overrides onto the target (a pane turned OFF stays OFF; when both spellings carry one,
+ * any OFF wins, which is what the rule does across spellings), then drop the old tab / pane / log
+ * keys. Reads are done here; nothing is written until the caller sends the batch.
  */
-export function applyRenameMigration(store: CrankStore, plan: RenamePlan): void {
-  if (plan.carryInterval) store.setTabInterval(plan.target, plan.carryInterval);
+export function renameMigrationOps(store: CrankStore, plan: RenamePlan): CrankOp[] {
+  const ops: CrankOp[] = [];
+  const original = store.logRows(plan.target);
+  let log = original;
+  const panes = new Map<string, string | undefined>();
   for (const old of plan.oldKeys) {
-    const merged = mergeLogRows([store.logRows(old)], store.logRows(plan.target));
-    store.replaceLog(plan.target, merged);
-    const oldPanes = store.paneKeys(old);
+    log = mergeLogRows([store.logRows(old)], log);
     const prefix = `zcrank:pane:${old}:`;
-    for (const paneKey of oldPanes) {
-      const targetKey = `zcrank:pane:${plan.target}:${paneKey.slice(prefix.length)}`;
+    for (const paneKey of store.paneKeys(old)) {
+      const pane = paneKey.slice(prefix.length);
       const oldValue = store.getKey(paneKey);
-      const existing = store.getKey(targetKey);
       if (oldValue === undefined) continue;
+      if (!panes.has(pane)) panes.set(pane, store.getKey(`zcrank:pane:${plan.target}:${pane}`));
+      const existing = panes.get(pane);
       const value = existing === undefined ? oldValue : existing === "1" && oldValue === "1" ? "1" : "0";
-      if (value !== existing) store.setKey(targetKey, value);
+      if (value !== existing) {
+        panes.set(pane, value);
+        ops.push({ op: "pane", owner: plan.target, pane, value: value === "1" ? "1" : "0" });
+      }
     }
-    store.deleteKeys(`zcrank:tab:${old}`, ...oldPanes, `zcrank:log:${old}`);
+    ops.push({ op: "clear_panes", owner: old });
+    ops.push({ op: "del", key: `zcrank:tab:${old}` }, { op: "del", key: `zcrank:log:${old}` });
   }
+  if (log.length !== original.length || log.some((row, i) => row !== original[i])) {
+    ops.unshift({ op: "replace_log", key: plan.target, rows: log });
+  }
+  return ops;
 }
 
 /** What a crank screen needs to resolve a project's tab and write to it. */
@@ -1085,8 +1140,9 @@ export interface EnableResult {
 }
 
 /**
- * `pj crank enable`, shared by the CLI and the TUI: set enabled=1 under the target key,
- * write the chosen interval, run the rename migration, then log (enabled / interval / renamed).
+ * `pj crank enable`, shared by the CLI and the TUI: ONE atomic crank_apply carrying everything the
+ * command means — enabled=1 and the chosen interval under the target key (the arbiter writes their
+ * log rows, only when the value changed), the `root`, the rename migration, and the "renamed" rows.
  * With no live tab nothing migrates and the key is the resolution's, but other spellings that
  * still name the tab are switched ON too (and lose any interval the chosen one must beat).
  */
@@ -1104,44 +1160,50 @@ export function enableCrank(store: CrankStore, ctx: CrankContext, options: { int
     roots: ctx.roots,
   });
   const tab = plan?.target ?? ctx.resolution.tab;
-  store.setTabEnabled(tab, true);
-  writeRoot(store, tab, ctx.identity);
-  if (options.interval) store.setTabInterval(tab, options.interval);
-  if (plan) applyRenameMigration(store, plan);
-  else {
+  const interval = options.interval ?? plan?.carryInterval;
+  // The log merge (replace_log) goes first: the rows the tab op appends land after it, as they always did.
+  const ops: CrankOp[] = plan ? renameMigrationOps(store, plan) : [];
+  ops.push({
+    op: "tab", key: tab, enabled: true, ts,
+    action: "pj crank enable",
+    ...(interval ? { interval, interval_action: options.interval ? `pj crank enable: interval ${interval}` : `pj crank enable: interval ${interval} (carried from the old key)` } : {}),
+    ...(ctx.identity ? { root: ctx.identity } : {}),
+  });
+  if (!plan) {
     // No live tab, so nothing migrates. Other spellings of the key still name this tab to the engine
     // (any OFF wins, the longest interval wins), so bring them along: ON, and the chosen interval
     // not overridden by a stale longer one.
     for (const sibling of keysNamingTab(tab, ctx.storedKeys, keyScopeOf(ctx))) {
       if (sibling === tab) continue;
-      store.setTabEnabled(sibling, true);
-      writeRoot(store, sibling, ctx.identity);
-      if (options.interval) store.clearTabInterval(sibling);
+      ops.push({
+        op: "tab", key: sibling, enabled: true, ts,
+        action: `pj crank enable (spelling of ${tab})`,
+        ...(options.interval ? { interval: "" as const, interval_action: `pj crank enable: interval cleared, ${tab} runs at ${options.interval}` } : {}),
+        ...(ctx.identity ? { root: ctx.identity } : {}),
+      });
     }
   }
-  if (options.interval) store.pushLog(tab, "interval", `pj crank enable: interval ${options.interval}`, ts);
-  store.pushLog(tab, "enabled", "pj crank enable", ts);
   const renamed = (plan?.oldKeys ?? []).map((from) => ({ from, to: tab }));
-  for (const { from, to } of renamed) store.pushLog(tab, "renamed", `pj crank enable: ${from} -> ${to}`, ts);
-  return { tab, renamed, interval: options.interval ?? plan?.carryInterval };
+  for (const { from, to } of renamed) {
+    ops.push({ op: "log", key: tab, row: JSON.stringify({ ts, state: "renamed", action: `pj crank enable: ${from} -> ${to}` }) });
+  }
+  store.apply(ops);
+  // The arbiter's `del` skips names with a redis glob character: finish those by hand (see store.purge).
+  for (const op of ops) {
+    if (op.op === "del" && /[*?]/.test(op.key)) store.purge(op.key);
+  }
+  return { tab, renamed, interval };
 }
 
-/** Stamp the project identity on a key pj writes (no-op for a project with no identity). */
-function writeRoot(store: CrankStore, tab: string, root: string | undefined): void {
-  if (root) store.setTabRoot(tab, root);
-}
-
-/** `pj crank disable`: enabled=0 plus a log row, under the resolved key (stamped with `root`). */
+/** `pj crank disable`: enabled=0 (and its log row, when it changed) under the resolved key, stamped with `root`. */
 export function disableCrank(store: CrankStore, tab: string, now: Date = new Date(), root?: string): void {
-  store.setTabEnabled(tab, false);
-  writeRoot(store, tab, root);
-  store.pushLog(tab, "disabled", "pj crank disable", crankTimestamp(now));
+  store.apply([{ op: "tab", key: tab, enabled: false, ts: crankTimestamp(now), action: "pj crank disable", ...(root ? { root } : {}) }]);
 }
 
 /**
  * Set (or, with undefined, reset to the global default) a tab's interval. Written under
  * `tab` and cleared from every other key naming it, so the longest-wins rule across spellings
- * can never override what the operator just picked.
+ * can never override what the operator just picked. One atomic crank_apply.
  */
 export function setCrankInterval(
   store: CrankStore,
@@ -1151,14 +1213,14 @@ export function setCrankInterval(
   now: Date = new Date(),
   scope: KeyScope & { root?: string } = {},
 ): void {
+  const ts = crankTimestamp(now);
+  const ops: CrankOp[] = [];
   for (const key of keysNamingTab(tab, storedKeys, scope)) {
-    if (key !== tab) store.clearTabInterval(key);
+    if (key !== tab) ops.push({ op: "tab", key, interval: "", ts, interval_action: `pj crank tui: interval cleared, ${tab} decides` });
   }
-  if (interval) store.setTabInterval(tab, interval);
-  else store.clearTabInterval(tab);
-  writeRoot(store, tab, scope.root);
-  const action = interval ? `pj crank tui: interval ${interval}` : `pj crank tui: interval reset to global (${store.globalInterval()})`;
-  store.pushLog(tab, "interval", action, crankTimestamp(now));
+  const action = interval ? `pj crank tui: interval ${interval}` : `pj crank tui: interval reset to global (${store.resolve({ keys: [] }).interval})`;
+  ops.push({ op: "tab", key: tab, interval: interval ?? "", ts, interval_action: action, ...(scope.root ? { root: scope.root } : {}) });
+  store.apply(ops);
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,26 +1255,19 @@ export interface CrankProjectRecord {
   agents: { handle: string; role: string }[];
 }
 
-/** Build the crank list from registry projects plus live/stored tab state. */
+/** Build the crank list from registry projects plus live/stored tab state. ON/OFF and intervals are the arbiter's. */
 export function buildCrankList(input: {
   projects: CrankProjectRecord[];
   live: LiveTab[];
   storedTabs: string[];
-  tabEnabled: (tab: string) => string | undefined;
-  /** A key's own interval; omitted = nothing is overridden. */
-  tabInterval?: (tab: string) => CrankInterval | undefined;
-  globalInterval?: CrankInterval;
+  /** The rule: the arbiter's verdict (crank_resolve) for a set of governing keys. */
+  resolve: (keys: string[]) => CrankVerdict;
   /** PJAN-201: a project's identity from its repo path (undefined = none), and each stored key's root. */
   identityOf?: (repoPath: string) => string | undefined;
   roots?: Record<string, string>;
   engine?: EngineStatus;
 }): CrankListReport {
-  const global = input.globalInterval ?? ZCRANK_DEFAULT_INTERVAL;
   const roots = input.roots ?? {};
-  const intervalOf = (tab: string, owner?: string) => {
-    const keys = keysNamingTab(tab, input.storedTabs, { owner, roots });
-    return effectiveInterval((keys.length ? keys : [tab]).map((key) => input.tabInterval?.(key)), global);
-  };
   const rows: CrankListRow[] = [];
   const consumed = new Set<string>();
   const consumedKeys = new Set<string>();
@@ -1222,23 +1277,24 @@ export function buildCrankList(input: {
     consumed.add(canon(resolution.tab));
     const keys = keysNamingTab(resolution.tab, input.storedTabs, { owner: resolution.tabOwner, roots });
     for (const key of keys) consumedKeys.add(key);
-    // The engine's rule: ON only when every key naming the tab is ON. A single resolved key
-    // (nothing else names the tab) reads exactly as before.
-    const values = (keys.length ? keys : [resolution.tab]).map((key) => input.tabEnabled(key)).filter((v): v is string => v !== undefined);
-    const enabled = values.length ? (values.every((v) => v === "1") ? "1" : "0") : undefined;
+    const verdict = input.resolve(keys);
     rows.push({
       slug: project.slug,
       name: project.name,
       tab: resolution.tab,
-      crank: enabled === "1" ? "ON" : enabled === "0" ? "OFF" : "—",
+      crank: verdict.decidedBy === "unlisted" ? "—" : verdict.on ? "ON" : "OFF",
       source: resolution.source,
       ...(resolution.liveTab !== undefined ? { liveTab: resolution.liveTab } : {}),
-      ...intervalOf(resolution.tab, resolution.tabOwner),
+      interval: verdict.interval,
+      inherited: verdict.inherited,
     });
   }
   const orphans = input.storedTabs
     .filter((stored) => !consumed.has(canon(stored)) && !consumedKeys.has(stored))
-    .map((stored) => ({ tab: stored, enabled: input.tabEnabled(stored) === "1", ...intervalOf(stored) }));
+    .map((stored) => {
+      const verdict = input.resolve(keysNamingTab(stored, input.storedTabs, { roots }));
+      return { tab: stored, enabled: verdict.on, interval: verdict.interval, inherited: verdict.inherited };
+    });
   return { engine: input.engine, rows, orphans };
 }
 

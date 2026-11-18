@@ -11,51 +11,27 @@
 //              those tagged `project:<repo>`. <repo> is candybar's own project
 //              name: the main checkout's basename, so a linked worktree counts
 //              as its repo (candybar/src/candybar/project.py, find_project).
-//   crank      Inside the zcrank zellij session, the ENGINE's answer for this
-//              very pane (zcrank.py crank_enabled): a zcrank:pane override wins
-//              (any OFF across spellings wins), else every key naming the live
-//              tab — by name, or by `root` == the tab's owner — must be ON;
-//              unlisted = OFF. Outside that session there is no pane for the
-//              beat to type into, so it reports the project's resolved tab the
-//              way `pj crank` does.
-//   uptime     How long crank has been ON without a break. In a Workspace pane: the
-//              engine's own record (zcrank.py on_since.json — the pane open and ON at
-//              every scan since), sharpened to the `enabled` log row that started it.
-//              Outside: the oldest run among the tab's engine-tracked panes.
+//   crank      ONLY for a project OUTSIDE zellij (inside a pane `pjangler-prompt` reads the arbiter's
+//              per-pane hash directly and this child computes no crank at all): the project's resolved
+//              tab, asked of the arbiter (crank_resolve) the way `pj crank` does — ON/OFF and the
+//              interval are the arbiter's verdict, never re-derived here.
+//   uptime     How long crank has been ON without a break: the oldest arbiter `since` (crank:p:*)
+//              among the tab's ON panes.
 //   next crank The tab's interval and newest beat row; the prompt does the countdown
 //              math at render time so it keeps moving between refreshes.
+//   stalled    The engine heartbeat (crank:engine scan_ms) is absent or older than CRANK_STALL_AFTER_MS.
 //
 // A fact that cannot be read is written as null and the prompt hides that
 // segment. It is never guessed: "crank off" when Redis is down would be a lie.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { contextFor, currentProjectNames } from "./crank/cli";
-import {
-  IDENTITY_BUDGET_MS,
-  ZCRANK_SESSION,
-  keysNamingTab,
-  livePanes,
-  liveTabs,
-  projectIdentity,
-  resolvePaneCwds,
-  withTabOwners,
-  redis,
-  snapshotCrank,
-  storedTabKeys,
-  storedTabRoots,
-  tabDisplay,
-  keyScopeOf,
-  canon,
-  parseLogRow,
-  ZCRANK_CRON_SECONDS,
-  type CrankStore,
-  type IdentityBudget,
-  type IdentityCache,
-} from "./crank/index";
-import { CRANK_STALL_AFTER_MS, PANE_ONLY_ROOT, PIPELINE_CACHE_VERSION, type CandybarCounts, type CrankState, type PipelineCache } from "./prompt-pipeline";
+import { canon, keyScopeOf, redis, snapshotCrank, storedTabKeys } from "./crank/index";
+import { redisEndpoint } from "./crank/redisEndpoint";
+import { redisPipeline, replyToHash } from "./crank/resp";
+import { CRANK_STALL_AFTER_MS, PIPELINE_CACHE_VERSION, zellijPane, type CandybarCounts, type CrankState, type PipelineCache } from "./prompt-pipeline";
 
 const CANDYBAR_DEFAULT_API_URL = "http://127.0.0.1:8700";
 const CANDYBAR_TIMEOUT_MS = 3_000;
@@ -151,216 +127,99 @@ export async function readCandybars(root: string, env: NodeJS.ProcessEnv = proce
   }
 }
 
-/**
- * zcrank.py crank_enabled(tab_name, pane_id, owner), over pjangler's store. `pane` is the
- * engine's pane id (`terminal_<N>`). Returns which rule decided, so the prompt can say so.
- */
-export function engineCrankFor(
-  store: Pick<CrankStore, "getKey" | "tabEnabled">,
-  tabName: string,
-  pane: string | undefined,
-  storedKeys: string[],
-  scope: { owner?: string; roots?: Record<string, string> },
-): { enabled: boolean; decidedBy: "pane" | "tab"; keys: string[] } {
-  const name = tabDisplay(tabName);
-  const keys = keysNamingTab(name, storedKeys, scope);
-  if (pane !== undefined) {
-    const owners = [...new Set([...keys, name])].filter(Boolean);
-    const found = owners.map((o) => store.getKey(`zcrank:pane:${o}:${pane}`)).filter((v): v is string => v !== undefined);
-    if (found.length) return { enabled: found.every((v) => v === "1"), decidedBy: "pane", keys };
-  }
-  if (!keys.length) return { enabled: false, decidedBy: "tab", keys };
-  return { enabled: keys.every((key) => store.tabEnabled(key) === "1"), decidedBy: "tab", keys };
-}
+/** The fields of a crank:p hash the project path reads (HMGET order). */
+export const ARBITER_PANE_FIELDS = ["on", "since", "tab", "tab_key", "keys"] as const;
 
-/** zcrank.py's state dir (its STATE_FILE.parent): `$ZCRANK_STATE_DIR`, else `~/.local/state/zcrank`. */
-export function zcrankStateDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.ZCRANK_STATE_DIR || join(env.HOME || homedir(), ".local", "state", "zcrank");
-}
-
-export interface EngineContinuity {
-  /** Epoch ms of the engine's last scan. */
-  scanMs: number;
-  /** Engine pane id (`terminal_<N>`) -> when it has been open and ON since, and its tab (canon form). */
-  panes: Record<string, { sinceMs: number; tab: string }>;
-  /** First scan of a brand-new record: a pane ON since then was already ON when tracking began. */
-  freshSinceMs?: number;
-}
-
-function zcrankTsMs(value: unknown): number | undefined {
-  if (typeof value !== "string") return undefined;
-  const row = parseLogRow(JSON.stringify({ ts: value }));
-  return row && row.tsMs > 0 ? row.tsMs : undefined;
-}
-
-/** zcrank.py's on_since.json, or undefined when absent, unreadable or not the v1 shape. */
-export function readEngineContinuity(env: NodeJS.ProcessEnv = process.env): EngineContinuity | undefined {
+function jsonList(raw: string | undefined): string[] {
   try {
-    const parsed = JSON.parse(readFileSync(join(zcrankStateDir(env), "on_since.json"), "utf8")) as {
-      v?: unknown;
-      scan_ts?: unknown;
-      fresh_since?: unknown;
-      panes?: unknown;
-    };
-    const scanMs = zcrankTsMs(parsed?.scan_ts);
-    if (parsed?.v !== 1 || scanMs === undefined || !parsed.panes || typeof parsed.panes !== "object") return undefined;
-    const panes: EngineContinuity["panes"] = {};
-    for (const [pane, entry] of Object.entries(parsed.panes as Record<string, unknown>)) {
-      const e = entry as { since?: unknown; tab?: unknown } | null;
-      const sinceMs = zcrankTsMs(e?.since);
-      if (sinceMs !== undefined) panes[pane] = { sinceMs, tab: typeof e?.tab === "string" ? e.tab : "" };
-    }
-    const out: EngineContinuity = { scanMs, panes };
-    const fresh = zcrankTsMs(parsed.fresh_since);
-    if (fresh !== undefined) out.freshSinceMs = fresh;
-    return out;
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
   } catch {
-    return undefined;
+    return [];
   }
-}
-
-/** The newest `enabled` and `disabled` rows across a tab's raw log rows (pj writes both). Pure. */
-export function lastToggles(log: string[]): { enabledMs?: number; disabledMs?: number } {
-  let enabledMs: number | undefined;
-  let disabledMs: number | undefined;
-  for (const raw of log) {
-    const row = parseLogRow(raw);
-    if (!row || row.tsMs <= 0) continue;
-    if (row.state === "enabled" && (enabledMs === undefined || row.tsMs > enabledMs)) enabledMs = row.tsMs;
-    if (row.state === "disabled" && (disabledMs === undefined || row.tsMs > disabledMs)) disabledMs = row.tsMs;
-  }
-  return { enabledMs, disabledMs };
 }
 
 /**
- * When a pane's unbroken crank run began. The engine's `since` (the first 5m scan that saw the pane
- * ON) is the authority; the log only sharpens it:
- *   - an OFF then ON between two scans (a `disabled` after since, an `enabled` after that) starts a
- *     new run at that `enabled`, though the engine never saw the gap;
- *   - an `enabled` up to one tick before since is when this run really started;
- *   - a pane already ON when tracking began (since == freshSince) reaches back to the last
- *     `enabled` with no `disabled` after it, the only record of the time before.
- * A lone `enabled` after since is an idempotent re-enable and changes nothing. With no engine
- * record yet (switched ON since the last scan), only an `enabled` newer than that scan counts. Pure.
+ * When a project's tab has been ON without a break: the oldest `since` among the arbiter's ON panes
+ * that this tab governs. A pane belongs to the tab when a key governing it is one of the project's
+ * keys, or when its tab name canonicalises to the tab's. Pure; undefined = no such pane (unknown).
  */
-export function paneOnSinceMs(
-  engineSinceMs: number | undefined,
-  log: { enabledMs?: number; disabledMs?: number },
-  engineScanMs: number | undefined,
-  freshSinceMs?: number,
+export function tabOnSinceMs(
+  panes: Record<string, string>[],
+  tab: string,
+  tabKeys: string[],
 ): number | undefined {
-  const { enabledMs, disabledMs } = log;
-  const offAfterOn = enabledMs !== undefined && disabledMs !== undefined && disabledMs >= enabledMs;
-  if (engineSinceMs !== undefined) {
-    if (enabledMs !== undefined && disabledMs !== undefined && disabledMs > engineSinceMs && enabledMs > disabledMs) return enabledMs;
-    if (enabledMs !== undefined && enabledMs <= engineSinceMs) {
-      if (engineSinceMs - enabledMs < ZCRANK_CRON_SECONDS * 1000) return enabledMs;
-      if (freshSinceMs !== undefined && engineSinceMs <= freshSinceMs && !offAfterOn) return enabledMs;
-    }
-    return engineSinceMs;
-  }
-  if (enabledMs !== undefined && (engineScanMs === undefined || enabledMs > engineScanMs)) return enabledMs;
-  return undefined;
-}
-
-/**
- * A tab's unbroken run with no pane to ask about (a project outside zellij): the oldest run among
- * its panes the engine has open and ON. pj's log alone cannot say (a re-enable writes a fresh
- * `enabled`, zcrankctl writes none), so no engine record = unknown. Pure.
- */
-export function tabOnSinceMs(engine: EngineContinuity | undefined, tab: string): number | undefined {
   const want = canon(tab);
-  if (!engine || !want) return undefined;
   let best: number | undefined;
-  for (const entry of Object.values(engine.panes)) {
-    if (canon(entry.tab) === want && (best === undefined || entry.sinceMs < best)) best = entry.sinceMs;
+  for (const pane of panes) {
+    if (pane.on !== "1") continue;
+    const since = Number(pane.since);
+    if (!Number.isFinite(since) || since <= 0) continue;
+    const governs = jsonList(pane.keys).some((key) => tabKeys.includes(key));
+    const named = !!want && (canon(pane.tab) === want || canon(pane.tab_key) === want);
+    if ((governs || named) && (best === undefined || since < best)) best = since;
   }
   return best;
 }
 
-/** Whether the engine had stopped scanning as of `nowMs` (judged when the cache is written). */
-function engineStalled(engine: EngineContinuity | undefined, nowMs: number): boolean {
-  return engine !== undefined && nowMs - engine.scanMs > CRANK_STALL_AFTER_MS;
+/**
+ * The arbiter's facts a project's ON segment needs, over one pipelined connection each round:
+ * the engine heartbeat and every resolved pane (crank:idx:panes -> HMGET). undefined = Redis did
+ * not answer (the timing stays unknown; it is never invented).
+ */
+export async function readArbiterFacts(
+  env: NodeJS.ProcessEnv = process.env,
+  timeoutMs = 2_000,
+): Promise<{ engineScanMs?: number; panes: Record<string, string>[] } | undefined> {
+  const endpoint = redisEndpoint(env);
+  const first = await redisPipeline(endpoint, [["SMEMBERS", "crank:idx:panes"], ["HGETALL", "crank:engine"]], timeoutMs);
+  if (!first) return undefined;
+  const members = Array.isArray(first[0]) ? first[0].filter((m): m is string => typeof m === "string") : [];
+  const scan = Number(replyToHash(first[1])?.scan_ms);
+  const engineScanMs = Number.isFinite(scan) && scan > 0 ? scan : undefined;
+  if (!members.length) return { engineScanMs, panes: [] };
+  const second = await redisPipeline(endpoint, members.map((key) => ["HMGET", key, ...ARBITER_PANE_FIELDS]), timeoutMs);
+  if (!second) return undefined;
+  const panes: Record<string, string>[] = [];
+  for (const reply of second) {
+    if (!Array.isArray(reply)) continue;
+    const row: Record<string, string> = {};
+    ARBITER_PANE_FIELDS.forEach((field, i) => {
+      const value = reply[i];
+      if (typeof value === "string") row[field] = value;
+    });
+    panes.push(row);
+  }
+  return { engineScanMs, panes };
 }
 
-export function readCrank(
-  env: NodeJS.ProcessEnv = process.env,
-  nowMs: number = Date.now(),
-  options: { paneOnly?: boolean } = {},
-): CrankState | null {
+/**
+ * The crank state of the project at the cwd, for a shell OUTSIDE zellij (scope "project"). ON/OFF and
+ * the interval are the arbiter's verdict (via snapshotCrank -> crank_resolve). null = Redis or the
+ * arbiter did not answer: the segment is hidden, never guessed OFF.
+ */
+export async function readCrank(env: NodeJS.ProcessEnv = process.env, nowMs: number = Date.now()): Promise<CrankState | null> {
   try {
     const store = redis();
     if (!store.ping()) return null;
     const keys = storedTabKeys(store);
-    const roots = storedTabRoots(store, keys);
-
-    const paneNumber = Number.parseInt(env.ZELLIJ_PANE_ID ?? "", 10);
-    if (env.ZELLIJ_SESSION_NAME === ZCRANK_SESSION && Number.isInteger(paneNumber)) {
-      // ONE list-panes call (~2.5s on a busy session): it finds this pane's tab AND, only when some
-      // key carries a `root` (the engine's own shortcut in zcrank.py scan), feeds the tab owners.
-      // retries: 0 — a withheld cwd comes from the engine's shared pane-cwd memory instead.
-      const claimed = Object.values(roots);
-      const panes = claimed.length ? resolvePaneCwds(() => livePanes(), { retries: 0, nowMs }) : livePanes();
-      const me = panes.find((p) => !p.isPlugin && p.id === paneNumber);
-      if (me) {
-        let owner: string | undefined;
-        if (claimed.length) {
-          const cache: IdentityCache = new Map();
-          const budget: IdentityBudget = { totalMs: IDENTITY_BUDGET_MS };
-          const tabs = withTabOwners(liveTabs(), panes, (cwd) => projectIdentity(cwd, { cache, budget }), claimed);
-          const tab = tabs.find((t) => me.tabId !== undefined && t.id === me.tabId)
-            ?? tabs.find((t) => me.tabPosition !== undefined && t.position === me.tabPosition)
-            ?? tabs.find((t) => t.name === me.tabName);
-          owner = tab?.owner;
-        }
-        const scope = { owner, roots };
-        const pane = `terminal_${paneNumber}`;
-        const verdict = engineCrankFor(store, me.tabName, pane, keys, scope);
-        const snapshot = snapshotCrank(store, tabDisplay(me.tabName), keys, nowMs, 0, scope);
-        const state: CrankState = { enabled: verdict.enabled, interval: snapshot.interval, scope: verdict.decidedBy };
-        if (!verdict.enabled) return state;
-        const engine = readEngineContinuity(env);
-        return withTiming(state, {
-          onSinceMs: paneOnSinceMs(engine?.panes[pane]?.sinceMs, lastToggles(snapshot.log), engine?.scanMs, engine?.freshSinceMs),
-          lastRunMs: snapshot.lastRunMs,
-          engineScanMs: engine?.scanMs,
-          stalled: engineStalled(engine, nowMs) || undefined,
-        });
-      }
-      // We ARE a Workspace pane but could not see ourselves (list-panes failed, timed out, or has not
-      // caught up): no answer, not the project's answer. The engine decides by tab, so a project
-      // verdict here can be the opposite of what the beat will do.
-      return null;
-    }
-    // No project here and no pane the engine could crank: nothing to say.
-    if (options.paneOnly) return null;
-
-    // Outside the crank session: the project's own switch, resolved exactly as `pj crank` does.
     const project = currentProjectNames();
     const ctx = contextFor(project, store);
     const snapshot = snapshotCrank(store, ctx.resolution.tab, keys, nowMs, 0, keyScopeOf(ctx));
     const state: CrankState = { enabled: snapshot.enabled === true, interval: snapshot.interval, scope: "project" };
     if (!state.enabled) return state;
-    const engine = readEngineContinuity(env);
-    return withTiming(state, {
-      onSinceMs: tabOnSinceMs(engine, ctx.resolution.tab),
-      lastRunMs: snapshot.lastRunMs,
-      engineScanMs: engine?.scanMs,
-      stalled: engineStalled(engine, nowMs) || undefined,
-    });
+    if (snapshot.lastRunMs !== undefined) state.lastRunMs = snapshot.lastRunMs;
+    const facts = await readArbiterFacts(env);
+    if (!facts) return state;
+    const onSince = tabOnSinceMs(facts.panes, ctx.resolution.tab, snapshot.keys);
+    if (onSince !== undefined) state.onSinceMs = onSince;
+    if (facts.engineScanMs !== undefined) state.engineScanMs = facts.engineScanMs;
+    // No heartbeat at all is as stalled as an old one: nothing is resolving crank.
+    if (facts.engineScanMs === undefined || nowMs - facts.engineScanMs > CRANK_STALL_AFTER_MS) state.stalled = true;
+    return state;
   } catch {
     return null;
   }
-}
-
-/** Attach the timing facts that are known; an unknown one is left off, never written as undefined. */
-function withTiming(state: CrankState, timing: Pick<CrankState, "onSinceMs" | "lastRunMs" | "engineScanMs" | "stalled">): CrankState {
-  const out = { ...state };
-  if (timing.stalled) out.stalled = true;
-  if (timing.onSinceMs !== undefined) out.onSinceMs = timing.onSinceMs;
-  if (timing.lastRunMs !== undefined) out.lastRunMs = timing.lastRunMs;
-  if (timing.engineScanMs !== undefined) out.engineScanMs = timing.engineScanMs;
-  return out;
 }
 
 export function writeCacheAtomically(cachePath: string, cache: PipelineCache): void {
@@ -409,10 +268,9 @@ async function main(): Promise<void> {
   if (!root || !cachePath) return;
   try {
     // Sequential on purpose: readCrank is spawnSync-bound and would starve an in-flight fetch anyway.
-    // A pane outside every project (PANE_ONLY_ROOT) has no candybars to count, only its crank mode.
-    const paneOnly = root === PANE_ONLY_ROOT;
-    const candybars = paneOnly ? null : await readCandybars(root);
-    const crank = readCrank(process.env, Date.now(), { paneOnly });
+    // Inside a zellij pane the prompt reads crank straight from the arbiter, so the cache carries none.
+    const candybars = await readCandybars(root);
+    const crank = zellijPane(process.env) ? null : await readCrank(process.env, Date.now());
     writeCacheAtomically(cachePath, { v: PIPELINE_CACHE_VERSION, writtenAtMs: Date.now(), root, candybars, crank });
     sweepCacheDir(dirname(cachePath), Date.now(), cachePath);
   } catch {

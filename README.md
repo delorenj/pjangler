@@ -166,8 +166,8 @@ state reflects your last fetch — nothing here touches the network.
 
 `pjangler-prompt` prints one compact line when the working directory is inside a
 pjangler project. Outside every project it prints nothing, except in a zellij
-pane, where it prints the pane's crank segment alone once that is known: crank
-mode belongs to the pane, not the project.
+pane, where it prints the pane's crank segment alone: crank mode belongs to the
+pane, not the project.
 
 ```
 pjangler (PJAN) · 3m · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
@@ -180,25 +180,32 @@ After the slug, board prefix and age come two 33GOD pipeline segments, crank las
   `http://127.0.0.1:8700`; the project is the `project:<repo>` tag, where
   `<repo>` is the main checkout's basename, exactly as `candybar ls` resolves it).
 - `◌ crank off`, or `⚡ crank ↑3d4h ↻5m ⏳2m` — whether the crank beat may type
-  into **this pane**, decided by the engine's rule (`zcrank.py crank_enabled`): a
-  `zcrank:pane` override wins, else every key naming the live tab must be ON.
-  Outside the `Workspace` zellij session it shows the project's own switch, as
-  `pj crank` resolves it. When ON, three numbers follow:
+  into **this pane**. The arbiter (`crank.lua`, Redis Functions library `crank`)
+  decides that; the prompt does not re-derive it. In a zellij pane the segment
+  reads the arbiter's resolved hash directly, `HGETALL crank:p:<session>:terminal_<N>`
+  (plus the engine heartbeat `crank:engine`), over a tiny builtins-only RESP2
+  client with a hard 150ms timeout, at the same endpoint `pj crank` uses
+  (`ZCRANK_REDIS_HOST` / `ZCRANK_REDIS_PORT`, default `127.0.0.1:6379`). There is
+  no cache and no background refresh for it: it is what Redis says right now.
+  Outside a zellij pane it shows the project's own switch, as `pj crank`
+  resolves it (`FCALL_RO crank_resolve`), through the cache below. When ON, three
+  numbers follow:
   - `↑3d4h` how long crank has been ON **without a break** (`22m`, `5h22m`,
-    `3d4h`, `1w3d`). In a Workspace pane that is the engine's own record,
-    `~/.local/state/zcrank/on_since.json`: the pane open and ON at every 5m scan
-    since then, sharpened to the `enabled` log row that started the run. It
-    restarts when the pane closes, crank goes OFF for it, its tab is renamed, or
-    the engine stops scanning. Outside Workspace: the tab's last `enabled` row
-    with no `disabled` after it. Unknown = left out.
-  - `↻5m` the interval the beat visits the tab at.
+    `3d4h`, `1w3d`): the hash's `since`, which the arbiter restarts when the pane
+    closes, crank goes OFF for it, its tab is renamed, or the engine stops
+    scanning. Outside a pane: the oldest `since` among the ON panes the tab
+    governs. Unknown = left out.
+  - `↻5m` the interval the beat visits the tab at (the hash's `interval`).
   - `⏳2m` the countdown to the next crank: minutes, then seconds (`42s`) in the
     last minute, then `now`. Worked out at render time from the interval and the
-    tab's last beat (`pj crank`'s next-run rule), so it keeps counting between
-    cache refreshes.
+    pane's `last_run`, so it keeps counting between prompts.
 
-  If the engine has not scanned for 15 minutes it is not cranking anything,
-  whatever Redis says, and the segment reads `⚠ crank stalled 25m ↻5m`.
+  If the engine's heartbeat (`crank:engine`) is older than 15 minutes, or absent,
+  it is not cranking anything, whatever the hash says: an ON pane reads
+  `⚠ crank stalled 25m ↻5m`, and a pane with no hash reads `⚠ crank stalled`. A
+  pane with no hash while the heartbeat is fresh is simply not watched by the
+  engine, so it prints no segment. Redis unreachable (or slower than the budget)
+  prints no crank segment either: an unreachable Redis is never read as OFF.
 
 The candybar icon (shown as 🍬 above) is really the `outline/candy` icon from
 [delorenj/icons](https://github.com/delorenj/icons), vendored in
@@ -218,10 +225,11 @@ of a single-instance ghostty or `alacritty msg create-window` is not enough).
 Awesome there. On a machine without the font, set
 `PJ_PROMPT_CANDYBAR_GLYPH=🍫` (or any glyph) instead of living with tofu.
 
-Neither is computed on the prompt's critical path. They come from a small cache
+The candybar count (and, outside a zellij pane, the project's crank) is not
+computed on the prompt's critical path. It comes from a small cache
 (`$PJ_PROMPT_CACHE_DIR`, default `~/.cache/pjangler/prompt/`, one file per
-project root and zellij pane) that a detached `dist/prompt-refresh.js` rewrites
-when it is older than 60s, so the first prompt in a new place shows none and the
+project root, split only by in-a-zellij-pane or not) that a detached `dist/prompt-refresh.js` rewrites
+when it is older than 60s, so the first prompt in a new place shows no candybar count and the
 next one does. A segment whose source did not answer is omitted rather than
 guessed, and a cache older than 15 minutes is not shown at all.
 `PJ_PROMPT_NO_REFRESH=1` stops the background refresh.

@@ -287,6 +287,8 @@ export function suiteGrants(suite, { required = false } = {}) {
  * Keys are registered suites (for a bundled .ts suite, its launcher).
  */
 export const OPERATOR_HOME_READERS = new Map([
+  ["tests/crank-arbiter-drift.mjs",
+    "compares the vendored crank arbiter (tests/data/crank-arbiter) with the installed sources (~/.agents/tools/jev-clairic/bin/crank.lua, bloodbank's statekit_prelude.lua), read-only; skipped when they are not installed (CI)"],
   ["tests/pjan-67-trusted-lifecycle-regressions.mjs",
     "locates the UV-tool Copier under the OS account home (~/.local/share/uv/tools/copier, read-only), the same anchor src/lifecycle/preflight.ts trusts via userInfo(); a PATH or HOME lookup would find a different, untrusted copier"],
   ["tests/pjan-67-lifecycle-preflight-regressions.mjs",

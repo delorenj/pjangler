@@ -1,19 +1,25 @@
 // The 33GOD pipeline segments of `pjangler-prompt`: how many candybars are
 // registered (Candybar, the single clock) and whether crank mode is ON for the
-// pane you are typing in (zcrank's Redis switches).
+// pane you are typing in (the crank arbiter's resolved state in Redis).
 //
-// Neither fact is cheap. Candybar is an HTTP API and the crank answer needs
-// redis-cli plus `zellij action list-panes`, which the engine itself measures
-// at seconds on a busy session. A prompt renders on every Enter, so the prompt
-// NEVER computes them: it reads a small JSON cache and, when that cache is
-// stale, spawns `dist/prompt-refresh.js` detached and returns immediately
-// (stale-while-revalidate). The first prompt in a new place shows no pipeline
-// segments; the next one does.
+// Two facts, two paths.
 //
-// This module imports node builtins (and the import-free ./crank/schedule) only. It is bundled into dist/prompt.js,
-// whose whole reason to exist is a boot near node's own floor; the heavy crank
-// and HTTP code lives in ./prompt-refresh.ts, a separate bundle that only the
-// detached child ever loads.
+// Crank, in a zellij pane: READ DIRECTLY. The arbiter (crank.lua) keeps one resolved hash per pane,
+// crank:p:<session>:terminal_<N>, and an engine heartbeat, crank:engine. The prompt HGETALLs both over
+// one pipelined TCP connection (a ~150ms hard budget; ./crank/resp.ts) and renders. No cache, no
+// refresher, no `zellij list-panes`: the answer is exactly as fresh as the engine's last */5 scan,
+// and nothing here re-implements the on/off rule.
+//
+// Candybar (an HTTP API), and crank for a project OUTSIDE zellij (the project's resolved tab: needs
+// redis-cli and git), are not cheap. A prompt renders on every Enter, so the prompt NEVER computes
+// them: it reads a small JSON cache and, when that cache is stale, spawns `dist/prompt-refresh.js`
+// detached and returns immediately (stale-while-revalidate). The first prompt in a new place shows
+// no such segments; the next one does.
+//
+// This module imports node builtins (and the import-free ./crank/schedule, ./crank/redisEndpoint and
+// ./crank/resp) only. It is bundled into dist/prompt.js, whose whole reason to exist is a boot near
+// node's own floor; the heavy crank and HTTP code lives in ./prompt-refresh.ts, a separate bundle
+// that only the detached child ever loads.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,6 +27,8 @@ import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, wri
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { redisEndpoint } from "./crank/redisEndpoint";
+import { redisPipeline, replyToHash } from "./crank/resp";
 import { nextRunMs, parseInterval } from "./crank/schedule";
 
 export const PIPELINE_CACHE_VERSION = 1;
@@ -42,17 +50,17 @@ export interface CrankState {
   enabled: boolean;
   /** The interval the beat visits this tab at (5m|1h|6h|1d). */
   interval?: string;
-  /** What decided it: this pane's override, its live tab, or the project's resolved tab (outside zellij). */
+  /** What decided it: this pane's override, its tab, or the project's resolved tab (outside zellij). */
   scope: "pane" | "tab" | "project";
   /**
-   * Epoch ms crank has been ON without a break since: for a pane, open AND ON at every engine scan
-   * since then (zcrank.py on_since.json, sharpened by the `enabled` log row that started it); for a
-   * project outside zellij, its tab's last `enabled` row with no `disabled` after it. Absent = unknown.
+   * Epoch ms crank has been ON without a break since: for a pane, the arbiter's `since` stamp (an
+   * edge sets it, an idempotent enable keeps it); for a project outside zellij, the oldest `since`
+   * among its tab's ON panes. Absent = unknown.
    */
   onSinceMs?: number;
   /** Epoch ms of this tab's newest beat row; with `interval` it gives the next crank at render time. */
   lastRunMs?: number;
-  /** Epoch ms of the engine's last scan (on_since.json scan_ts). */
+  /** Epoch ms of the engine's last scan (crank:engine scan_ms). */
   engineScanMs?: number;
   /**
    * The engine had not scanned for CRANK_STALL_AFTER_MS when this was READ (judged at write time:
@@ -61,14 +69,11 @@ export interface CrankState {
   stalled?: boolean;
 }
 
-/**
- * The cache "root" of a zellij pane outside any pjangler project. Crank mode belongs to the pane,
- * not the project, so such a pane still gets a crank-only line; its cache is keyed by pane alone.
- */
-export const PANE_ONLY_ROOT = "(pane)";
-
 /** The engine scans every 5m tick; three missed ticks means it is not cranking anything. */
 export const CRANK_STALL_AFTER_MS = 15 * 60_000;
+
+/** Total budget (connect, write, read) of the prompt's direct crank read. A prompt must never wait on Redis. */
+export const CRANK_READ_TIMEOUT_MS = 150;
 
 export interface PipelineCache {
   v: number;
@@ -88,12 +93,24 @@ export function pipelineCacheDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * One cache file per (project root, zellij pane). The crank answer is per pane — a pane
- * override beats its tab — so two panes in one repo must not share a file.
+ * The zellij pane this process runs in: the session (the arbiter's hash is keyed by it) and the
+ * `terminal_<N>` pane id. undefined outside zellij (or with either variable unusable).
+ */
+export function zellijPane(env: NodeJS.ProcessEnv = process.env): { session: string; pane: string } | undefined {
+  const session = env.ZELLIJ_SESSION_NAME?.trim();
+  const id = env.ZELLIJ_PANE_ID?.trim();
+  if (!session || !id || !/^\d+$/.test(id)) return undefined;
+  return { session, pane: `terminal_${id}` };
+}
+
+/**
+ * One cache file per (project root, in-a-zellij-pane or not). Inside a pane the cache holds the
+ * candybar counts only (crank is read directly there), outside it also holds the project's crank
+ * answer: the two kinds of refresher must not overwrite each other's file.
  */
 export function pipelineCachePath(root: string, env: NodeJS.ProcessEnv = process.env): string {
-  const pane = env.ZELLIJ_PANE_ID ? `${env.ZELLIJ_SESSION_NAME ?? ""}:${env.ZELLIJ_PANE_ID}` : "";
-  const key = createHash("sha1").update(`${root}\0${pane}`).digest("hex").slice(0, 16);
+  const place = zellijPane(env) ? "zellij" : "";
+  const key = createHash("sha1").update(`${root}\0${place}`).digest("hex").slice(0, 16);
   return join(pipelineCacheDir(env), `${key}.json`);
 }
 
@@ -145,6 +162,68 @@ export function needsRefresh(cache: PipelineCache | undefined, nowMs: number): b
   if (!cache) return true;
   const age = nowMs - cache.writtenAtMs;
   return age > PIPELINE_REFRESH_AFTER_MS || age < 0;
+}
+
+/** A non-negative epoch-ms field of the arbiter's hash, or undefined (absent, empty, junk). */
+function hashMs(value: string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * The crank segment from the arbiter's resolved state: `pane` is HGETALL crank:p:<session>:terminal_<N>
+ * and `engine` is HGETALL crank:engine (an absent hash is an empty one). undefined = no segment.
+ *
+ *   hash on=1   -> ON (since = the arbiter's stamp, interval, last_run); on=0 -> OFF
+ *   no hash     -> the engine heartbeat decides: fresh = this pane is not one the engine watches, so
+ *                  nothing to say; absent or stale = nothing is resolving crank: "stalled"
+ *   stalled     -> the heartbeat (the hash's own scan_ms when the heartbeat key is gone) is older than
+ *                  CRANK_STALL_AFTER_MS: an ON pane is not being cranked, whatever the hash says
+ */
+export function crankFromArbiter(
+  pane: Record<string, string> | undefined,
+  engine: Record<string, string> | undefined,
+  nowMs: number,
+): CrankState | undefined {
+  const hasPane = !!pane && Object.keys(pane).length > 0;
+  const heartbeatMs = hashMs(engine?.scan_ms) ?? (hasPane ? hashMs(pane?.scan_ms) : undefined);
+  const stalled = heartbeatMs === undefined || nowMs - heartbeatMs > CRANK_STALL_AFTER_MS;
+  if (!hasPane || !pane) {
+    if (!stalled) return undefined;
+    return { enabled: true, scope: "pane", stalled: true, ...(heartbeatMs !== undefined ? { engineScanMs: heartbeatMs } : {}) };
+  }
+  const scope = pane.decided_by === "pane" ? "pane" : "tab";
+  const interval = parseInterval(pane.interval);
+  if (pane.on === "0") return { enabled: false, scope, ...(interval ? { interval } : {}) };
+  if (pane.on !== "1") return undefined;
+  const state: CrankState = { enabled: true, scope };
+  if (interval) state.interval = interval;
+  const since = hashMs(pane.since);
+  if (since !== undefined) state.onSinceMs = since;
+  const lastRun = hashMs(pane.last_run);
+  if (lastRun !== undefined) state.lastRunMs = lastRun;
+  if (heartbeatMs !== undefined) state.engineScanMs = heartbeatMs;
+  if (stalled) state.stalled = true;
+  return state;
+}
+
+/**
+ * This pane's crank state, read straight from Redis (see the header). Never throws; undefined when
+ * not in a zellij pane or Redis did not answer in time: an unreachable Redis is never read as OFF.
+ */
+export async function readPaneCrank(env: NodeJS.ProcessEnv = process.env, nowMs: number = Date.now()): Promise<CrankState | undefined> {
+  const where = zellijPane(env);
+  if (!where) return undefined;
+  const replies = await redisPipeline(redisEndpoint(env), [
+    ["HGETALL", `crank:p:${where.session}:${where.pane}`],
+    ["HGETALL", "crank:engine"],
+  ], CRANK_READ_TIMEOUT_MS);
+  if (!replies) return undefined;
+  const pane = replyToHash(replies[0]);
+  const engine = replyToHash(replies[1]);
+  if (!pane || !engine) return undefined;
+  return crankFromArbiter(pane, engine, nowMs);
 }
 
 /**
@@ -256,7 +335,7 @@ export function maybeRefresh(root: string, cachePath: string, cache: PipelineCac
   if (!takeRefreshLock(cachePath, nowMs)) return false;
   try {
     const child = spawn(process.execPath, [refreshScriptPath(), root, cachePath], {
-      cwd: root === PANE_ONLY_ROOT ? homedir() : root,
+      cwd: root,
       detached: true,
       stdio: "ignore",
       env,

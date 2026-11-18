@@ -76,7 +76,9 @@ try {
     rcli("RPUSH", "zcrank:pane:victim", "a list, not a string");
     const store = redis({ port: rs.port });
     const WT = "WRONGTYPE Operation against a key holding the wrong kind of value";
-    throws(() => store.tabEnabled("victim"), new RegExp(`^Redis error reply at 127\\.0\\.0\\.1:${rs.port}: ${WT} \\(HGET zcrank:tab:victim enabled\\)$`));
+    throws(() => store.tabRoot("victim"), new RegExp(`^Redis error reply at 127\\.0\\.0\\.1:${rs.port}: ${WT} \\(HGET zcrank:tab:victim root\\)$`));
+    // the rule is the arbiter's: a wrong-typed key under it is the same error reply, naming the call
+    throws(() => store.resolve({ keys: ["victim"] }), new RegExp(`^Redis error reply at 127\\.0\\.0\\.1:${rs.port}: WRONGTYPE Operation against .* \\(FCALL_RO crank_resolve 0 `));
     throws(() => store.tabInterval("victim"), /WRONGTYPE Operation against .* \(HGET zcrank:tab:victim interval\)$/);
     throws(() => store.getKey("zcrank:pane:victim"), /WRONGTYPE Operation against .* \(GET zcrank:pane:victim\)$/);
     throws(() => store.logRows("victim"), /WRONGTYPE Operation against .* \(LRANGE zcrank:log:victim 0 -1\)$/);
@@ -88,33 +90,25 @@ try {
     rcli("SET", "zcrank:tab:victim", "untouched");
     rcli("SET", "zcrank:log:victim", "untouched");
     const store = redis({ port: rs.port });
-    throws(() => store.setTabEnabled("victim", true), /WRONGTYPE Operation against .* \(HSET zcrank:tab:victim enabled 1\)$/);
-    throws(() => store.setTabInterval("victim", "1h"), /WRONGTYPE Operation against .* \(HSET zcrank:tab:victim interval 1h\)$/);
-    throws(() => store.pushLog("victim", "enabled", "pj crank enable", "2026-10-28T00:00:00Z"), /WRONGTYPE Operation against .* \(RPUSH zcrank:log:victim /);
-    assert.equal(rcli("TYPE", "zcrank:tab:victim"), "string", "the rejected HSET changed nothing");
+    throws(() => store.apply([{ op: "tab", key: "victim", enabled: true }]), /WRONGTYPE Operation against .* \(FCALL crank_apply 0 \[\{"op":"tab","key":"victim","enabled":true\}\] pj\)$/);
+    throws(() => store.apply([{ op: "tab", key: "victim", interval: "1h" }]), /WRONGTYPE Operation against .* \(FCALL crank_apply 0 /);
+    throws(() => store.apply([{ op: "log", key: "victim", row: "{}" }]), /WRONGTYPE Operation against .* \(FCALL crank_apply 0 /);
+    assert.equal(rcli("TYPE", "zcrank:tab:victim"), "string", "the rejected write changed nothing");
     assert.equal(rcli("GET", "zcrank:tab:victim"), "untouched", "the value survived byte for byte");
-    assert.equal(rcli("TYPE", "zcrank:log:victim"), "string", "the rejected RPUSH created no list");
+    assert.equal(rcli("TYPE", "zcrank:log:victim"), "string", "the rejected log write created no list");
     assert.equal(rcli("LLEN", "zcrank:log:victim").trim(), "WRONGTYPE Operation against a key holding the wrong kind of value", "no log list was minted next to the string");
   }
 
-  console.log("AC1: LTRIM on a wrong-typed key and RENAME of a missing key throw (Shell seam, mirroring real `redis-cli -e`)");
+  console.log("AC1: an error reply to crank_apply on the Shell seam (a real -e redis-cli: reply on stderr, exit 1) throws, naming the call");
   {
-    // A real -e redis-cli answers these with the reply on stderr and exit 1; a real server
-    // cannot reach them through the public store (RPUSH would fail first / the scratch key
-    // was just pushed), so the seam reproduces the verified real behaviour.
     const fake = (command, args) => {
       if (command !== "redis-cli") return { stdout: "", status: 127 };
       if (args[0] === "--help") return { stdout: "Usage: redis-cli [OPTIONS]\n  -e                 Return exit error code when command execution fails.\n", status: 0 };
-      const op = args[6];
-      if (op === "RPUSH") return { stdout: "1\n", status: 0 };
-      if (op === "LTRIM") return { stdout: "", status: 1, stderr: "WRONGTYPE Operation against a key holding the wrong kind of value\n" };
-      if (op === "RENAME") return { stdout: "", status: 1, stderr: "ERR no such key\n" };
-      if (op === "PING") return { stdout: "PONG\n", status: 0 };
+      if (args[6] === "FCALL") return { stdout: "", status: 1, stderr: "ERR crank_apply: unknown op nope at 1\n" };
       return { stdout: "OK\n", status: 0 };
     };
     const store = redis({ shell: fake });
-    throws(() => store.pushLog("T", "enabled", "a", "2026-10-28T00:00:00Z"), /WRONGTYPE Operation against .* \(LTRIM zcrank:log:T -500 -1\)$/);
-    throws(() => store.replaceLog("T", ["row"]), /ERR no such key \(RENAME zcrank:logtmp:\S+ zcrank:log:T\)$/);
+    throws(() => store.apply([{ op: "log", key: "T", row: "{}" }]), /^Redis error reply at 127\.0\.0\.1:6379: ERR crank_apply: unknown op nope at 1 \(FCALL crank_apply 0 /);
   }
 
   console.log("AC1: ping() keeps its meaning — true only on PONG");
@@ -134,12 +128,12 @@ try {
     const store = redis({ port: rs.port });
     assert.equal(store.getKey("zcrank:pane:err"), "WRONGTYPE Operation against a key holding the wrong kind of value");
     assert.equal(store.getKey("zcrank:pane:err2"), "ERR no such key");
-    assert.equal(store.tabEnabled("errtab"), "ERR no such key", "a hash field may hold error-shaped text");
+    assert.equal(rcli("HGET", "zcrank:tab:errtab", "enabled"), "ERR no such key", "a hash field may hold error-shaped text");
     assert.equal(JSON.parse(store.logRows("errlog")[0]).action, "(error) WRONGTYPE ERR all at once");
     assert.ok(store.tabKeys().includes("zcrank:tab:ERRnope"), "a key named like an error still lists");
-    // and the error-shaped writes round-trip: setKey on the pane key, HSET via the store
-    store.setKey("zcrank:pane:err", "ERR no such key");
-    assert.equal(store.getKey("zcrank:pane:err"), "ERR no such key");
+    // and an error-shaped write round-trips through the arbiter: a pane override value is stored verbatim
+    store.apply([{ op: "log", key: "errlog", row: "ERR no such key" }]);
+    assert.equal(store.logRows("errlog").at(-1), "ERR no such key");
   }
 
   console.log("AC3: 'not answering' and 'error reply' are different messages, both keeping the endpoint");
@@ -149,7 +143,7 @@ try {
     const store = redis({ port: rs.port });
     clean("zcrank:tab:victim");
     rcli("SET", "zcrank:tab:victim", "x");
-    throws(() => store.tabEnabled("victim"), /^Redis error reply at 127\.0\.0\.1:\d+: WRONGTYPE Operation against .* \(HGET zcrank:tab:victim enabled\)$/);
+    throws(() => store.tabRoot("victim"), /^Redis error reply at 127\.0\.0\.1:\d+: WRONGTYPE Operation against .* \(HGET zcrank:tab:victim root\)$/);
     // a server that dies mid-command (answers PING, drops the rest) is still "not answering":
     // redis-cli prints its own "Error: ..." on stderr, which is not a reply
     const dropped = (command, args) => {

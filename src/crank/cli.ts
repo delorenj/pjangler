@@ -107,7 +107,8 @@ function retireLegacyTab(): string | undefined {
     const store = redis();
     if (!store.ping()) return undefined;
     const ctx = contextFor(currentProjectNames(), store);
-    if (store.tabEnabled(ctx.resolution.tab) !== "1") return undefined;
+    const verdict = store.resolve({ keys: [ctx.resolution.tab] });
+    if (!(verdict.on && verdict.decidedBy === "tab")) return undefined;
     disableCrank(store, ctx.resolution.tab, new Date(), ctx.identity);
     return ctx.resolution.tab;
   } catch {

@@ -149,14 +149,14 @@ try {
     assert.equal(renderLogRow("{}"), `  ${"?".padEnd(12)}`);
   }
 
-  console.log("replaceLog: an empty replacement deletes the list; a non-empty one swaps it whole and leaves no scratch key");
+  console.log("replace_log: an empty replacement deletes the list; a non-empty one swaps it whole (one atomic crank_apply, no scratch key)");
   {
     const store = redis({ port: rs.port });
     rs.cli("RPUSH", "zcrank:log:T", "a", "b");
-    store.replaceLog("T", ["c"]);
+    store.apply([{ op: "replace_log", key: "T", rows: ["c"] }]);
     assert.deepEqual(store.logRows("T"), ["c"]);
     assert.equal(rs.cli("KEYS", "zcrank:logtmp:*"), "");
-    store.replaceLog("T", []);
+    store.apply([{ op: "replace_log", key: "T", rows: [] }]);
     assert.equal(rs.cli("EXISTS", "zcrank:log:T"), "0");
     assert.deepEqual(store.logRows("T"), []);
   }

@@ -5,9 +5,12 @@ import "./helpers/hermetic-suite.mjs";
 //   - the refresh lock: exclusive, and a dead child's lock is taken over;
 //   - the formatting: `<candy U+10EF0D> project/total`, `⚡ crank ↑3d4h ↻5m ⏳2m` / `◌ crank off`, parts
 //     omitted when unknown, `⚠ crank stalled` when the engine stopped scanning;
-//   - crank uptime: the engine's per-pane continuity (on_since.json) sharpened by `enabled` rows;
-//   - the refresher's pure halves: candybar counting and the engine's crank_enabled rule;
-//   - end to end: the built dist/prompt.js prints the cached segments, and stays silent off-project.
+//   - the crank segment of a zellij pane: read DIRECTLY from the arbiter's resolved hash
+//     (crank:p:<session>:terminal_<N>) and the engine heartbeat (crank:engine) over a tiny RESP2 client,
+//     against a throwaway redis-server with crank.lua loaded: ON / OFF / not-watched / stalled / Redis down;
+//   - the refresher's halves: candybar counting, and the project's crank outside zellij (the arbiter's verdict);
+//   - end to end: the built dist/prompt.js prints the cached segments, reads crank straight from Redis in a
+//     pane, and stays silent off-project.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -28,7 +31,8 @@ writeFileSync(
   [
     `export * from ${JSON.stringify(join(root, "src/prompt-pipeline.ts"))};`,
     `export { formatPromptLine } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
-    `export { candybarProjectName, countCandybars, engineCrankFor, paneOnSinceMs, readCandybars, readCrank, readEngineContinuity, sweepCacheDir, tabOnSinceMs, writeCacheAtomically, zcrankStateDir } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
+    `export { candybarProjectName, countCandybars, readArbiterFacts, readCandybars, readCrank, sweepCacheDir, tabOnSinceMs, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
+    `export { encodeCommand, parseResp, redisPipeline, replyToHash } from ${JSON.stringify(join(root, "src/crank/resp.ts"))};`,
   ].join("\n"),
 );
 const kitOut = join(workspace, "kit.mjs");
@@ -46,9 +50,10 @@ const {
   PIPELINE_CACHE_VERSION, PIPELINE_REFRESH_AFTER_MS, PIPELINE_EXPIRE_AFTER_MS, PIPELINE_LOCK_STALE_MS,
   pipelineCacheDir, pipelineCachePath, readPipelineCache, freshSegments, needsRefresh,
   formatCandybars, formatCrank, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine,
-  countCandybars, engineCrankFor, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically, candybarProjectName,
-  formatSpan, formatCountdown, CRANK_STALL_AFTER_MS, PANE_ONLY_ROOT,
-  paneOnSinceMs, tabOnSinceMs, readEngineContinuity, zcrankStateDir,
+  countCandybars, readArbiterFacts, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically, candybarProjectName,
+  formatSpan, formatCountdown, CRANK_STALL_AFTER_MS, CRANK_READ_TIMEOUT_MS,
+  crankFromArbiter, readPaneCrank, zellijPane, tabOnSinceMs,
+  encodeCommand, parseResp, redisPipeline, replyToHash,
 } = kit;
 
 let passed = 0;
@@ -84,13 +89,13 @@ await test("PJ_PROMPT_CACHE_DIR wins, then XDG_CACHE_HOME, then ~/.cache", () =>
   assert.equal(pipelineCacheDir({ XDG_CACHE_HOME: "/xdg" }), "/xdg/pjangler/prompt");
   assert.equal(pipelineCacheDir({ HOME: "/h" }), "/h/.cache/pjangler/prompt");
 });
-await test("one file per (root, pane): two panes in one repo never share crank state", () => {
+await test("one file per (root, in-a-pane or not): a pane's cache holds no crank, so panes share it; outside a pane it is separate", () => {
   const env = { PJ_PROMPT_CACHE_DIR: cacheDir };
   const a = pipelineCachePath(projectRoot, { ...env, ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "3" });
   const b = pipelineCachePath(projectRoot, { ...env, ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "4" });
   const off = pipelineCachePath(projectRoot, env);
-  assert.notEqual(a, b);
-  assert.notEqual(a, off);
+  assert.equal(a, b, "crank is read live per pane now, so the cache is not keyed per pane id");
+  assert.notEqual(a, off, "the project-scope crank outside a pane never overwrites the pane's cache");
   assert.equal(a, pipelineCachePath(projectRoot, { ...env, ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "3" }));
   assert.notEqual(off, pipelineCachePath(join(workspace, "other"), env));
 });
@@ -229,51 +234,82 @@ await test("the cache carries the timing facts, and drops garbage ones with the 
   }
 });
 
-console.log("crank uptime");
-await test("pane: the engine's since, sharpened by the enable log", () => {
-  const since = NOW, m = 60_000;
-  assert.equal(paneOnSinceMs(since, {}, NOW), since);
-  assert.equal(paneOnSinceMs(since, { enabledMs: since - 4 * m }, NOW), since - 4 * m, "enabled at :01, first seen at :05");
-  assert.equal(paneOnSinceMs(since, { enabledMs: since - 5 * m }, NOW), since, "a tick or more earlier is an older run");
-  assert.equal(paneOnSinceMs(since, { enabledMs: since + 3 * m }, NOW), since, "an idempotent re-enable changes nothing");
-  assert.equal(paneOnSinceMs(since, { disabledMs: since + 2 * m, enabledMs: since + 3 * m }, NOW), since + 3 * m, "OFF then ON between two scans: a new run");
-  assert.equal(paneOnSinceMs(since, { enabledMs: since + 2 * m, disabledMs: since + 3 * m }, NOW), since, "OFF last (a pane override keeps it ON): the engine's run");
-  // Already ON when tracking began: reach back to the enable, unless an OFF came after it.
-  assert.equal(paneOnSinceMs(since, { enabledMs: since - 9 * 24 * 60 * m }, NOW, since), since - 9 * 24 * 60 * m);
-  assert.equal(paneOnSinceMs(since, { enabledMs: since - 9e6, disabledMs: since - 5e6 }, NOW, since), since);
-  assert.equal(paneOnSinceMs(since + 5 * m, { enabledMs: since - 9e6 }, NOW, since), since + 5 * m, "turned ON after tracking began");
-  // Not seen by the engine yet: only an enable newer than its last scan.
-  assert.equal(paneOnSinceMs(undefined, { enabledMs: NOW - 1_000 }, NOW - 2_000), NOW - 1_000);
-  assert.equal(paneOnSinceMs(undefined, { enabledMs: NOW - 3_000 }, NOW - 2_000), undefined, "the engine scanned after and did not see it ON");
-  assert.equal(paneOnSinceMs(undefined, {}, NOW), undefined);
-  assert.equal(paneOnSinceMs(undefined, { enabledMs: NOW - 1_000 }, undefined), NOW - 1_000, "no engine record at all");
+console.log("crank, from the arbiter's resolved hash (pure)");
+await test("zellijPane: the session and terminal_<N>, only when both are usable", () => {
+  assert.deepEqual(zellijPane({ ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "9" }), { session: "Workspace", pane: "terminal_9" });
+  assert.equal(zellijPane({ ZELLIJ_PANE_ID: "9" }), undefined, "no session: cannot address the hash");
+  assert.equal(zellijPane({ ZELLIJ_SESSION_NAME: "Workspace" }), undefined);
+  assert.equal(zellijPane({ ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "plugin-3" }), undefined);
+  assert.equal(zellijPane({}), undefined);
 });
-await test("project (no pane): the oldest engine-tracked run on its tab; the log alone is unknown", () => {
-  const engine = { scanMs: NOW, panes: { terminal_1: { sinceMs: NOW - 9e6, tab: "heyma" }, terminal_2: { sinceMs: NOW - 5e6, tab: "heyma" }, terminal_3: { sinceMs: NOW - 9e7, tab: "other" } } };
-  assert.equal(tabOnSinceMs(engine, "HeyMa 🟢"), NOW - 9e6);
-  assert.equal(tabOnSinceMs(engine, "Nowhere"), undefined);
-  assert.equal(tabOnSinceMs(undefined, "HeyMa"), undefined);
+await test("on=1: since, interval and last_run map straight over; the engine heartbeat is the scan age", () => {
+  const hash = { on: "1", since: String(NOW - 3 * 86_400_000), interval: "1h", last_run: String(NOW - 20 * 60_000), decided_by: "tab", scan_ms: String(NOW - 60_000) };
+  const state = crankFromArbiter(hash, { scan_ms: String(NOW - 90_000) }, NOW);
+  assert.deepEqual(state, { enabled: true, scope: "tab", interval: "1h", onSinceMs: NOW - 3 * 86_400_000, lastRunMs: NOW - 20 * 60_000, engineScanMs: NOW - 90_000 });
+  assert.equal(formatCrank(state, NOW), "⚡ crank ↑3d ↻1h ⏳35m");
+  assert.equal(crankFromArbiter({ ...hash, decided_by: "pane" }, { scan_ms: String(NOW) }, NOW).scope, "pane");
+  assert.equal(crankFromArbiter({ ...hash, decided_by: "unlisted" }, { scan_ms: String(NOW) }, NOW).scope, "tab");
+  const bare = crankFromArbiter({ on: "1", last_run: "", since: "", interval: "soon" }, { scan_ms: String(NOW) }, NOW);
+  assert.deepEqual(bare, { enabled: true, scope: "tab", engineScanMs: NOW }, "an empty or junk fact is unknown and left out, never guessed");
 });
-await test("on_since.json: v1 shape only; junk rows dropped, junk files ignored", () => {
-  const dir = join(workspace, "zstate");
-  mkdirSync(dir, { recursive: true });
-  const env = { ZCRANK_STATE_DIR: dir };
-  assert.equal(zcrankStateDir(env), dir);
-  assert.equal(zcrankStateDir({ HOME: "/h" }), "/h/.local/state/zcrank");
-  assert.equal(readEngineContinuity(env), undefined, "absent");
-  writeFileSync(join(dir, "on_since.json"), JSON.stringify({
-    v: 1, scan_ts: "2026-11-18T16:10:00Z", fresh_since: "2026-11-17T00:00:00Z",
-    panes: { terminal_2: { since: "2026-11-15T12:00:00Z", tab: "gruvato" }, terminal_3: { since: "soon" }, terminal_4: null },
-  }));
-  assert.deepEqual(readEngineContinuity(env), {
-    scanMs: Date.parse("2026-11-18T16:10:00Z"),
-    panes: { terminal_2: { sinceMs: Date.parse("2026-11-15T12:00:00Z"), tab: "gruvato" } },
-    freshSinceMs: Date.parse("2026-11-17T00:00:00Z"),
-  });
-  for (const junk of ["nope", "[]", JSON.stringify({ v: 2, scan_ts: "2026-11-18T16:10:00Z", panes: {} }), JSON.stringify({ v: 1, scan_ts: "2026-11-18T16:10:00.5Z", panes: {} })]) {
-    writeFileSync(join(dir, "on_since.json"), junk);
-    assert.equal(readEngineContinuity(env), undefined, junk);
-  }
+await test("on=0 renders OFF (no timing); a hash that says neither is no segment", () => {
+  assert.deepEqual(crankFromArbiter({ on: "0", interval: "5m", decided_by: "pane" }, { scan_ms: String(NOW) }, NOW), { enabled: false, scope: "pane", interval: "5m" });
+  assert.equal(formatCrank(crankFromArbiter({ on: "0" }, { scan_ms: String(NOW) }, NOW), NOW), "◌ crank off");
+  assert.equal(crankFromArbiter({ on: "maybe" }, { scan_ms: String(NOW) }, NOW), undefined);
+  assert.equal(formatCrank(crankFromArbiter({ on: "0" }, {}, NOW - 99 * 3600_000), NOW), "◌ crank off", "OFF is never an alarm, whatever the heartbeat");
+});
+await test("no hash: a fresh heartbeat means the engine does not watch this pane (nothing); none or an old one is stalled", () => {
+  assert.equal(crankFromArbiter({}, { scan_ms: String(NOW - 60_000) }, NOW), undefined);
+  assert.equal(crankFromArbiter(undefined, { scan_ms: String(NOW - CRANK_STALL_AFTER_MS) }, NOW), undefined, "exactly at the limit is still fresh");
+  const old = crankFromArbiter({}, { scan_ms: String(NOW - 25 * 60_000) }, NOW);
+  assert.deepEqual(old, { enabled: true, scope: "pane", stalled: true, engineScanMs: NOW - 25 * 60_000 });
+  assert.equal(formatCrank(old, NOW), "⚠ crank stalled 25m");
+  const none = crankFromArbiter({}, {}, NOW);
+  assert.equal(formatCrank(none, NOW), "⚠ crank stalled", "no heartbeat at all: stalled, with no age to claim");
+});
+await test("a hash that exists while the engine went quiet: ON turns stalled (with the age and interval)", () => {
+  const hash = { on: "1", since: String(NOW - 3600_000), interval: "5m", scan_ms: String(NOW - 30 * 60_000) };
+  const quiet = crankFromArbiter(hash, { scan_ms: String(NOW - 25 * 60_000) }, NOW);
+  assert.equal(quiet.stalled, true);
+  assert.equal(formatCrank(quiet, NOW), "⚠ crank stalled 25m ↻5m");
+  // the heartbeat key gone (TTL) but the pane's own scan_ms known: that is the age
+  assert.equal(formatCrank(crankFromArbiter(hash, {}, NOW), NOW), "⚠ crank stalled 30m ↻5m");
+});
+await test("project outside zellij: the oldest `since` among the ON panes this tab governs", () => {
+  const panes = [
+    { on: "1", since: String(NOW - 9e6), tab: "HeyMa", tab_key: "heyma", keys: JSON.stringify(["HeyMa"]) },
+    { on: "1", since: String(NOW - 5e6), tab: "HeyMa", tab_key: "heyma", keys: JSON.stringify(["HeyMa"]) },
+    { on: "0", since: String(NOW - 9e8), tab: "HeyMa", tab_key: "heyma", keys: JSON.stringify(["HeyMa"]) },
+    { on: "1", since: String(NOW - 9e7), tab: "Other", tab_key: "other", keys: JSON.stringify(["Other"]) },
+    { on: "1", since: String(NOW - 8e6), tab: "renamed scratch", tab_key: "renamedscratch", keys: JSON.stringify(["james-brennan"]) },
+  ];
+  assert.equal(tabOnSinceMs(panes, "HeyMa 🟢", ["HeyMa"]), NOW - 9e6, "by governing key, and OFF panes never count");
+  assert.equal(tabOnSinceMs(panes, "heyma", []), NOW - 9e6, "by tab name when no key is known");
+  assert.equal(tabOnSinceMs(panes, "ipm", ["james-brennan"]), NOW - 8e6, "a rooted key governs a tab that is named something else");
+  assert.equal(tabOnSinceMs(panes, "Nowhere", ["Nowhere"]), undefined);
+  assert.equal(tabOnSinceMs([], "HeyMa", ["HeyMa"]), undefined);
+});
+
+console.log("RESP2 client (builtins only)");
+await test("parseResp: every reply type, bulk strings by BYTE length, nested arrays, and a partial buffer is 'read more'", () => {
+  const p = (text) => parseResp(Buffer.from(text, "utf8"));
+  assert.deepEqual(p("+OK\r\n"), { value: "OK", next: 5 });
+  assert.deepEqual(p(":42\r\n").value, 42);
+  assert.equal(p("$-1\r\n").value, null);
+  assert.equal(p("*-1\r\n").value, null);
+  assert.deepEqual(p("-ERR boom\r\n").value, { error: "ERR boom" });
+  assert.equal(p("$5\r\nhello\r\n").value, "hello");
+  assert.equal(p("$4\r\n🟢\r\n").value, "🟢", "a 4-byte glyph is length 4");
+  assert.deepEqual(p("*2\r\n$1\r\na\r\n*1\r\n:7\r\n").value, ["a", [7]]);
+  assert.deepEqual(p("*0\r\n").value, []);
+  assert.equal(p("$5\r\nhel"), undefined, "mid-bulk");
+  assert.equal(p("*2\r\n$1\r\na\r\n"), undefined, "mid-array");
+  assert.equal(p(""), undefined);
+  assert.throws(() => p("?what\r\n"), /not RESP2/);
+  assert.equal(encodeCommand(["HGETALL", "k🟢"]).toString("utf8"), "*2\r\n$7\r\nHGETALL\r\n$5\r\nk🟢\r\n");
+  assert.deepEqual(replyToHash(["a", "1", "b", ""]), { a: "1", b: "" });
+  assert.deepEqual(replyToHash([]), {});
+  assert.equal(replyToHash("nope"), undefined);
 });
 
 console.log("refresher: candybar");
@@ -335,130 +371,180 @@ await test("project name is candybar's: worktree -> main checkout, subdir -> top
   assert.deepEqual(countCandybars([{ tags: ["project:x"] }], undefined), { project: 0, total: 1 });
 });
 
-console.log("refresher: crank (zcrank.py crank_enabled parity)");
-function fakeStore(tabs = {}, panes = {}) {
-  return {
-    tabEnabled: (key) => tabs[key],
-    getKey: (key) => panes[key],
-  };
-}
-await test("unlisted tab = OFF", () => {
-  assert.deepEqual(engineCrankFor(fakeStore(), "Skillex", "terminal_1", [], {}).enabled, false);
-});
-await test("tab ON, status suffix stripped", () => {
-  const v = engineCrankFor(fakeStore({ gruvato: "1" }), "gruvato 🟢", "terminal_1", ["gruvato"], {});
-  assert.equal(v.enabled, true);
-  assert.equal(v.decidedBy, "tab");
-});
-await test("any OFF across spellings wins", () => {
-  const store = fakeStore({ "green-in-between": "1", GreenInBetween: "0" });
-  assert.equal(engineCrankFor(store, "green-in-between", undefined, ["green-in-between", "GreenInBetween"], {}).enabled, false);
-});
-await test("a key whose root is the tab's owner names the tab (PJAN-201)", () => {
-  const store = fakeStore({ ipm: "1" });
-  const v = engineCrankFor(store, "James Brennan", "terminal_2", ["ipm"], { owner: "/code/jb", roots: { ipm: "/code/jb" } });
-  assert.equal(v.enabled, true);
-  assert.deepEqual(v.keys, ["ipm"]);
-  assert.equal(engineCrankFor(store, "James Brennan", "terminal_2", ["ipm"], { owner: "/code/other", roots: { ipm: "/code/jb" } }).enabled, false);
-});
-await test("a pane override beats its tab both ways", () => {
-  assert.deepEqual(
-    engineCrankFor(fakeStore({ HeyMa: "0" }, { "zcrank:pane:HeyMa:terminal_9": "1" }), "HeyMa", "terminal_9", ["HeyMa"], {}),
-    { enabled: true, decidedBy: "pane", keys: ["HeyMa"] },
-  );
-  assert.equal(engineCrankFor(fakeStore({ HeyMa: "1" }, { "zcrank:pane:HeyMa:terminal_9": "0" }), "HeyMa", "terminal_9", ["HeyMa"], {}).enabled, false);
-  // An override on a pane that is not this one changes nothing.
-  assert.equal(engineCrankFor(fakeStore({ HeyMa: "1" }, { "zcrank:pane:HeyMa:terminal_8": "0" }), "HeyMa", "terminal_9", ["HeyMa"], {}).enabled, true);
-});
-await test("a pane override under an unstored tab name still counts (engine reads key ∪ name)", () => {
-  const v = engineCrankFor(fakeStore({}, { "zcrank:pane:Fresh:terminal_4": "1" }), "Fresh", "terminal_4", [], {});
-  assert.equal(v.enabled, true);
-  assert.equal(v.decidedBy, "pane");
-});
-
-console.log("refresher: crank against a throwaway Redis and a fake zellij");
+console.log("the prompt reads crank straight from a throwaway redis-server with the arbiter loaded");
 {
   const redisServer = await startThrowawayRedis();
-  const shimDir = join(workspace, "shim");
-  mkdirSync(shimDir, { recursive: true });
-  const zellij = join(shimDir, "zellij");
-  const fakeZellij = (mode) => writeFileSync(zellij, [
-    "#!/bin/sh",
-    mode === "fail" ? "exit 1" : "",
-    'case "$*" in',
-    `  *list-panes*) echo '[{"id":9,"tab_id":4,"tab_position":4,"tab_name":"HeyMa 🟢","is_plugin":false},{"id":9,"tab_id":4,"tab_position":4,"tab_name":"HeyMa 🟢","is_plugin":true}]' ;;`,
-    `  *list-tabs*) echo '[{"tab_id":4,"position":4,"name":"HeyMa 🟢"}]' ;;`,
-    "esac",
-  ].join("\n"), { mode: 0o755 });
-  const savedPath = process.env.PATH;
-  const savedPort = process.env.ZCRANK_REDIS_PORT;
-  process.env.PATH = `${shimDir}:${savedPath}`;
-  process.env.ZCRANK_REDIS_PORT = String(redisServer.port);
-  const proj = join(workspace, "crank-proj");
-  mkdirSync(proj, { recursive: true });
-  writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "heyma", project_name: "HeyMa" }));
-  const savedCwd = process.cwd();
-  process.chdir(proj);
-  const zstate = join(workspace, "zstate-live");
-  mkdirSync(zstate, { recursive: true });
-  const paneEnv = { ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "9", ZCRANK_STATE_DIR: zstate };
+  const port = redisServer.port;
+  const SESSION = "Workspace";
+  const cli = (...args) => redisServer.cli(...args);
+  const paneEnv = (pane, extra = {}) => ({ ZELLIJ_SESSION_NAME: SESSION, ZELLIJ_PANE_ID: String(pane), ZCRANK_REDIS_PORT: String(port), ...extra });
+  /** The engine's scan of one pane, through the arbiter's own crank_scan (stamps since / last_run / the heartbeat). */
+  const scan = (panes) => cli("FCALL", "crank_scan", "0", JSON.stringify({ session: SESSION, panes }), "test");
+  const apply = (ops) => cli("FCALL", "crank_apply", "0", JSON.stringify(ops), "test");
+  const pane = (n, tab, extra = {}) => ({ pane: `terminal_${n}`, tab, tab_key: tab.toLowerCase(), keys: [tab], owners: [tab], ...extra });
   try {
-    redisServer.cli("HSET", "zcrank:tab:HeyMa", "enabled", "1", "interval", "1h");
-    await test("this pane's live tab decides, status suffix stripped, interval read", () => {
-      fakeZellij("ok");
-      assert.deepEqual(readCrank(paneEnv), { enabled: true, interval: "1h", scope: "tab" });
+    const day = 86_400_000;
+    const ranAt = Date.now() - 20 * 60_000;
+    /** A pane that just appeared with a known history: the seed only applies to a new hash, so start clean. */
+    const reseed = () => {
+      cli("DEL", `crank:p:${SESSION}:terminal_9`, `crank:p:${SESSION}:terminal_10`);
+      scan([pane(9, "HeyMa", { seed_since_ms: Date.now() - 3 * day, last_run_ms: ranAt }), pane(10, "Quiet")]);
+    };
+    apply([{ op: "tab", key: "HeyMa", enabled: true, interval: "1h" }, { op: "tab", key: "Quiet", enabled: false }]);
+    reseed();
+    await test("ON: ↑ uptime from the arbiter's since, ↻ interval, ⏳ countdown from last_run", async () => {
+      const state = await readPaneCrank(paneEnv(9), Date.now());
+      assert.equal(state.enabled, true);
+      assert.equal(state.interval, "1h");
+      assert.equal(state.scope, "tab");
+      assert.equal(state.lastRunMs, ranAt);
+      assert.ok(Math.abs(state.onSinceMs - (Date.now() - 3 * day)) < 10_000, "since is the seeded 3d ago");
+      assert.ok(state.engineScanMs > Date.now() - 10_000, "the heartbeat of the scan that just ran");
+      assert.equal(state.stalled, undefined);
+      assert.match(formatCrank(state, Date.now()), /^⚡ crank ↑3d ↻1h ⏳\d+m$/);
     });
-    await test("a pane override OFF beats the tab ON", () => {
-      redisServer.cli("SET", "zcrank:pane:HeyMa:terminal_9", "0");
-      assert.deepEqual(readCrank(paneEnv), { enabled: false, interval: "1h", scope: "pane" });
-      redisServer.cli("DEL", "zcrank:pane:HeyMa:terminal_9");
+    await test("OFF renders '◌ crank off'", async () => {
+      const state = await readPaneCrank(paneEnv(10), Date.now());
+      assert.equal(state.enabled, false);
+      assert.equal(formatCrank(state, Date.now()), "◌ crank off");
     });
-    await test("ON: uptime from the engine's record for THIS pane, last run from the beat log", () => {
-      const now = Date.now();
-      const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
-      const since = Math.floor((now - 3 * 24 * 3600_000) / 1000) * 1000;
-      const scan = Math.floor((now - 60_000) / 1000) * 1000;
-      const ran = Math.floor((now - 20 * 60_000) / 1000) * 1000;
-      writeFileSync(join(zstate, "on_since.json"), JSON.stringify({ v: 1, scan_ts: iso(scan), panes: { terminal_9: { since: iso(since), tab: "heyma" }, terminal_8: { since: iso(now - 60_000), tab: "heyma" } } }));
-      redisServer.cli("RPUSH", "zcrank:log:HeyMa", JSON.stringify({ ts: iso(ran), state: "sent", action: "x" }));
-      assert.deepEqual(readCrank(paneEnv), { enabled: true, interval: "1h", scope: "tab", onSinceMs: since, lastRunMs: ran, engineScanMs: scan });
-      // The engine stopped scanning 20m ago: stalled, decided now (at write time).
-      const old = scan - 20 * 60_000;
-      writeFileSync(join(zstate, "on_since.json"), JSON.stringify({ v: 1, scan_ts: iso(old), panes: { terminal_9: { since: iso(since), tab: "heyma" } } }));
-      assert.equal(readCrank(paneEnv).stalled, true);
-      // OFF carries no timing at all.
-      redisServer.cli("SET", "zcrank:pane:HeyMa:terminal_9", "0");
-      assert.deepEqual(readCrank(paneEnv), { enabled: false, interval: "1h", scope: "pane" });
-      redisServer.cli("DEL", "zcrank:pane:HeyMa:terminal_9", "zcrank:log:HeyMa");
-      rmSync(join(zstate, "on_since.json"));
+    await test("a pane override OFF is the arbiter's verdict on that pane, decided_by pane", async () => {
+      apply([{ op: "pane", owner: "HeyMa", pane: "terminal_9", value: "0" }]);
+      scan([pane(9, "HeyMa"), pane(10, "Quiet")]);
+      const state = await readPaneCrank(paneEnv(9), Date.now());
+      assert.deepEqual([state.enabled, state.scope], [false, "pane"]);
+      apply([{ op: "pane", owner: "HeyMa", pane: "terminal_9", value: "" }]);
+      reseed();
+      assert.equal((await readPaneCrank(paneEnv(9), Date.now())).enabled, true);
     });
-    await test("pane-only (no project): the pane's answer, never the project fallback", () => {
-      assert.equal(readCrank(paneEnv, Date.now(), { paneOnly: true }).enabled, true);
-      fakeZellij("fail");
-      assert.equal(readCrank({}, Date.now(), { paneOnly: true }), null);
-      fakeZellij("ok");
+    await test("no hash for this pane + a fresh heartbeat: the engine does not watch it, no segment", async () => {
+      assert.equal(await readPaneCrank(paneEnv(77), Date.now()), undefined);
+      assert.equal(await readPaneCrank({ ...paneEnv(9), ZELLIJ_SESSION_NAME: "Elsewhere" }, Date.now()), undefined, "another session's hash is not this one");
     });
-    await test("a Workspace pane that cannot see itself has NO answer (never the project's)", () => {
-      fakeZellij("fail");
-      assert.equal(readCrank(paneEnv), null);
-      fakeZellij("ok");
-      assert.equal(readCrank({ ...paneEnv, ZELLIJ_PANE_ID: "77" }), null, "pane missing from the list");
+    await test("no heartbeat at all: stalled; an old one with no hash: stalled with its age", async () => {
+      const hb = cli("HGETALL", "crank:engine");
+      cli("DEL", "crank:engine");
+      const none = await readPaneCrank(paneEnv(77), Date.now());
+      assert.equal(formatCrank(none, Date.now()), "⚠ crank stalled");
+      cli("HSET", "crank:engine", "scan_ms", String(Date.now() - 25 * 60_000));
+      assert.equal(formatCrank(await readPaneCrank(paneEnv(77), Date.now()), Date.now()), "⚠ crank stalled 25m");
+      assert.match(formatCrank(await readPaneCrank(paneEnv(9), Date.now()), Date.now()), /^⚠ crank stalled 2[45]m ↻1h$/, "an ON pane under a quiet engine is not being cranked");
+      assert.equal(formatCrank(await readPaneCrank(paneEnv(10), Date.now()), Date.now()), "◌ crank off");
+      reseed();
+      assert.ok(hb.length > 0);
     });
-    await test("outside the Workspace session: the project's own switch", () => {
-      fakeZellij("fail");
-      const v = readCrank({ ZCRANK_STATE_DIR: zstate });
-      assert.equal(v.scope, "project");
-      assert.equal(v.enabled, true);
+    await test("Redis down: no segment (never OFF), and it answers inside the budget", async () => {
+      const t0 = Date.now();
+      assert.equal(await readPaneCrank(paneEnv(9, { ZCRANK_REDIS_PORT: "1" }), Date.now()), undefined);
+      assert.ok(Date.now() - t0 < CRANK_READ_TIMEOUT_MS + 100, `refused at once (${Date.now() - t0}ms)`);
+      assert.equal(await readPaneCrank({}, Date.now()), undefined, "not in a zellij pane: nothing to read");
     });
-    await test("Redis down => null, not OFF", () => {
-      process.env.ZCRANK_REDIS_PORT = "1";
-      assert.equal(readCrank(paneEnv), null);
+    await test("a server that accepts and never answers is cut off at the hard timeout", async () => {
+      const { createServer } = await import("node:net");
+      const held = [];
+      const mute = createServer((socket) => { held.push(socket); });
+      await new Promise((r) => mute.listen(0, "127.0.0.1", r));
+      try {
+        const t0 = Date.now();
+        assert.equal(await readPaneCrank(paneEnv(9, { ZCRANK_REDIS_PORT: String(mute.address().port) }), Date.now()), undefined);
+        const took = Date.now() - t0;
+        assert.ok(took >= CRANK_READ_TIMEOUT_MS - 10 && took < CRANK_READ_TIMEOUT_MS + 150, `${took}ms`);
+      } finally {
+        for (const socket of held) socket.destroy();
+        await new Promise((r) => mute.close(r));
+      }
+    });
+    await test("redisPipeline: ordered replies for a pipeline, a server error is a reply, not a failure", async () => {
+      const replies = await redisPipeline({ host: "127.0.0.1", port }, [["PING"], ["HGET", "zcrank:tab:HeyMa", "interval"], ["NOSUCHCOMMAND"]], 1000);
+      assert.equal(replies[0], "PONG");
+      assert.equal(replies[1], "1h");
+      assert.match(replies[2].error, /unknown command/i);
+    });
+
+    console.log("refresher: a project outside zellij — the arbiter's verdict for its tab, the oldest ON since, the heartbeat");
+    const proj = join(workspace, "crank-proj");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "heyma", project_name: "HeyMa" }));
+    const savedPath = process.env.PATH;
+    const savedPort = process.env.ZCRANK_REDIS_PORT;
+    const savedCwd = process.cwd();
+    // no zellij on PATH: the tab resolves by name from the stored key
+    process.env.ZCRANK_REDIS_PORT = String(port);
+    process.chdir(proj);
+    try {
+      cli("RPUSH", "zcrank:log:HeyMa", JSON.stringify({ ts: new Date(ranAt).toISOString().replace(/\.\d{3}Z$/, "Z"), state: "sent", action: "x" }));
+      await test("ON: interval from the arbiter, last run from the beat log, since from the oldest ON pane, heartbeat fresh", async () => {
+        const state = await readCrank(process.env, Date.now());
+        assert.equal(state.scope, "project");
+        assert.equal(state.enabled, true);
+        assert.equal(state.interval, "1h");
+        assert.ok(Math.abs(state.lastRunMs - ranAt) < 1000);
+        assert.ok(Math.abs(state.onSinceMs - (Date.now() - 3 * day)) < 10_000);
+        assert.equal(state.stalled, undefined);
+        const facts = await readArbiterFacts(process.env);
+        assert.ok(facts.panes.length >= 2);
+      });
+      await test("no engine heartbeat: stalled; OFF carries no timing; Redis down is null, not OFF", async () => {
+        const saved = cli("HGET", "crank:engine", "scan_ms");
+        cli("DEL", "crank:engine");
+        assert.equal((await readCrank(process.env, Date.now())).stalled, true);
+        cli("HSET", "crank:engine", "scan_ms", saved);
+        apply([{ op: "tab", key: "HeyMa", enabled: false }]);
+        assert.deepEqual(await readCrank(process.env, Date.now()), { enabled: false, interval: "1h", scope: "project" });
+        process.env.ZCRANK_REDIS_PORT = "1";
+        assert.equal(await readCrank(process.env, Date.now()), null);
+      });
+    } finally {
+      process.chdir(savedCwd);
+      process.env.PATH = savedPath;
+      if (savedPort === undefined) delete process.env.ZCRANK_REDIS_PORT;
+      else process.env.ZCRANK_REDIS_PORT = savedPort;
+    }
+
+    console.log("end to end: dist/prompt.js in a zellij pane reads the arbiter directly (no cache, no refresher)");
+    apply([{ op: "tab", key: "HeyMa", enabled: true }]);
+    reseed();
+    await test("a pane outside every project prints the crank segment alone: ON, OFF, nothing, stalled, Redis down", () => {
+      const bin = join(root, "dist", "prompt.js");
+      assert.ok(existsSync(bin), "dist/prompt.js is built (npm run build)");
+      const cacheDirE2e = join(workspace, "direct-cache");
+      const run = (pane, extra = {}) => spawnSync(process.execPath, [bin], {
+        cwd: workspace,
+        encoding: "utf8",
+        env: hermeticEnv({ PJ_PROMPT_CACHE_DIR: cacheDirE2e, PJ_PROMPT_NO_REFRESH: "1", ...paneEnv(pane), ...extra }),
+      });
+      const on = run(9);
+      assert.equal(on.status, 0, on.stderr);
+      assert.match(on.stdout, /^⚡ crank ↑3d ↻1h ⏳\d+m$/u, on.stdout);
+      assert.equal(run(10).stdout, "◌ crank off");
+      assert.equal(run(77).stdout, "", "a pane the engine does not watch");
+      assert.equal(existsSync(cacheDirE2e), false, "no cache directory was even created: nothing cached, nothing refreshed");
+      const saved = cli("HGET", "crank:engine", "scan_ms");
+      cli("DEL", "crank:engine");
+      assert.equal(run(77).stdout, "⚠ crank stalled");
+      cli("HSET", "crank:engine", "scan_ms", saved);
+      const t0 = Date.now();
+      assert.equal(run(9, { ZCRANK_REDIS_PORT: "1" }).stdout, "", "Redis down: no segment, never OFF");
+      assert.ok(Date.now() - t0 < 1500, "and it stays fast");
+    });
+    await test("inside a project in a pane: identity, the cached candybars, and crank from Redis, not from the cache", () => {
+      const e2e = join(workspace, "direct-proj");
+      mkdirSync(e2e, { recursive: true });
+      writeFileSync(join(e2e, ".project.json"), JSON.stringify({ project_id: "direct", ticket_provider: { identifier: "DIR" } }));
+      const env = hermeticEnv({ PJ_PROMPT_CACHE_DIR: join(workspace, "direct-proj-cache"), PJ_PROMPT_NO_REFRESH: "1", ...paneEnv(10) });
+      const cachePath = pipelineCachePath(e2e, env);
+      mkdirSync(join(workspace, "direct-proj-cache"), { recursive: true });
+      // a cache that CLAIMS crank is ON: the pane's own answer (OFF) must win
+      writeFileSync(cachePath, JSON.stringify({ ...cacheFile(), root: e2e, writtenAtMs: Date.now(), crank: { enabled: true, interval: "5m", scope: "tab" } }));
+      const out = spawnSync(process.execPath, [join(root, "dist", "prompt.js")], { cwd: e2e, env, encoding: "utf8" });
+      assert.match(out.stdout, new RegExp(`^direct \\(DIR\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ◌ crank off$`, "u"), out.stdout);
+      const silent = spawnSync(process.execPath, [join(root, "dist", "prompt.js")], { cwd: e2e, env: { ...env, ZCRANK_REDIS_PORT: "1" }, encoding: "utf8" });
+      assert.match(silent.stdout, new RegExp(`^direct \\(DIR\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124$`, "u"), "Redis down: the cached crank is NOT shown in a pane either");
+      const dir = { PJ_PROMPT_CACHE_DIR: join(workspace, "direct-proj-cache") };
+      assert.notEqual(pipelineCachePath(e2e, env), pipelineCachePath(e2e, dir), "a pane's cache is its own (it holds no crank)");
+      assert.equal(pipelineCachePath(e2e, env), pipelineCachePath(e2e, { ...dir, ...paneEnv(99) }), "...but not one per pane id: crank is no longer cached per pane");
     });
   } finally {
-    process.chdir(savedCwd);
-    process.env.PATH = savedPath;
-    if (savedPort === undefined) delete process.env.ZCRANK_REDIS_PORT;
-    else process.env.ZCRANK_REDIS_PORT = savedPort;
     await redisServer.stop();
   }
 }
@@ -497,16 +583,7 @@ await test("prints cached segments inside a project; nothing outside", () => {
   assert.match(inside.stdout, new RegExp(`^e2e \\(E2E\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻5m ⏳\\S+$`, "u"));
   const outside = run(workspace);
   assert.equal(outside.stdout, "");
-  // Outside every project but inside a zellij pane: the pane's crank line alone.
-  const paneEnv = hermeticEnv({ PJ_PROMPT_CACHE_DIR: e2eCache, PJ_PROMPT_NO_REFRESH: "1", ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "41" });
-  const panePath = pipelineCachePath(PANE_ONLY_ROOT, paneEnv);
-  const runPane = () => spawnSync(process.execPath, [bin], { cwd: workspace, env: paneEnv, encoding: "utf8" });
-  assert.equal(runPane().stdout, "", "nothing cached for this pane yet");
-  writeFileSync(panePath, JSON.stringify({ ...cacheFile(), root: PANE_ONLY_ROOT, candybars: null, writtenAtMs: Date.now(),
-    crank: { enabled: true, interval: "5m", scope: "tab", onSinceMs: Date.now() - 22 * 60_000 - 5_000 } }));
-  assert.match(runPane().stdout, /^⚡ crank ↑22m ↻5m ⏳\S+$/u);
   assert.equal(run(workspace).stdout, "", "no pane, no project: silent");
-  assert.notEqual(panePath, pipelineCachePath(PANE_ONLY_ROOT, { ...paneEnv, ZELLIJ_PANE_ID: "42" }), "keyed per pane");
   // Expired cache: the identity line survives, the pipeline segments vanish.
   writeFileSync(cachePath, JSON.stringify({ ...cacheFile(), root: proj, writtenAtMs: Date.now() - PIPELINE_EXPIRE_AFTER_MS - 60_000 }));
   assert.doesNotMatch(run(proj).stdout, new RegExp(`${CANDYBAR_GLYPH}|crank`, "u"));
