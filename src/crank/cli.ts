@@ -290,7 +290,7 @@ export function registerCrankCli(program: Command): void {
 
   crankCmd
     .command("attach")
-    .description("Bind a crank to an agent session. --hook reads a SessionStart payload (hook-hub); otherwise the session pj runs inside")
+    .description("Bind a crank to an agent session. --hook reads a SessionStart payload (hook-hub); otherwise the agent session this command was started from")
     .option("--hook", "Hook mode: payload on stdin, BB_HOOK_* env; never fails the hook")
     .option("--cli <cli>", "Agent CLI (claude, codex, opencode, kimi, …)")
     .option("--session-id <id>", "Native session id")

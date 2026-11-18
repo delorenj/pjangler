@@ -171,8 +171,6 @@ console.log("naming + manifest: crank-<cli>-<sid8>-<pid>, and the TOML reads bac
 
 console.log("identity: this test process is not an interactive agent, and every refusal says why");
 {
-  const env = { ...process.env };
-  delete env.ZELLIJ_SESSION_NAME;
   const notAgent = identifyAgent({ cli: "claude", sessionId: "00000000-0000-0000-0000-000000000000", pid: process.pid }, "Desk");
   assert.equal(notAgent.ok, false);
   assert.ok(notAgent.reason && notAgent.reason.length > 5, notAgent.reason);

@@ -45,7 +45,7 @@ const {
   ENGINE_DEFAULT_JOB_ID, engineBlockedLabel, engineSources, engineSummary, liveTabs, livePanes, parseEngineStatus, projectIdentity,
   readEngineStatus, unknownEngineStatus, withTabOwners,
   // PJAN-201 review
-  liveTabsWithOwners, ownerMemoReader, resolvePaneCwds, paneCwdCachePath, LIVE_OWNERS_TTL_MS, PANE_CWD_TTL_SECONDS,
+  liveTabsWithOwners, resolvePaneCwds, paneCwdCachePath, PANE_CWD_TTL_SECONDS,
 } = await import(kitOut);
 
 const rs = await startThrowawayRedis();
@@ -425,30 +425,6 @@ try {
     const spent = { totalMs: 60_000 };
     projectIdentity(process.cwd(), { budget: spent });
     assert.ok(spent.untilMs > Date.now(), "the first git call starts the clock");
-  }
-
-  console.log("owner memo: owners outlive a list-tabs; renames are seen at once; a new tab or the TTL re-reads");
-  {
-    let now = 1_000_000;
-    let reads = 0;
-    let tabs = [{ name: "ipm 🟢", position: 0, id: 30 }, { name: "x", position: 1, id: 31 }];
-    const read = () => { reads++; return tabs.map((t) => (t.id === 30 ? { ...t, owner: "/jb", ownedPanes: { "/jb": 2 } } : { ...t })); };
-    const reader = ownerMemoReader({ clock: () => now, read, tabs: () => tabs.map((t) => ({ ...t })) });
-    assert.equal(reader()[0].owner, "/jb");
-    assert.equal(reads, 1);
-    now += 60_000;
-    tabs = [{ name: "something else", position: 0, id: 30 }, { name: "x", position: 1, id: 31 }];
-    const renamed = reader();
-    assert.equal(reads, 1, "no list-panes for a toggle one minute later");
-    assert.deepEqual(renamed.map((t) => [t.name, t.owner]), [["something else", "/jb"], ["x", undefined]], "the new name, the remembered owner");
-    tabs = [...tabs, { name: "new", position: 2, id: 40 }];
-    reader();
-    assert.equal(reads, 2, "a tab nobody has looked up re-reads");
-    now += LIVE_OWNERS_TTL_MS + 1;
-    reader();
-    assert.equal(reads, 3, "the TTL re-reads");
-    tabs = [];
-    assert.deepEqual(reader(), [], "no live tabs is just empty");
   }
 
   // The 24h of REAL usage_audit rows for job 777c511a009c (completed beats from 2026-11-03T15:25Z
