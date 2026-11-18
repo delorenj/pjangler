@@ -1,47 +1,77 @@
-// `pj crank` — commander wiring for the project-native crank switches.
+// `pj crank` — the control surface for crank v2 (PJAN-214): one crank per live interactive agent
+// session, clocked by its own Candybar, enabled by the project's `.project.json` `crank` block
+// (or the install default in $XDG_CONFIG_HOME/33god/crank.toml).
 //
-// Six subcommands: enable, disable, list, log (PJAN-174), tui (PJAN-182) and panes (PJAN-202). Everything
-// that knows about Redis keys, zellij tabs, or the project→tab mapping lives in ./index;
-// this file only argues with commander and prints. The Ink screens (./tui.tsx) are loaded
-// on demand, so every other pj command stays free of ink/react.
+//   policy    enable | disable | interval | config | status       (./policy)
+//   sessions  sessions | attach | detach | reap | log              (./binding, ./sessions)
+//   engine    fire <binding>   (the Candybar exec entry point; runs the crank-pane engine)
+//   views     tui | panes
+//
+// The tab-keyed Redis switches (zcrank:tab:*) of PJAN-174/182 are retired: `enable` turns the
+// project's legacy tab switch off so the old beat never double-drives a session. Their readers
+// (./index) stay for the prompt segment and the legacy beat until those move over too.
 
 import type { Command } from "commander";
 import { resolveProject, BoardError } from "../project/boardQuery";
 import { loadProjectRegistry, projectRegistryPath } from "../project/index";
 import { bold, cyan, dim, green, red, yellow, glyph } from "../utils/style";
 import { isInteractive, loadScreen, TuiUnavailableError } from "../tui/load";
-import { createCrankController } from "./controller";
 import { formatPaneTable, inventoryPanes } from "./panes";
 import {
-  ZCRANK_INTERVALS,
   buildCrankContext,
-  buildCrankList,
   disableCrank,
-  enableCrank,
-  formatCrankList,
-  keyScopeOf,
   liveTabsWithOwners,
-  parseInterval,
   projectAgentsFor,
   projectIdentity,
   projectNameFor,
-  readEngineStatus,
   redis,
-  renderLogRow,
-  snapshotCrank,
   storedTabKeys,
   storedTabRoots,
   type CrankContext,
-  type CrankInterval,
   type CrankStore,
-  type IdentityCache,
   type ProjectNames,
 } from "./index";
+import {
+  CRANK_INTERVAL_CHOICES,
+  CrankPolicyError,
+  GLOBAL_KEYS,
+  PROJECT_KEYS,
+  coerceValue,
+  globalConfigPath,
+  loadPolicy,
+  normaliseInterval,
+  readGlobalConfig,
+  readProjectBlock,
+  updateProjectBlock,
+  writeGlobalConfig,
+  type EffectiveCrankPolicy,
+} from "./policy";
+import { reapBindings, type DetachResult, type EndReason } from "./binding";
+import {
+  attachLiveProjectSessions,
+  attachSession,
+  callerSession,
+  detachProject,
+  detachSession,
+  engineLog,
+  fireBinding,
+  hookLog,
+  hookSession,
+  projectAt,
+  reclockProject,
+  sessionViews,
+  type ProjectRef,
+  type SessionView,
+} from "./sessions";
 
 type CrankScreens = typeof import("./tui");
 const loadCrankScreens = () => loadScreen<CrankScreens>("./crank/tui.js", import.meta.url);
 
 const xmark = `${red(glyph.fail)}`;
+
+// ---------------------------------------------------------------------------
+// Legacy tab resolution (kept: dist/prompt-refresh.js imports these two)
+// ---------------------------------------------------------------------------
 
 /** Everything needed to resolve a project onto a tab, or null off-project. Shared with dist/prompt-refresh.js. */
 export function currentProjectNames(): { slug: string; names: ProjectNames; identity?: string } {
@@ -71,37 +101,266 @@ export function contextFor(project: { names: ProjectNames; identity?: string }, 
   return buildCrankContext(project.names, liveTabsWithOwners({ claimed: Object.values(roots) }), keys, { identity: project.identity, roots });
 }
 
-/** Resolve the current project's zcrank tab against live tabs + stored keys. */
-function resolveCurrentTab(): { slug: string; tab: string; storedAsIs: boolean } {
-  const project = currentProjectNames();
-  const store = redis();
-  const ctx = contextFor(project, store);
-  return { slug: project.slug, tab: ctx.resolution.tab, storedAsIs: ctx.resolution.storedAsIs };
+/** Turn this project's legacy zcrank:tab switch OFF so the old beat stops driving its tab. Best effort. */
+function retireLegacyTab(): string | undefined {
+  try {
+    const store = redis();
+    if (!store.ping()) return undefined;
+    const ctx = contextFor(currentProjectNames(), store);
+    if (store.tabEnabled(ctx.resolution.tab) !== "1") return undefined;
+    disableCrank(store, ctx.resolution.tab, new Date(), ctx.identity);
+    return ctx.resolution.tab;
+  } catch {
+    return undefined;
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+function fail(error: unknown, what: string): never {
+  if (error instanceof BoardError || error instanceof TuiUnavailableError || error instanceof CrankPolicyError) {
+    console.error(`${xmark} ${error.message}`);
+  } else {
+    console.error(`${xmark} ${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  process.exit(1);
+}
+
+function sourceNote(source: string): string {
+  return source === "project" ? "project" : source === "global" ? "global default" : "built-in default";
+}
+
+export function formatAgo(ms: number, nowMs = Date.now()): string {
+  const s = Math.max(0, Math.round((nowMs - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h${Math.round((s % 3600) / 60)}m ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+export function formatIn(ms: number, nowMs = Date.now()): string {
+  const s = Math.max(0, Math.round((ms - nowMs) / 1000));
+  if (s < 60) return `in ${s}s`;
+  if (s < 3600) return `in ${Math.round(s / 60)}m`;
+  return `in ${Math.floor(s / 3600)}h${Math.round((s % 3600) / 60)}m`;
+}
+
+function printPolicy(slug: string, policy: EffectiveCrankPolicy): void {
+  console.log(`  ${bold("crank")} ${dim(glyph.dot)} ${cyan(slug)}  ${policy.enabled ? green("ON") : dim("OFF")} ${dim(`(${sourceNote(policy.enabledSource)})`)}`);
+  console.log(`  ${dim("interval ")} ${policy.interval} ${dim(`(${sourceNote(policy.intervalSource)})`)}`);
+  if (policy.prompt) console.log(`  ${dim("prompt   ")} ${policy.prompt} ${dim(`(${sourceNote(policy.promptSource ?? "default")})`)}`);
+  if (policy.target) console.log(`  ${dim("target   ")} ${policy.target}`);
+  for (const rule of policy.rules) console.log(`  ${dim("rule     ")} ${rule}`);
+  console.log(`  ${dim(`officer   ${policy.officerProfile}, ≤${policy.officerMaxTurns} turns · zellij session ${policy.zellijSession} · globals ${policy.globalPath}`)}`);
+}
+
+export function formatSessions(views: SessionView[], nowMs = Date.now()): string {
+  if (!views.length) return `  ${dim("no live crank sessions")}`;
+  const lines: string[] = [];
+  for (const view of views) {
+    const last = view.lastRuns[0];
+    const lastText = last ? `${last.result} ${formatAgo(Date.parse(last.startedAt), nowMs)}` : "never fired";
+    const next = view.nextFireMs ? formatIn(view.nextFireMs, nowMs) : "?";
+    const state = view.alive ? green(glyph.dot) : red(glyph.fail);
+    lines.push(`  ${state} ${bold(view.name)}  ${cyan(view.projectSlug)} ${dim(`${view.cli} ${view.sessionId.slice(0, 8)} · pane terminal_${view.paneId} · every ${view.interval || "?"} · last ${lastText} · next ${next}${view.lastClass ? ` · ${view.lastClass}` : ""}`)}`);
+    if (!view.alive) lines.push(`    ${yellow(glyph.warn)} ${dim("agent process is gone; the next fire or `pj crank reap` ends this crank")}`);
+  }
+  return lines.join("\n");
+}
+
+function printDetached(results: DetachResult[]): void {
+  for (const result of results) {
+    if (result.archived) console.log(`  ${dim("ended")} ${bold(result.name)} ${dim(`(${result.reason})`)}`);
+    else console.log(`  ${yellow(glyph.warn)} ${result.name}: ${result.error}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
 
 export function registerCrankCli(program: Command): void {
   const crankCmd = program
     .command("crank")
-    .description("Toggle the zcrank crank-mode switches for the project you are standing in");
+    .description("Crank: one Candybar-clocked officer per live interactive agent session, driven by the project's crank block");
+
+  crankCmd
+    .command("status")
+    .description("This project's crank policy (with where each value comes from) and its live crank sessions")
+    .option("--json", "Emit JSON")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const project = projectAt(process.cwd());
+        const policy = loadPolicy(project.root);
+        const views = await sessionViews({ root: project.root }).catch(() => [] as SessionView[]);
+        if (options.json) {
+          console.log(JSON.stringify({ project, policy, sessions: views }, null, 2));
+          return;
+        }
+        printPolicy(project.slug, policy);
+        console.log("");
+        console.log(formatSessions(views));
+      } catch (error) {
+        fail(error, "crank status");
+      }
+    });
 
   crankCmd
     .command("enable")
-    .description("Turn crank ON for this project's zellij tab (Redis zcrank:tab:<tab>); a renamed tab's old key is merged away")
-    .option("--interval <interval>", `How often the crank may touch the tab: ${ZCRANK_INTERVALS.join("|")} (asked in a terminal when omitted)`)
-    .action(async (options: { interval?: string }) => {
+    .description("Turn crank ON for this project (writes .project.json crank.enabled) and attach its live agent sessions; --global sets the install default")
+    .option("--interval <interval>", `How often each session is cranked: ${CRANK_INTERVAL_CHOICES.join("|")} or any <N>m/<N>h/1d (asked in a terminal when omitted)`)
+    .option("--global", "Set enabled_by_default in the global crank.toml instead")
+    .option("--no-attach", "Only write the policy; sessions attach at their next start")
+    .action(async (options: { interval?: string; global?: boolean; attach?: boolean }) => {
       await runEnable(options);
     });
 
   crankCmd
     .command("disable")
-    .description("Turn crank OFF for this project's zellij tab")
-    .action(() => {
-      runDisable();
+    .description("Turn crank OFF for this project and end its live cranks; --global clears the install default")
+    .option("--global", "Set enabled_by_default = false in the global crank.toml instead")
+    .action(async (options: { global?: boolean }) => {
+      await runDisable(options);
+    });
+
+  crankCmd
+    .command("interval <interval>")
+    .description("Set this project's crank interval (<N>m, <N>h, 1d), or 'default' to follow the global default; --global sets that default")
+    .option("--global", "Set default_interval in the global crank.toml")
+    .action(async (value: string, options: { global?: boolean }) => {
+      try {
+        if (options.global) {
+          if (value === "default") throw new CrankPolicyError("the global default cannot inherit; give an interval");
+          const config = readGlobalConfig();
+          config.default_interval = coerceValue("default_interval", value) as string;
+          writeGlobalConfig(config);
+          console.log(`  ${dim("global default interval")} ${bold(config.default_interval)} ${dim(globalConfigPath())}`);
+          return;
+        }
+        const project = projectAt(process.cwd());
+        const interval = value === "default" ? undefined : (coerceValue("interval", value) as string);
+        updateProjectBlock(project.root, (block) => {
+          if (interval) block.interval = interval;
+          else delete block.interval;
+          return block;
+        });
+        const policy = loadPolicy(project.root);
+        console.log(`  ${cyan(project.slug)} ${dim("interval")} ${bold(policy.interval)} ${dim(`(${sourceNote(policy.intervalSource)})`)}`);
+        const moved = await reclockProject(project.root).catch(() => [] as string[]);
+        for (const name of moved) console.log(`  ${dim(`re-clocked ${name}`)}`);
+      } catch (error) {
+        fail(error, "crank interval");
+      }
+    });
+
+  crankCmd
+    .command("config [action] [key] [value]")
+    .description(`Read or edit the crank block: config | config get <key> | config set <key> <value> | config unset <key>. Project keys: ${PROJECT_KEYS.join(", ")}; --global keys: ${GLOBAL_KEYS.join(", ")}`)
+    .option("--global", "Edit the install-wide crank.toml instead of .project.json")
+    .option("--json", "Emit JSON")
+    .action((action: string | undefined, key: string | undefined, value: string | undefined, options: { global?: boolean; json?: boolean }) => {
+      runConfig(action, key, value, options);
+    });
+
+  crankCmd
+    .command("sessions")
+    .alias("list")
+    .description("Live crank sessions (one per agent session): this project's, or --all")
+    .option("--all", "Every project")
+    .option("--json", "Emit JSON")
+    .action(async (options: { all?: boolean; json?: boolean }) => {
+      try {
+        const root = options.all ? undefined : projectAt(process.cwd()).root;
+        const views = await sessionViews({ root });
+        if (options.json) console.log(JSON.stringify(views, null, 2));
+        else console.log(formatSessions(views));
+      } catch (error) {
+        fail(error, "crank sessions");
+      }
+    });
+
+  crankCmd
+    .command("attach")
+    .description("Bind a crank to an agent session. --hook reads a SessionStart payload (hook-hub); otherwise the session pj runs inside")
+    .option("--hook", "Hook mode: payload on stdin, BB_HOOK_* env; never fails the hook")
+    .option("--cli <cli>", "Agent CLI (claude, codex, opencode, kimi, …)")
+    .option("--session-id <id>", "Native session id")
+    .option("--pid <pid>", "Agent process id")
+    .option("--force", "Attach even when the project's crank is off")
+    .action(async (options: { hook?: boolean; cli?: string; sessionId?: string; pid?: string; force?: boolean }) => {
+      await runAttach(options);
+    });
+
+  crankCmd
+    .command("detach [binding]")
+    .description("End a crank: by binding name, --session-id, or (--hook) the SessionEnd payload's session")
+    .option("--hook", "Hook mode: SessionEnd payload on stdin, BB_HOOK_* env; never fails the hook")
+    .option("--session-id <id>", "End every crank of this native session")
+    .option("--reason <reason>", "explicit|session_end|superseded|disabled|pane_closed|orphan_reaped", "explicit")
+    .action(async (binding: string | undefined, options: { hook?: boolean; sessionId?: string; reason: string }) => {
+      await runDetach(binding, options);
+    });
+
+  crankCmd
+    .command("reap")
+    .description("End every crank whose agent process is gone, announcing each as bloodbank.crank.binding.ended reason=orphan_reaped")
+    .option("--json", "Emit JSON")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const results = await reapBindings();
+        if (options.json) console.log(JSON.stringify(results, null, 2));
+        else if (!results.length) console.log(`  ${dim("no dangling cranks")}`);
+        else printDetached(results);
+      } catch (error) {
+        fail(error, "crank reap");
+      }
+    });
+
+  crankCmd
+    .command("fire <binding>")
+    .description("One crank fire (Candybar runs this): verify the session is alive, then run the crank-pane engine")
+    .action(async (binding: string) => {
+      try {
+        const outcome = await fireBinding(binding);
+        console.log(JSON.stringify(outcome));
+        if (outcome.outcome === "fired" && outcome.engineExit && outcome.engineExit !== 0) process.exit(outcome.engineExit);
+      } catch (error) {
+        fail(error, "crank fire");
+      }
+    });
+
+  crankCmd
+    .command("log")
+    .description("This project's crank engine log: what each fire saw and did (newest last)")
+    .option("--tail <n>", "Show only the last N rows", "20")
+    .option("--all", "Every project")
+    .action(async (options: { tail: string; all?: boolean }) => {
+      const tail = Number(options.tail);
+      if (!Number.isInteger(tail) || tail <= 0) {
+        console.error(`${xmark} --tail needs a positive integer, got "${options.tail}"`);
+        process.exit(1);
+      }
+      try {
+        const root = options.all ? undefined : projectAt(process.cwd()).root;
+        const views = await sessionViews({ root });
+        const rows = engineLog(views.map((view) => view.name), tail);
+        if (!rows.length) {
+          console.log(`  ${dim("no crank fires logged yet")}`);
+          return;
+        }
+        for (const row of rows) {
+          console.log(`  ${dim(row.ts)} ${cyan(row.binding)} ${row.state.padEnd(9)} ${row.action}${row.detail ? dim(` · ${row.detail.split("\n").pop()}`) : ""}`);
+        }
+      } catch (error) {
+        fail(error, "crank log");
+      }
     });
 
   crankCmd
     .command("tui")
-    .description("Full-screen crank dashboard: toggle, interval, last runs, countdown to the next run, log")
+    .description("Full-screen crank dashboard: project toggle, interval, live sessions with last/next fire, log")
     .action(async () => {
       await runTui();
     });
@@ -114,155 +373,207 @@ export function registerCrankCli(program: Command): void {
     .action((options: { json?: boolean; all?: boolean }) => {
       runPanes(options);
     });
-
-  crankCmd
-    .command("list")
-    .description("Every registry project with crank ON/OFF and its resolved tab, plus orphan zcrank keys")
-    .action(() => {
-      try {
-        const store = redis();
-        if (!store.ping()) {
-          console.error(`${xmark} Redis is not answering at ${store.endpoint} — is it running?`);
-          process.exit(1);
-        }
-        const registry = loadProjectRegistry(projectRegistryPath());
-        const projects = Object.values(registry.projects).map((record) => ({
-          slug: record.slug,
-          name: record.name,
-          repoPath: record.repo_path,
-          agents: Object.entries(record.agents ?? {}).map(([agentHandle, value]) => ({
-            handle: agentHandle,
-            role: String((value as { role?: string } | undefined)?.role ?? ""),
-          })),
-        }));
-        const storedTabs = storedTabKeys(store);
-        const live = liveTabsWithOwners({ claimed: Object.values(storedTabRoots(store, storedTabs)) });
-        const identityCache: IdentityCache = new Map();
-        const report = buildCrankList({
-          projects,
-          live,
-          storedTabs,
-          identityOf: (repoPath) => projectIdentity(repoPath, { cache: identityCache }),
-          roots: storedTabRoots(store, storedTabs),
-          engine: readEngineStatus(),
-          tabEnabled: (tab) => store.tabEnabled(tab),
-          tabInterval: (tab) => store.tabInterval(tab),
-          globalInterval: store.globalInterval(),
-        });
-        console.log(formatCrankList(report));
-      } catch (error) {
-        console.error(`${xmark} crank list failed: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
-      }
-    });
-
-  crankCmd
-    .command("log")
-    .description("This project's crank log (newest last)")
-    .option("--tail <n>", "Show only the last N rows", "20")
-    .action((options: { tail: string }) => {
-      const tail = Number(options.tail);
-      if (!Number.isInteger(tail) || tail <= 0) {
-        console.error(`${xmark} --tail needs a positive integer, got "${options.tail}"`);
-        process.exit(1);
-      }
-      // The store call itself can fail (Redis gone mid-read, an error reply on the log key):
-      // that is a one-line failure here, not a stack trace or error text shown as log rows.
-      try {
-        const current = resolveCurrentTab();
-        const store = redis();
-        const rows = store.logRows(current.tab);
-        if (!rows.length) {
-          console.log(`  ${dim(`no crank log rows for ${current.tab}`)}`);
-          return;
-        }
-        const shown = rows.slice(-tail);
-        console.log(`  ${bold("crank log")} ${dim(glyph.dot)} ${cyan(current.tab)} ${dim(`(${shown.length}/${rows.length} rows, newest last)`)}`);
-        for (const raw of shown) {
-          console.log(renderLogRow(raw) ?? raw);
-        }
-      } catch (error) {
-        console.error(`${xmark} ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
-      }
-    });
 }
 
-function fail(error: unknown, what: string): never {
-  if (error instanceof BoardError || error instanceof TuiUnavailableError) {
-    console.error(`${xmark} ${error.message}`);
-  } else {
-    console.error(`${xmark} ${what} failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  process.exit(1);
+// ---------------------------------------------------------------------------
+// enable / disable
+// ---------------------------------------------------------------------------
+
+async function pickInterval(project: ProjectRef, policy: EffectiveCrankPolicy): Promise<string | null | undefined> {
+  if (!isInteractive()) return undefined;
+  const screens = await loadCrankScreens();
+  return screens.pickInterval({
+    slug: project.slug,
+    effective: policy.interval,
+    inherited: policy.intervalSource !== "project",
+    global: normaliseInterval(readGlobalConfig().default_interval) ?? policy.interval,
+  });
 }
 
-/** A reachable store, or exit 1 in the same words `pj crank list` uses. */
-function liveStore() {
-  const store = redis();
-  if (!store.ping()) {
-    console.error(`${xmark} Redis is not answering at ${store.endpoint} — is it running?`);
-    process.exit(1);
-  }
-  return store;
-}
-
-async function runEnable(options: { interval?: string }): Promise<void> {
+async function runEnable(options: { interval?: string; global?: boolean; attach?: boolean }): Promise<void> {
   try {
-    let chosen: CrankInterval | undefined;
-    if (options.interval !== undefined) {
-      chosen = parseInterval(options.interval);
-      if (!chosen) {
-        console.error(`${xmark} --interval needs one of ${ZCRANK_INTERVALS.join(", ")}, got "${options.interval}"`);
-        process.exit(1);
-      }
+    if (options.global) {
+      const config = readGlobalConfig();
+      config.enabled_by_default = true;
+      if (options.interval) config.default_interval = coerceValue("default_interval", options.interval) as string;
+      writeGlobalConfig(config);
+      console.log(`  ${green("ON")}  ${dim("by default for every project without its own crank.enabled")} ${dim(globalConfigPath())}`);
+      return;
     }
-    // Project first: "not inside a project" must not hide behind a dead Redis.
-    const project = currentProjectNames();
-    const store = liveStore();
-    const ctx = contextFor(project, store);
-    if (!chosen && isInteractive()) {
-      // Ask. The picker opens on what the tab runs at now; confirming that while it is only
-      // inherited changes nothing, so the tab keeps following the global default.
-      const snap = snapshotCrank(store, ctx.resolution.tab, ctx.storedKeys, Date.now(), 5, keyScopeOf(ctx));
-      const screens = await loadCrankScreens();
-      const picked = await screens.pickInterval({ slug: project.slug, tab: ctx.resolution.liveTab ?? ctx.resolution.tab, effective: snap.interval, inherited: snap.inherited, global: snap.global });
-      if (!picked) {
+    const project = projectAt(process.cwd());
+    let interval = options.interval ? (coerceValue("interval", options.interval) as string) : undefined;
+    if (!interval) {
+      const before = loadPolicy(project.root);
+      const picked = await pickInterval(project, before);
+      if (picked === null) {
         console.log(`  ${yellow(glyph.warn)} aborted ${dim(glyph.dot)} crank left as it was for ${cyan(project.slug)}`);
         return;
       }
-      if (!(snap.inherited && picked === snap.interval)) chosen = picked;
+      // Confirming the inherited value keeps inheriting; only a real choice becomes an override.
+      if (picked && !(before.intervalSource !== "project" && picked === before.interval)) interval = picked;
     }
-    const result = enableCrank(store, ctx, { interval: chosen });
-    console.log(`  ${green("ON")}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(result.tab)}`);
-    for (const { from, to } of result.renamed) {
-      console.log(`  ${yellow(glyph.warn)} tab renamed ${dim(glyph.dot)} ${from} ${dim(glyph.pointer)} ${bold(to)} ${dim("(old key merged into the new one and removed)")}`);
+    updateProjectBlock(project.root, (block) => ({ ...block, enabled: true, ...(interval ? { interval } : {}) }));
+    const policy = loadPolicy(project.root);
+    console.log(`  ${green("ON")}  ${cyan(project.slug)} ${dim(`every ${policy.interval} (${sourceNote(policy.intervalSource)}) · .project.json crank block`)}`);
+    const legacy = retireLegacyTab();
+    if (legacy) console.log(`  ${dim(`legacy tab switch zcrank:tab:${legacy} turned off (sessions are cranked one by one now)`)}`);
+    if (options.attach === false) return;
+    const { attached, skipped } = await attachLiveProjectSessions(project);
+    const caller = callerSession();
+    if (caller && !attached.length) {
+      const own = await attachSession(caller);
+      if (own.status === "attached" || own.status === "already") attached.push(own.name ?? "");
     }
-    const afterKeys = storedTabKeys(store);
-    const live = snapshotCrank(store, result.tab, afterKeys, Date.now(), 5, { owner: ctx.resolution.tabOwner, roots: storedTabRoots(store, afterKeys) });
-    console.log(`  ${dim("interval")} ${live.interval}${live.inherited ? dim(` (inherits global ${live.global})`) : ""}`);
-    if (ctx.resolution.storedAsIs) {
-      console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);
-    }
+    for (const name of attached) console.log(`  ${dim("crank")} ${bold(name)}`);
+    for (const note of skipped) console.log(`  ${dim(`not attached: ${note}`)}`);
+    if (!attached.length && !skipped.length) console.log(`  ${dim("no live agent sessions in this project yet; each one gets a crank when it starts")}`);
   } catch (error) {
-    fail(error, "crank");
+    fail(error, "crank enable");
   }
 }
 
-function runDisable(): void {
+async function runDisable(options: { global?: boolean }): Promise<void> {
   try {
-    const project = currentProjectNames();
-    const store = liveStore();
-    const ctx = contextFor(project, store);
-    disableCrank(store, ctx.resolution.tab, new Date(), ctx.identity);
-    console.log(`  ${dim("OFF")}  ${cyan(project.slug)} ${dim(glyph.pointer)} ${bold(ctx.resolution.tab)}`);
-    if (ctx.resolution.storedAsIs) {
-      console.log(`  ${yellow(glyph.warn)} ${dim(`no live zellij tab or zcrank key matches "${project.names.name}" — stored under the project name as-is`)}`);
+    if (options.global) {
+      const config = readGlobalConfig();
+      config.enabled_by_default = false;
+      writeGlobalConfig(config);
+      console.log(`  ${dim("OFF")} ${dim("by default (projects with crank.enabled = true keep it)")} ${dim(globalConfigPath())}`);
+      return;
     }
+    const project = projectAt(process.cwd());
+    updateProjectBlock(project.root, (block) => ({ ...block, enabled: false }));
+    console.log(`  ${dim("OFF")}  ${cyan(project.slug)}`);
+    printDetached(await detachProject(project.root, "disabled"));
+    retireLegacyTab();
   } catch (error) {
-    fail(error, "crank");
+    fail(error, "crank disable");
   }
 }
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
+
+function runConfig(action: string | undefined, key: string | undefined, value: string | undefined, options: { global?: boolean; json?: boolean }): void {
+  try {
+    const verb = action ?? "show";
+    const keys: readonly string[] = options.global ? GLOBAL_KEYS : PROJECT_KEYS;
+    if (key !== undefined && !keys.includes(key)) throw new CrankPolicyError(`unknown ${options.global ? "global" : "project"} key "${key}" (one of ${keys.join(", ")})`);
+    if (options.global) {
+      const config = readGlobalConfig();
+      if (verb === "show" || verb === "get") {
+        const out = key ? config[key] : config;
+        console.log(options.json || typeof out === "object" ? JSON.stringify(out ?? null, null, 2) : String(out ?? ""));
+        if (!key && !options.json) console.error(dim(`  ${globalConfigPath()}`));
+        return;
+      }
+      if (!key) throw new CrankPolicyError(`config ${verb} needs a key`);
+      if (verb === "set") {
+        if (value === undefined) throw new CrankPolicyError("config set needs a value");
+        config[key] = coerceValue(key, value);
+      } else if (verb === "unset") delete config[key];
+      else throw new CrankPolicyError(`unknown config action "${verb}" (get|set|unset)`);
+      writeGlobalConfig(config);
+      console.log(`  ${dim("global")} ${key} = ${JSON.stringify(config[key] ?? null)}`);
+      return;
+    }
+    const project = projectAt(process.cwd());
+    if (verb === "show" || verb === "get") {
+      if (key) {
+        console.log(JSON.stringify(readProjectBlock(project.root)?.[key] ?? null));
+        return;
+      }
+      const policy = loadPolicy(project.root);
+      if (options.json) console.log(JSON.stringify({ block: readProjectBlock(project.root) ?? null, effective: policy }, null, 2));
+      else printPolicy(project.slug, policy);
+      return;
+    }
+    if (!key) throw new CrankPolicyError(`config ${verb} needs a key`);
+    const next = updateProjectBlock(project.root, (block) => {
+      if (verb === "set") {
+        if (value === undefined) throw new CrankPolicyError("config set needs a value");
+        block[key] = coerceValue(key, value);
+      } else if (verb === "unset") delete block[key];
+      else throw new CrankPolicyError(`unknown config action "${verb}" (get|set|unset)`);
+      return block;
+    });
+    console.log(`  ${cyan(project.slug)} crank.${key} = ${JSON.stringify(next?.[key] ?? null)}`);
+  } catch (error) {
+    fail(error, "crank config");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// attach / detach (hook entry points never exit non-zero)
+// ---------------------------------------------------------------------------
+
+async function runAttach(options: { hook?: boolean; cli?: string; sessionId?: string; pid?: string; force?: boolean }): Promise<void> {
+  if (options.hook) {
+    const input = hookSession();
+    try {
+      const result = await attachSession(input);
+      hookLog({ hook: "attach", cli: input.cli, session: input.sessionId, pid: input.pid, cwd: input.cwd, source: input.source, status: result.status, name: "name" in result ? result.name : undefined, reason: "reason" in result ? result.reason : undefined, superseded: result.superseded, reaped: result.reaped });
+    } catch (error) {
+      hookLog({ hook: "attach", cli: input.cli, session: input.sessionId, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  try {
+    const caller = callerSession();
+    const input = options.sessionId || options.cli
+      ? { cli: options.cli ?? caller?.cli, sessionId: options.sessionId ?? caller?.sessionId, pid: options.pid ? Number(options.pid) : caller?.pid, cwd: process.cwd() }
+      : caller;
+    if (!input) throw new CrankPolicyError("not running inside an agent session: pass --cli and --session-id (and --pid for CLIs without a session file)");
+    const result = await attachSession(input, { force: options.force });
+    if (result.status === "attached" || result.status === "already") {
+      console.log(`  ${green(glyph.dot)} ${bold(result.name ?? "")} ${dim(`${result.status} · ${result.schedule ?? ""}`)}`);
+    } else {
+      console.error(`${xmark} not attached: ${"reason" in result ? result.reason : result.status}`);
+      process.exit(1);
+    }
+    for (const name of result.superseded) console.log(`  ${dim(`ended ${name} (superseded)`)}`);
+    for (const name of result.reaped) console.log(`  ${dim(`ended ${name} (orphan_reaped)`)}`);
+  } catch (error) {
+    fail(error, "crank attach");
+  }
+}
+
+async function runDetach(binding: string | undefined, options: { hook?: boolean; sessionId?: string; reason: string }): Promise<void> {
+  if (options.hook) {
+    const input = hookSession();
+    try {
+      const results = input.sessionId ? await detachSession({ cli: input.cli, sessionId: input.sessionId }, "session_end") : [];
+      hookLog({ hook: "detach", cli: input.cli, session: input.sessionId, reason: input.reason, ended: results.map((r) => r.name) });
+    } catch (error) {
+      hookLog({ hook: "detach", cli: input.cli, session: input.sessionId, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  try {
+    const reason = options.reason as EndReason;
+    if (!["explicit", "session_end", "superseded", "disabled", "pane_closed", "orphan_reaped"].includes(reason)) throw new CrankPolicyError(`unknown reason "${options.reason}"`);
+    let results: DetachResult[] = [];
+    if (binding) {
+      const { listBindings, detachBinding } = await import("./binding");
+      const record = (await listBindings()).find((candidate) => candidate.name === binding);
+      if (!record) throw new CrankPolicyError(`no live crank named ${binding}`);
+      results = [await detachBinding(record, reason)];
+    } else {
+      const sessionId = options.sessionId ?? callerSession()?.sessionId;
+      if (!sessionId) throw new CrankPolicyError("name a binding, or --session-id");
+      results = await detachSession({ sessionId }, reason);
+    }
+    if (!results.length) console.log(`  ${dim("no live crank matched")}`);
+    printDetached(results);
+  } catch (error) {
+    fail(error, "crank detach");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// panes / tui
+// ---------------------------------------------------------------------------
 
 /**
  * PJAN-202: print the pane inventory. Touches no Redis and no zellij action but list-panes.
@@ -311,9 +622,9 @@ async function runTui(): Promise<void> {
       console.error(`${xmark} pj crank tui needs an interactive terminal (stdin and stdout must be a TTY)`);
       process.exit(1);
     }
-    const project = currentProjectNames();
-    const store = liveStore();
-    const controller = createCrankController({ slug: project.slug, project: project.names, store, identity: project.identity });
+    const project = projectAt(process.cwd());
+    const { createCrankController } = await import("./controller");
+    const controller = createCrankController({ project });
     const screens = await loadCrankScreens();
     await screens.runCrankDashboard(controller);
   } catch (error) {

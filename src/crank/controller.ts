@@ -1,147 +1,86 @@
-// The crank screens' door to Redis + zellij (PJAN-182). The Ink components in ./tui.tsx
-// never touch either: they call a CrankController, which re-resolves the project's tab on
-// every read and write, so a tab renamed under a running TUI is picked up, not clobbered.
-// No ink/react here, so the CLI (and the tests) can use it without loading either.
+// The crank dashboard's door to policy + sessions (PJAN-214). The Ink screens in ./tui.tsx never
+// touch .project.json, Candybar or the engine logs themselves: they call this controller.
+// No ink/react here, so the CLI and the tests can use it without loading either.
 
-import {
-  buildCrankContext,
-  disableCrank,
-  enableCrank,
-  keyScopeOf,
-  liveTabs,
-  liveTabsWithOwners,
-  readEngineStatus,
-  setCrankInterval,
-  unknownEngineStatus,
-  snapshotCrank,
-  storedTabKeys,
-  storedTabRoots,
-  claimedRoots,
-  type CrankContext,
-  type CrankInterval,
-  type CrankSnapshot,
-  type CrankStore,
-  type EnableResult,
-  type EngineStatus,
-  type LiveTab,
-  type ProjectNames,
-  type TabResolution,
-} from "./index";
+import { type DetachResult } from "./binding";
+import { loadPolicy, normaliseInterval, readGlobalConfig, updateProjectBlock, DEFAULT_INTERVAL, type EffectiveCrankPolicy } from "./policy";
+import { attachLiveProjectSessions, detachProject, engineLog, reclockProject, sessionViews, type LogRow, type ProjectRef, type SessionView } from "./sessions";
 
 export interface CrankView {
   slug: string;
-  name: string;
-  resolution: TabResolution;
-  snapshot: CrankSnapshot;
-  /** Beat-engine health (PJAN-201): advisory, "unknown" when it cannot be read. */
-  engine: EngineStatus;
+  root: string;
+  policy: EffectiveCrankPolicy;
+  /** The install default the project inherits when it sets no interval. */
+  globalInterval: string;
+  sessions: SessionView[];
+  /** False when Candybar could not be read: `sessions` then means nothing. */
+  sessionsReadable: boolean;
+  sessionsError?: string;
+  log: LogRow[];
 }
 
 export interface CrankController {
   slug: string;
-  name: string;
-  read(nowMs?: number): CrankView;
-  enable(): EnableResult;
-  disable(): void;
-  /** undefined = reset to the global default. */
-  setInterval(interval: CrankInterval | undefined): void;
+  read(nowMs?: number): Promise<CrankView>;
+  /** Flip crank.enabled; ON attaches live sessions, OFF ends them. Returns a one-line note. */
+  toggle(): Promise<string>;
+  /** undefined = follow the global default. */
+  setInterval(interval: string | undefined): Promise<string>;
 }
 
-/** Zellij tab names change rarely and `list-tabs` is a subprocess: re-read them on this cadence. */
-const LIVE_TABS_TTL_MS = 30_000;
-
-/**
- * Who owns a tab changes far more slowly than its name, and finding out costs a ~4s list-panes
- * call plus git (PJAN-201 review). So the owners are kept this long, joined onto a fresh
- * (cheap) list-tabs by tab_id each time: renames are still seen at once, a new tab is looked up
- * immediately, and a toggle or interval key press no longer freezes the TUI for 4s.
- */
-export const LIVE_OWNERS_TTL_MS = 300_000;
-
-export function ownerMemoReader(
-  deps: { clock?: () => number; read?: (claimed: string[]) => LiveTab[]; tabs?: () => LiveTab[]; claimed?: () => string[] } = {},
-): () => LiveTab[] {
-  const clock = deps.clock ?? Date.now;
-  const read = deps.read ?? ((claimed: string[]) => liveTabsWithOwners({ claimed }));
-  const listTabs = deps.tabs ?? (() => liveTabs());
-  const readClaimed = (): string[] => {
-    try {
-      return deps.claimed?.() ?? [];
-    } catch {
-      return [];
-    }
-  };
-  let memo: { at: number; claimed: string; byId: Map<number, Pick<LiveTab, "owner" | "ownedPanes">> } | undefined;
-  return () => {
-    const now = clock();
-    const tabs = listTabs();
-    // Claimed roots break owner ties, so a toggle that writes the first root re-reads owners at once.
-    const claimed = readClaimed();
-    const claimedSig = claimed.join("\n");
-    if (memo && memo.claimed === claimedSig && now - memo.at <= LIVE_OWNERS_TTL_MS && tabs.length && tabs.every((tab) => tab.id !== undefined && memo?.byId.has(tab.id))) {
-      const known = memo.byId;
-      return tabs.map((tab) => ({ ...tab, ...known.get(tab.id as number) }));
-    }
-    const full = read(claimed);
-    memo = full.length && full.every((tab) => tab.id !== undefined)
-      ? { at: now, claimed: claimedSig, byId: new Map(full.map((tab) => [tab.id as number, { owner: tab.owner, ownedPanes: tab.ownedPanes }])) }
-      : undefined;
-    return full;
-  };
-}
-
-export function createCrankController(deps: {
-  slug: string;
-  project: ProjectNames;
-  store: CrankStore;
-  /** Defaults to the real zellij session: live tabs with their pane-derived owners. */
-  live?: () => LiveTab[];
-  /** The project's identity (main worktree path), written as `root` on every key it writes. */
-  identity?: string;
-  /** Defaults to the Hermes usage audit; must not throw. */
-  engine?: (nowMs: number) => EngineStatus;
+export interface ControllerDeps {
+  project: ProjectRef;
+  sessions?: (root: string, nowMs: number) => Promise<SessionView[]>;
+  attach?: (project: ProjectRef) => Promise<{ attached: string[]; skipped: string[] }>;
+  detach?: (root: string) => Promise<DetachResult[]>;
+  log?: (names: string[], tail: number) => LogRow[];
+  reclock?: (root: string) => Promise<string[]>;
   clock?: () => number;
-}): CrankController {
+}
+
+export function createCrankController(deps: ControllerDeps): CrankController {
   const clock = deps.clock ?? Date.now;
-  const readLive = deps.live ?? ownerMemoReader({ clock, claimed: () => claimedRoots(deps.store) });
-  const readEngine = (nowMs: number): EngineStatus => {
-    try {
-      return (deps.engine ?? ((now) => readEngineStatus({ nowMs: now })))(nowMs);
-    } catch {
-      return unknownEngineStatus(nowMs);
-    }
-  };
-  let cachedLive: { at: number; tabs: LiveTab[] } | undefined;
-  const live = (fresh: boolean): LiveTab[] => {
-    const now = clock();
-    if (fresh || !cachedLive || now - cachedLive.at > LIVE_TABS_TTL_MS) cachedLive = { at: now, tabs: readLive() };
-    return cachedLive.tabs;
-  };
-  const context = (fresh: boolean): CrankContext => {
-    const keys = storedTabKeys(deps.store);
-    return buildCrankContext(deps.project, live(fresh), keys, { identity: deps.identity, roots: storedTabRoots(deps.store, keys) });
-  };
+  const readSessions = deps.sessions ?? ((root: string, nowMs: number) => sessionViews({ root }, undefined, nowMs));
+  const attach = deps.attach ?? attachLiveProjectSessions;
+  const detach = deps.detach ?? ((root: string) => detachProject(root, "disabled"));
+  const readLog = deps.log ?? engineLog;
+  const reclock = deps.reclock ?? ((root: string) => reclockProject(root));
+  const { project } = deps;
   return {
-    slug: deps.slug,
-    name: deps.project.name,
-    read(nowMs = clock()) {
-      const ctx = context(false);
-      return {
-        slug: deps.slug,
-        name: deps.project.name,
-        resolution: ctx.resolution,
-        snapshot: snapshotCrank(deps.store, ctx.resolution.tab, ctx.storedKeys, nowMs, 5, keyScopeOf(ctx)),
-        engine: readEngine(nowMs),
-      };
+    slug: project.slug,
+    async read(nowMs = clock()) {
+      const policy = loadPolicy(project.root);
+      const globalInterval = normaliseInterval(readGlobalConfig(policy.globalPath).default_interval) ?? DEFAULT_INTERVAL;
+      let sessions: SessionView[] = [];
+      let sessionsReadable = true;
+      let sessionsError: string | undefined;
+      try {
+        sessions = await readSessions(project.root, nowMs);
+      } catch (error) {
+        sessionsReadable = false;
+        sessionsError = error instanceof Error ? error.message : String(error);
+      }
+      return { slug: project.slug, root: project.root, policy, globalInterval, sessions, sessionsReadable, sessionsError, log: readLog(sessions.map((s) => s.name), 30) };
     },
-    enable: () => enableCrank(deps.store, context(true), { now: new Date(clock()) }),
-    disable() {
-      const ctx = context(true);
-      disableCrank(deps.store, ctx.resolution.tab, new Date(clock()), ctx.identity);
+    async toggle() {
+      const on = !loadPolicy(project.root).enabled;
+      updateProjectBlock(project.root, (block) => ({ ...block, enabled: on }));
+      if (on) {
+        const { attached, skipped } = await attach(project);
+        return `crank ON · ${attached.length} session(s) attached${skipped.length ? `, ${skipped.length} wait for their next start` : ""}`;
+      }
+      const ended = await detach(project.root);
+      return `crank OFF · ${ended.length} crank(s) ended`;
     },
-    setInterval(interval) {
-      const ctx = context(true);
-      setCrankInterval(deps.store, ctx.resolution.tab, ctx.storedKeys, interval, new Date(clock()), { ...keyScopeOf(ctx), root: ctx.identity });
+    async setInterval(interval) {
+      updateProjectBlock(project.root, (block) => {
+        if (interval) block.interval = interval;
+        else delete block.interval;
+        return block;
+      });
+      const policy = loadPolicy(project.root);
+      const moved = await reclock(project.root);
+      return `interval ${policy.interval}${interval ? "" : " (global default)"} · ${moved.length} live crank(s) re-clocked`;
     },
   };
 }
