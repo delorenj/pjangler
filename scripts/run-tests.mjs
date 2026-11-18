@@ -172,6 +172,7 @@ const SUITES = [
   "tests/pjan-184-crank-units.mjs",
   "tests/pjan-214-crank-v2.mjs",
   "tests/pjan-215-crank-projection.mjs",
+  "tests/pjan-216-crank-caller-session.mjs",
   "tests/pjan-186-crank-error-replies.mjs",
   "tests/crank-arbiter-regressions.mjs",
   "tests/crank-arbiter-drift.mjs",

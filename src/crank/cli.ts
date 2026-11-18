@@ -48,6 +48,7 @@ import {
 } from "./policy";
 import { reapBindings, type DetachResult, type EndReason } from "./binding";
 import {
+  agentCwd,
   attachLiveProjectSessions,
   attachSession,
   callerSession,
@@ -60,6 +61,7 @@ import {
   projectAt,
   reclockProject,
   sessionViews,
+  tryProjectAt,
   type ProjectRef,
   type SessionView,
 } from "./sessions";
@@ -427,8 +429,9 @@ async function runEnable(options: { interval?: string; global?: boolean; attach?
     if (legacy) console.log(`  ${dim(`legacy tab switch zcrank:tab:${legacy} turned off (sessions are cranked one by one now)`)}`);
     if (options.attach === false) return;
     const { attached, skipped } = await attachLiveProjectSessions(project);
+    // The caller is attached here only when its own agent runs in THIS project (PJAN-216).
     const caller = callerSession();
-    if (caller && !attached.length) {
+    if (caller && !attached.length && tryProjectAt(caller.cwd)?.root === project.root) {
       const own = await attachSession(caller);
       if (own.status === "attached" || own.status === "already") attached.push(own.name ?? "");
     }
@@ -532,8 +535,9 @@ async function runAttach(options: { hook?: boolean; cli?: string; sessionId?: st
   }
   try {
     const caller = callerSession();
+    const pid = options.pid ? Number(options.pid) : caller?.pid;
     const input = options.sessionId || options.cli
-      ? { cli: options.cli ?? caller?.cli, sessionId: options.sessionId ?? caller?.sessionId, pid: options.pid ? Number(options.pid) : caller?.pid, cwd: process.cwd() }
+      ? { cli: options.cli ?? caller?.cli, sessionId: options.sessionId ?? caller?.sessionId, pid, cwd: agentCwd(pid) }
       : caller;
     if (!input) throw new CrankPolicyError("not running inside an agent session: pass --cli and --session-id (and --pid for CLIs without a session file)");
     const result = await attachSession(input, { force: options.force });

@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readlinkSync } from "node:fs";
 import { resolveProject } from "../project/boardQuery";
 import {
   stateDir,
@@ -68,15 +68,31 @@ export function hookLog(line: Record<string, unknown>): void {
 // Who is calling? (pj run from inside an agent pane, or a hook)
 // ---------------------------------------------------------------------------
 
+/**
+ * The agent's own working directory. A session belongs to the project its agent runs in, never to
+ * wherever pj was invoked from: `cd ../other && pj crank enable` from an agent's shell tool must
+ * not bind that agent's session to `other` (PJAN-216). Falls back to pj's cwd when /proc is unreadable.
+ */
+export function agentCwd(pid: number | undefined, fallback = process.cwd()): string {
+  if (pid && Number.isInteger(pid) && pid > 0) {
+    try {
+      return readlinkSync(`/proc/${pid}/cwd`);
+    } catch {
+      // not ours to read, or gone
+    }
+  }
+  return fallback;
+}
+
 /** The agent session pj is running inside, if any (a tool call from Claude Code, Codex, …). */
 export function callerSession(env: NodeJS.ProcessEnv = process.env): IdentifyInput | undefined {
-  const cwd = process.cwd();
   if (env.CLAUDE_CODE_SESSION_ID && env.CLAUDE_PID) {
-    return { cli: "claude", sessionId: env.CLAUDE_CODE_SESSION_ID, pid: Number(env.CLAUDE_PID), cwd, env };
+    const pid = Number(env.CLAUDE_PID);
+    return { cli: "claude", sessionId: env.CLAUDE_CODE_SESSION_ID, pid, cwd: agentCwd(pid), env };
   }
   if (env.CODEX_THREAD_ID) {
     const pid = agentAncestor(process.ppid);
-    return { cli: "codex", sessionId: env.CODEX_THREAD_ID, pid, cwd, env };
+    return { cli: "codex", sessionId: env.CODEX_THREAD_ID, pid, cwd: agentCwd(pid), env };
   }
   return undefined;
 }
