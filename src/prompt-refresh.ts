@@ -20,12 +20,15 @@
 //   next crank The tab's interval and newest beat row; the prompt does the countdown
 //              math at render time so it keeps moving between refreshes.
 //   stalled    The engine heartbeat (crank:engine scan_ms) is absent or older than CRANK_STALL_AFTER_MS.
+//   pin        The hermes-agent-template commit Flume pins (`HEAD:templates/hermes-agent` in
+//              $FLUME_ROOT, default ~/code/33GOD/flume), so the prompt can say a PM is behind it.
 //
 // A fact that cannot be read is written as null and the prompt hides that
 // segment. It is never guessed: "crank off" when Redis is down would be a lie.
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { contextFor, currentProjectNames } from "./crank/cli";
 import { canon, keyScopeOf, redis, snapshotCrank, storedTabKeys } from "./crank/index";
@@ -263,6 +266,18 @@ export function sweepCacheDir(dir: string, nowMs: number = Date.now(), keep?: st
   return removed;
 }
 
+/** The template commit Flume pins: its committed gitlink, never a worktree. null = unknown. */
+export function readTemplatePin(env: NodeJS.ProcessEnv = process.env): string | null {
+  const flume = env.FLUME_ROOT || join(env.HOME || homedir(), "code", "33GOD", "flume");
+  const result = spawnSync("git", ["--no-optional-locks", "-C", flume, "rev-parse", "HEAD:templates/hermes-agent"], {
+    encoding: "utf8",
+    timeout: 2_000,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const rev = result.status === 0 ? result.stdout.trim() : "";
+  return /^[0-9a-f]{40}$/.test(rev) ? rev : null;
+}
+
 async function main(): Promise<void> {
   const [root, cachePath] = process.argv.slice(2);
   if (!root || !cachePath) return;
@@ -271,7 +286,8 @@ async function main(): Promise<void> {
     // Inside a zellij pane the prompt reads crank straight from the arbiter, so the cache carries none.
     const candybars = await readCandybars(root);
     const crank = zellijPane(process.env) ? null : await readCrank(process.env, Date.now());
-    writeCacheAtomically(cachePath, { v: PIPELINE_CACHE_VERSION, writtenAtMs: Date.now(), root, candybars, crank });
+    const templatePin = readTemplatePin();
+    writeCacheAtomically(cachePath, { v: PIPELINE_CACHE_VERSION, writtenAtMs: Date.now(), root, candybars, crank, templatePin });
     sweepCacheDir(dirname(cachePath), Date.now(), cachePath);
   } catch {
     // A refresher that fails leaves the old cache; the prompt ages it out.

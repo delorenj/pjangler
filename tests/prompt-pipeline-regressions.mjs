@@ -30,8 +30,8 @@ writeFileSync(
   join(workspace, "entry.ts"),
   [
     `export * from ${JSON.stringify(join(root, "src/prompt-pipeline.ts"))};`,
-    `export { formatPromptLine } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
-    `export { candybarProjectName, countCandybars, readArbiterFacts, readCandybars, readCrank, sweepCacheDir, tabOnSinceMs, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
+    `export { formatPromptLine, formatPm, readProjectPm } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
+    `export { candybarProjectName, countCandybars, readArbiterFacts, readCandybars, readCrank, readTemplatePin, sweepCacheDir, tabOnSinceMs, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
     `export { encodeCommand, parseResp, redisPipeline, replyToHash } from ${JSON.stringify(join(root, "src/crank/resp.ts"))};`,
   ].join("\n"),
 );
@@ -49,8 +49,8 @@ const kit = await import(kitOut);
 const {
   PIPELINE_CACHE_VERSION, PIPELINE_REFRESH_AFTER_MS, PIPELINE_EXPIRE_AFTER_MS, PIPELINE_LOCK_STALE_MS,
   pipelineCacheDir, pipelineCachePath, readPipelineCache, freshSegments, needsRefresh,
-  formatCandybars, formatCrank, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine,
-  countCandybars, readArbiterFacts, readCandybars, readCrank, sweepCacheDir, writeCacheAtomically, candybarProjectName,
+  formatCandybars, formatCrank, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine, formatPm, readProjectPm,
+  countCandybars, readArbiterFacts, readCandybars, readCrank, readTemplatePin, sweepCacheDir, writeCacheAtomically, candybarProjectName,
   formatSpan, formatCountdown, CRANK_STALL_AFTER_MS, CRANK_READ_TIMEOUT_MS,
   crankFromArbiter, readPaneCrank, zellijPane, tabOnSinceMs,
   encodeCommand, parseResp, redisPipeline, replyToHash,
@@ -638,6 +638,54 @@ await test("a stale cache spawns the detached refresher, which writes the cache 
   } finally {
     await new Promise((r) => server.close(r));
   }
+});
+
+
+await test("the PM segment: @bot(PM) ID [template rev], behind when Flume pins newer", () => {
+  const pin = "b5aa431d9a19c7ac6a9267539d2a70b5cee9ae27";
+  const rev = "c738f69db40a19b9f6c316b03b1c17edef9d0948";
+  const pm = { agentId: "tolt-pm", botUsername: "tolt_pm_bot", botId: "8467282336", templateRev: rev };
+  assert.equal(formatPm(pm), "@tolt_pm_bot(PM) 8467282336 [c738f69]");
+  assert.equal(formatPm(pm, rev), "@tolt_pm_bot(PM) 8467282336 [c738f69]");
+  assert.equal(formatPm(pm, pin), "@tolt_pm_bot(PM) 8467282336 [c738f69 ↑b5aa431]");
+  assert.equal(formatPm({ agentId: "tolt-pm" }, pin), "tolt-pm(PM) [?]", "no bot, no stamp: named, never guessed");
+  const base = { root: "/x", slug: "tolt", identifier: "TOLT", age: "3m", active: true };
+  assert.equal(formatPromptLine({ ...base, pm, templatePin: pin, candybars: { project: 1, total: 2 } }),
+    `tolt (TOLT) · 3m · @tolt_pm_bot(PM) 8467282336 [c738f69 ↑b5aa431] · ${CANDYBAR_GLYPH} 1/2`);
+});
+
+await test("the PM is read from the role manifest the project's agents entry names", () => {
+  const proj = join(workspace, "pm-proj");
+  mkdirSync(join(proj, "agents", "hermes", "pm"), { recursive: true });
+  mkdirSync(join(proj, "agents", "hermes", "director"), { recursive: true });
+  writeFileSync(join(proj, "agents", "hermes", "pm", "role.yaml"), [
+    'agent_id: "tolt-pm"',
+    "# Telegram bot identity",
+    "telegram:",
+    '  provisioning_status: "verified"',
+    '  bot_username: "tolt_pm_bot"',
+    '  bot_id: "8467282336"',
+    "slack:",
+    '  bot_id: "B0SLACK"',
+    "provisioned_by: hermes-agent-template",
+    'template_rev: "c738f69db40a19b9f6c316b03b1c17edef9d0948"',
+    "",
+  ].join("\n"));
+  const agents = {
+    "tolt-director": { role: "director", role_dir: "agents/hermes/director" },
+    "other-pm": { role: "pm", role_dir: "agents/hermes/missing" },
+    "tolt-pm": { role: "pm", role_dir: "agents/hermes/pm" },
+  };
+  assert.deepEqual(readProjectPm(proj, "tolt", agents), {
+    agentId: "tolt-pm", botUsername: "tolt_pm_bot", botId: "8467282336", templateRev: "c738f69db40a19b9f6c316b03b1c17edef9d0948",
+  }, "<slug>-pm wins, and the Telegram bot_id is not the Slack one");
+  assert.deepEqual(readProjectPm(proj, "zzz", { "other-pm": agents["other-pm"] }), { agentId: "other-pm" }, "a declared PM with no manifest on disk keeps its name");
+  assert.equal(readProjectPm(proj, "tolt", { "tolt-director": agents["tolt-director"] }), undefined, "no PM, no segment");
+  assert.equal(readProjectPm(proj, "tolt", undefined), undefined);
+});
+
+await test("the template pin is Flume's committed gitlink, null when Flume is absent", () => {
+  assert.equal(readTemplatePin({ FLUME_ROOT: join(workspace, "no-flume"), HOME: workspace }), null);
 });
 
 console.log(`prompt-pipeline: ${passed} passed`);

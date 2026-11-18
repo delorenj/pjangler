@@ -52,6 +52,74 @@ export interface PromptFacts {
   candybars?: CandybarCounts | null;
   /** 33GOD pipeline: crank mode for this pane (read directly in zellij, cached outside it). */
   crank?: CrankState | null;
+  /** The project's PM employee, from its role manifest (`agents.<id>.role_dir`/role.yaml). */
+  pm?: ProjectPm;
+  /** The template commit Flume pins (cached); a PM rendered from another one is behind. */
+  templatePin?: string | null;
+}
+
+export interface ProjectPm {
+  agentId: string;
+  /** Telegram bot username, without the `@`. */
+  botUsername?: string;
+  /** Telegram bot ID. */
+  botId?: string;
+  /** The hermes-agent-template commit the PM's role manifest was rendered or refreshed from. */
+  templateRev?: string;
+}
+
+/** One top-level scalar of a role manifest (`key: "value"`), or the field of a top-level block. */
+function manifestScalar(text: string, key: string, block?: string): string | undefined {
+  let scope = text;
+  if (block) {
+    const start = new RegExp(`^${block}:[ \\t]*(?:#.*)?$`, "m").exec(text);
+    if (!start) return undefined;
+    const rest = text.slice(start.index + start[0].length + 1);
+    const end = /^\S/m.exec(rest);
+    scope = end ? rest.slice(0, end.index) : rest;
+  }
+  const indent = block ? "[ \\t]+" : "";
+  const match = new RegExp(`^${indent}${key}:[ \\t]*"?([^"\\s#]*)"?`, "m").exec(scope);
+  return match?.[1] || undefined;
+}
+
+/**
+ * The project's PM: the `agents` entry with role `pm` (`<slug>-pm` first when a
+ * project has more than one), read from its tracked role manifest. A plain text
+ * read, not a YAML parse: this bundle stays import-free for the prompt's budget.
+ */
+export function readProjectPm(root: string, slug: string, agents: unknown): ProjectPm | undefined {
+  if (!agents || typeof agents !== "object") return undefined;
+  const pms = Object.entries(agents as Record<string, unknown>)
+    .filter(([, entry]) => (entry as { role?: unknown })?.role === "pm");
+  if (!pms.length) return undefined;
+  const [agentId, entry] = pms.find(([id]) => id === `${slug}-pm`) ?? pms[0]!;
+  const pm: ProjectPm = { agentId };
+  const roleDir = (entry as { role_dir?: unknown }).role_dir;
+  try {
+    const text = readFileSync(join(root, typeof roleDir === "string" && roleDir ? roleDir : join("agents", "hermes", "pm"), "role.yaml"), "utf8");
+    pm.botUsername = manifestScalar(text, "bot_username", "telegram");
+    pm.botId = manifestScalar(text, "bot_id", "telegram");
+    const rev = manifestScalar(text, "template_rev");
+    if (rev && /^[0-9a-f]{7,40}$/.test(rev)) pm.templateRev = rev;
+  } catch {
+    // A PM declared in the manifest but not on disk still has a name.
+  }
+  return pm;
+}
+
+/**
+ * `@tolt_pm_bot(PM) 8467282336 [c738f69]`: the PM's bot, its ID, and the template
+ * revision its manifest was rendered from. `[c738f69 ↑b5aa431]` when Flume pins a
+ * newer template; `[?]` when the manifest predates the stamp.
+ */
+export function formatPm(pm: ProjectPm, templatePin?: string | null): string {
+  const parts = [`${pm.botUsername ? `@${pm.botUsername}` : pm.agentId}(PM)`];
+  if (pm.botId) parts.push(pm.botId);
+  const rev = pm.templateRev?.slice(0, 7);
+  const behind = rev && templatePin && !templatePin.startsWith(pm.templateRev!) ? ` ↑${templatePin.slice(0, 7)}` : "";
+  parts.push(`[${rev ?? "?"}${behind}]`);
+  return parts.join(" ");
 }
 
 /**
@@ -70,12 +138,14 @@ export { findProjectRoot };
 export function readPromptFacts(root: string, now?: Date): PromptFacts {
   let slug = basename(root);
   let identifier: string | undefined;
+  let agents: unknown;
   try {
     const manifest = JSON.parse(readFileSync(join(root, ".project.json"), "utf8")) as Record<string, unknown>;
     const projectId = manifest.project_id ?? manifest.project_slug;
     if (typeof projectId === "string" && projectId.trim()) slug = projectId.trim().toLowerCase();
     const provider = manifest.ticket_provider as Record<string, unknown> | undefined;
     if (provider && typeof provider.identifier === "string" && provider.identifier) identifier = provider.identifier;
+    agents = manifest.agents;
   } catch {
     // A malformed manifest still identifies a project; the directory name is a
     // truthful fallback and keeps the prompt line from vanishing confusingly.
@@ -88,10 +158,11 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
     identifier,
     age: activity.updatedUnix ? activity.compact : undefined,
     active: activity.active,
+    pm: readProjectPm(root, slug, agents),
   };
 }
 
-/** `pjangler (PJAN) · 3m · <candy> 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m` — deliberately terse; a prompt is not a report. */
+/** `pjangler (PJAN) · 3m · @pjangler_pm_bot(PM) 8538501729 [c738f69] · <candy> 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m` — deliberately terse; a prompt is not a report. */
 export function formatPromptLine(facts: PromptFacts, nowMs: number = Date.now()): string {
   const parts = [facts.slug];
   // The board prefix is context, not a competing identity. PJAN-80 collapsed
@@ -105,6 +176,8 @@ export function formatPromptLine(facts: PromptFacts, nowMs: number = Date.now())
   if (facts.identifier) parts.push(`(${facts.identifier})`);
   const segments = [parts.join(" ")];
   if (facts.age) segments.push(facts.age);
+  // The PM is the project's own employee: identity, so it precedes the pipeline machinery.
+  if (facts.pm) segments.push(formatPm(facts.pm, facts.templatePin));
   // The pipeline segments sit after the age: identity first, then the 33GOD machinery around it.
   // Each is omitted (never guessed) when its source did not answer or the cache has expired.
   if (facts.candybars) segments.push(formatCandybars(facts.candybars));

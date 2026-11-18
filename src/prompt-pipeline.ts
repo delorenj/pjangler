@@ -97,6 +97,12 @@ export interface PipelineCache {
   candybars: CandybarCounts | null;
   /** null = Redis did not answer (the segment is hidden, never guessed). */
   crank: CrankState | null;
+  /**
+   * The hermes-agent-template commit Flume currently pins (its committed gitlink). A PM whose
+   * role manifest records an older `template_rev` is shown as behind. Absent/null = not known, and
+   * the PM segment then shows the desk's own revision without judging it.
+   */
+  templatePin?: string | null;
 }
 
 /** `$PJ_PROMPT_CACHE_DIR`, else `$XDG_CACHE_HOME/pjangler/prompt`, else `~/.cache/pjangler/prompt`. */
@@ -157,6 +163,7 @@ export function readPipelineCache(path: string, root: string): PipelineCache | u
       root: parsed.root,
       candybars: isCounts(parsed.candybars) ? parsed.candybars : null,
       crank: isCrank(parsed.crank) ? parsed.crank : null,
+      ...(typeof parsed.templatePin === "string" && /^[0-9a-f]{40}$/.test(parsed.templatePin) ? { templatePin: parsed.templatePin } : {}),
     };
   } catch {
     return undefined;
@@ -164,12 +171,12 @@ export function readPipelineCache(path: string, root: string): PipelineCache | u
 }
 
 /** The segments a cache is fit to show at `nowMs`: nothing once it has expired. */
-export function freshSegments(cache: PipelineCache | undefined, nowMs: number): Pick<PipelineCache, "candybars" | "crank"> {
+export function freshSegments(cache: PipelineCache | undefined, nowMs: number): Pick<PipelineCache, "candybars" | "crank" | "templatePin"> {
   if (!cache) return { candybars: null, crank: null };
   const age = nowMs - cache.writtenAtMs;
   // A clock that went backwards (or a cache from the future) is not trusted either.
   if (age > PIPELINE_EXPIRE_AFTER_MS || age < -PIPELINE_REFRESH_AFTER_MS) return { candybars: null, crank: null };
-  return { candybars: cache.candybars, crank: cache.crank };
+  return { candybars: cache.candybars, crank: cache.crank, ...(cache.templatePin ? { templatePin: cache.templatePin } : {}) };
 }
 
 export function needsRefresh(cache: PipelineCache | undefined, nowMs: number): boolean {

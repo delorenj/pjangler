@@ -178,10 +178,20 @@ pane, where it prints the pane's crank segment alone: crank mode belongs to the
 pane, not the project.
 
 ```
-pjangler (PJAN) · 3m · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
+pjangler (PJAN) · 3m · @pjangler_pm_bot(PM) 8538501729 [c738f69] · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
 ```
 
-After the slug, board prefix and age come two 33GOD pipeline segments, crank last:
+After the slug, board prefix and age comes the project's PM, when `.project.json`
+`agents` declares one (role `pm`; `<slug>-pm` first): its Telegram bot handle,
+the bot's ID, and in brackets the hermes-agent-template commit its role
+manifest (`<role_dir>/role.yaml`, `template_rev`) was rendered or last refreshed
+from. `[c738f69 ↑b5aa431]` means Flume now pins a newer template (the committed
+`templates/hermes-agent` gitlink in `$FLUME_ROOT`, default `~/code/33GOD/flume`,
+read by the background refresher); `flume remediate hermes.pm-scaffold` brings
+the desk up and moves the stamp. `[?]` is a manifest rendered before the stamp
+existed. A PM with no bot is shown by its employee ID.
+
+Then two 33GOD pipeline segments, crank last:
 
 - `🍬 3/124` — candybars registered (non-archived) for this repo / in the whole
   Candybar registry (`GET $CANDYBAR_API_URL/candybars`, default
