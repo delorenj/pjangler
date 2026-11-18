@@ -1,0 +1,16 @@
+# PJAN-57 independent SPEC re-review
+
+**Candidate:** `dfaedd582b92ac1aba8459791f0111e506ac873a` (documentation/evidence only; clean worktree). **Evidence/documentation verdict: PASS. Ticket closeability: NO.** Read-only bounded review; no tests, board actions, product edits, merge, or publication.
+
+## Findings
+
+- The two prior SPEC corrections are present: `PJAN-57.md` criterion 5 identifies `.kimi/skills` as a Skillex-managed alias, distinct from the declared `.kimi-code` BMAD projection and `.zcode`/excluded `.zencoder`; criterion 4 and `docs/development-guide.md` distinguish a comment-only `.env.op` script no-op from PJAN-147's explicit `"secrets": {"materialize_env": false}` removal of managed hook and materializer even with active references.
+- Prior QUALITY accuracy issues are corrected: the tree probe describes regular-file bytes and symlink link text, explicitly **not** target bytes; `npm test` is documented as network-dependent; the published-package digest and decoded attestation are not called cryptographic signature verification. The PJAN-166 assertion is accurately described as a failed metadata assertion with an unknown original response, not proof that `6.3.1-next.13` is unpublished.
+- The tracked `PJAN-57/receipts/` logs and numeric exit files, `receipt-manifest.json` with source/redacted hashes, reproducible probe builder, sanitized historical workflow result, and linked initial FIX_REQUIRED reviews replace ephemeral scratch-only references. The receipt summaries retain both failed aggregate results, and the rerun log records **118/120, exit 1** with PJAN-166 and `crank-arbiter-drift`. These are evidence of execution, not a fresh pass. The initial reviews are correctly labeled as reviews of `7db9630`, not of this SHA.
+- Seven-criterion ledger is accurate within the stated fixtures and scope: lifecycle/dispatch and packed Copier init/audit/idempotence, secret safety and supported roots have focused green receipts; historical v1.3.0 publication is not conflated with a current 1.5.47 release. No reverse recipe migration, real 1Password run, or fresh remote publication is falsely asserted. No candidate-owned SPEC correction remains.
+
+## Ticket gate
+
+**Do not close PJAN-57 yet.** Criterion 6 remains open despite this SPEC PASS: fresh aggregate `npm test` is red (118/120). PJAN-166's metadata-dependent boundary assertion and the external installed crank-arbiter/prelude drift require their respective owners/PM to diagnose or explicitly adjudicate gate applicability, with an applicable recorded outcome. Obtain the independent corrected-candidate QUALITY verdict; this private SPEC artifact also needs a durable ticket/review link if required for closeout. `test:bmad-config-authority` has a green receipt; a fresh remote publish gate was not run and no new npm publication is required solely to accept accurate documentation. The corrected evidence can be landed without implying ticket closeout or waiving unrelated failures.
+
+**Limits:** Relied on existing bounded redacted receipts, prior source review and current diff; did not rerun long tests, independently validate the original unsaved npm metadata payload, or cryptographically validate an attestation. No source or test changes requested.
