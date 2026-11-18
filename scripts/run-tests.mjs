@@ -135,6 +135,7 @@ const SUITES = [
   "tests/pjan-75-regressions.mjs",
   "tests/pjan-76-regressions.mjs",
   "tests/pjan-87-board-read-regressions.mjs",
+  "tests/pjan-17-provider-parity-regressions.mjs",
   "tests/board-schema-regressions.mjs",
   "tests/pjan-126-gitignore-policy-regressions.mjs",
   "tests/skillex-init-regressions.mjs",

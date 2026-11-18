@@ -1484,21 +1484,35 @@ export function repoPathNamesRoot(value: unknown, repoRoot: string, homeDir: str
   return resolve(homeDir, value.slice(2)) === resolve(repoRoot);
 }
 
+function projectProviderProblem(ctx: Context): string | undefined {
+  const project = readProjectJson(ctx);
+  const binding = project?.ticket_provider as Record<string, unknown> | undefined;
+  const type = binding?.type ?? (project?.ticket_provider === undefined ? discoverRoles(ctx.repoRoot)[0]?.ticketProviderName : undefined);
+  if (type === undefined || type === null || type === "" || type === "none") return undefined;
+  if (type === "plane" || type === "trello") return undefined;
+  return `Unsupported ticket provider: ${String(type)}. Supported providers: plane, trello; select a supported binding explicitly; existing records were not changed`;
+}
+
 function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped: string[]; unprovisioned: string[] } {
   const roles = discoverRoles(ctx.repoRoot);
   const existing = readProjectJson(ctx) ?? {};
   const slug = normalizeProjectId(existing.project_id ?? existing.project_slug ?? slugifyRepoName(basename(ctx.repoRoot)));
   const firstRole = roles[0];
-  const ticketProvider = {
-    ...(existing.ticket_provider as Record<string, unknown> | undefined),
-    type: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.type ?? firstRole?.ticketProviderName ?? "plane") || "plane"),
-    workspace: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
-    identifier: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
-    board_id: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
-    state: String(((existing.ticket_provider as Record<string, unknown> | undefined)?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
-  };
-  delete (ticketProvider as Record<string, unknown>).board_url;
-  if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
+  const binding = existing.ticket_provider as Record<string, unknown> | undefined;
+  const providerType = binding?.type ?? (existing.ticket_provider === undefined ? firstRole?.ticketProviderName : undefined);
+  const supported = providerType === "plane" || providerType === "trello";
+  const ticketProvider: Record<string, unknown> = supported ? {
+    ...binding,
+    type: providerType,
+    workspace: String((binding?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
+    identifier: String((binding?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
+    board_id: String((binding?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
+    state: String((binding?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
+  } : binding ?? { type: "none", state: "skipped" };
+  if (supported) {
+    delete ticketProvider.board_url;
+    if (ticketProvider.board_id && ticketProvider.state === "planned") ticketProvider.state = "linked";
+  }
   const existingAgents = (existing.agents as Record<string, { role?: string; role_dir?: string; [key: string]: unknown }> | undefined) ?? {};
   const discoveredAgents: Record<string, { role: string; role_dir: string }> = Object.fromEntries(
     roles.map((role) => [
@@ -1582,6 +1596,8 @@ function projectJsonFinding(ctx: Context): AuditFinding {
   const details: string[] = [];
   const data = readProjectJson(ctx);
   const roles = discoverRoles(ctx.repoRoot);
+  const providerProblem = projectProviderProblem(ctx);
+  if (providerProblem) return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: providerProblem, details: [], fixable: false };
   if (!existsSync(projectPath)) {
     return { id: "sot.project-json", title: "Canonical .project.json", status: "fail", summary: ".project.json missing", details: [], fixable: true };
   }
@@ -1625,11 +1641,12 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     details.push(...declaredDetails);
   }
   const ticketProvider = (data.ticket_provider as Record<string, unknown> | undefined) ?? {};
-  for (const key of ["type", "workspace", "identifier", "board_id", "state"]) {
+  const unbound = ticketProvider.type === "none" && ticketProvider.state === "skipped";
+  for (const key of unbound ? ["type", "state"] : ["type", "workspace", "identifier", "board_id", "state"]) {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
-  if ("board_url" in ticketProvider) details.push("ticket_provider.board_url should be removed; derive it from provider/workspace/board_id");
-  if (!ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
+  if (!unbound && "board_url" in ticketProvider) details.push("ticket_provider.board_url should be removed; derive it from provider/workspace/board_id");
+  if (!unbound && !ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
     details.push("ticket_provider.board_id missing even though legacy role.yaml contains a board binding");
   }
   // `automation.reconcile` is vestigial and is being removed fleet-wide. It
@@ -3778,6 +3795,8 @@ return [
     title: "Canonical .project.json",
     audit: projectJsonFinding,
     migrate: (ctx, finding) => {
+      const providerProblem = projectProviderProblem(ctx);
+      if (providerProblem) return { id: finding.id, title: finding.title, status: "blocked", summary: providerProblem, details: [], changedFiles: [] };
       const changedFiles: string[] = [];
       const blockedDetails: string[] = [];
       const droppedDetails: string[] = [];
@@ -4093,6 +4112,8 @@ return [
     id: "provenance.copier",
     title: ".copier-answers.yml provenance + drift report",
     audit: (ctx) => {
+      const providerProblem = projectProviderProblem(ctx);
+      if (providerProblem) return { id: "provenance.copier", title: ".copier-answers.yml provenance + drift report", status: "fail", summary: providerProblem, details: [], fixable: false };
       const details: string[] = [];
       const path = join(ctx.repoRoot, ".copier-answers.yml");
       const text = safeReadText(path);
@@ -4122,6 +4143,8 @@ return [
       };
     },
     migrate: (ctx, finding) => {
+      const providerProblem = projectProviderProblem(ctx);
+      if (providerProblem) return { id: finding.id, title: finding.title, status: "blocked", summary: providerProblem, details: [], changedFiles: [] };
       const changedFiles: string[] = [];
       const project = canonicalProjectJson(ctx);
       const path = join(ctx.repoRoot, ".copier-answers.yml");
@@ -4135,7 +4158,9 @@ return [
       document.set("_src_path", join(ctx.pjanglerRoot, "templates", "commonproject"));
       document.set("project_description", String(project.project_description));
       document.set("project_name", String(project.project_name));
-      document.set("ticket_provider", String(((project.ticket_provider as Record<string, unknown>)?.type ?? "plane")));
+      const providerType = (project.ticket_provider as Record<string, unknown>)?.type;
+      if (providerType === "plane" || providerType === "trello") document.set("ticket_provider", providerType);
+      else document.delete("ticket_provider");
       const body = String(document);
       const text = body.startsWith(COPIER_ANSWERS_HEADER) ? body : `${COPIER_ANSWERS_HEADER}\n${body}`;
       if (current !== text) {
@@ -5198,7 +5223,8 @@ function linkedPlaneBoard(ctx: Context): { boardId: string; workspace: string } 
   if (!provider || typeof provider !== "object") return { skip: "no ticket_provider binding" };
   const facts = provider as Record<string, unknown>;
 
-  const type = typeof facts.type === "string" ? facts.type.toLowerCase() : "plane";
+  if (typeof facts.type !== "string" || !facts.type.trim()) return { skip: "ticket provider type is missing or invalid; board schema requires explicit Plane binding" };
+  const type = facts.type.trim().toLowerCase();
   if (type !== "plane") return { skip: `ticket provider is ${type}; board schema is Plane-only` };
 
   const boardId = typeof facts.board_id === "string" ? facts.board_id.trim() : "";
