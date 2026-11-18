@@ -181,6 +181,11 @@ test("a binding that is not a linked Plane board never runs px", () => {
     ["planned", { ...linked, state: "planned" }, /board binding is "planned", not linked/],
     ["unbuilt", { type: "plane", workspace: WORKSPACE, state: "linked" }, /board is not created yet \(no board_id\)/],
     ["trello", { type: "trello", board_id: BOARD, state: "linked" }, /ticket provider is trello; board schema is Plane-only/],
+    ["linear", { ...linked, type: "linear" }, /ticket provider is linear/],
+    ["unknown", { ...linked, type: "unknown" }, /ticket provider is unknown/],
+    ["missing-type", { board_id: BOARD, state: "linked" }, /ticket provider type is missing or invalid/],
+    ["invalid-type", { ...linked, type: 42 }, /ticket provider type is missing or invalid/],
+    ["none", { ...linked, type: "none", state: "skipped" }, /ticket provider is none/],
   ];
   for (const [name, provider, summary] of cases) {
     repoWith(name, provider);
@@ -188,6 +193,10 @@ test("a binding that is not a linked Plane board never runs px", () => {
     assert.equal(finding.status, "skip", name);
     assert.match(finding.summary, summary, name);
     assert.deepEqual(calls, [], `${name}: px must not run`);
+    const before = readFileSync(join(work, name, "repo/.project.json"), "utf8");
+    const migrated = pj(name, join(work, name, "bin"), ["migrate", "board.schema", join(work, name, "repo")], { plan: { stdout: DIFFERING_PLAN } });
+    assert.deepEqual(migrated.calls, [], `${name}: migrate must not call px either`);
+    assert.equal(readFileSync(join(work, name, "repo/.project.json"), "utf8"), before);
   }
 });
 
