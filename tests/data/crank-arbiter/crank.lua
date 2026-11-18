@@ -60,6 +60,20 @@ local function decode_list(raw)
   return out
 end
 
+-- Registry reads never abort the caller: a key of the wrong type (an error reply) reads as ABSENT,
+-- so one malformed key fails closed for that key alone instead of failing every pane of the scan.
+local function rget(key)
+  local v = redis.pcall('GET', key)
+  if type(v) ~= 'string' then return nil end
+  return v
+end
+
+local function rhget(key, field)
+  local v = redis.pcall('HGET', key, field)
+  if type(v) ~= 'string' then return nil end
+  return v
+end
+
 -- The rule. keys: governing zcrank:tab:<key> names; owners: every spelling a pane
 -- override may sit under; pane: terminal_N (nil = tab level only).
 local function resolve(keys, owners, pane)
@@ -68,7 +82,7 @@ local function resolve(keys, owners, pane)
   if pane and pane ~= '' then
     local all_on = true
     for _, o in ipairs(owners) do
-      local v = redis.call('GET', 'zcrank:pane:' .. o .. ':' .. pane)
+      local v = rget('zcrank:pane:' .. o .. ':' .. pane)
       if v and v ~= '' then
         found = found + 1
         if v ~= '1' then all_on = false end
@@ -81,19 +95,19 @@ local function resolve(keys, owners, pane)
   if found == 0 and #keys > 0 then
     local all_on = true
     for _, k in ipairs(keys) do
-      if redis.call('HGET', 'zcrank:tab:' .. k, 'enabled') ~= '1' then all_on = false end
+      if rhget('zcrank:tab:' .. k, 'enabled') ~= '1' then all_on = false end
     end
     r.on, r.decided_by = all_on, 'tab'
   end
   local best
   for _, k in ipairs(keys) do
-    local i = interval_of(redis.call('HGET', 'zcrank:tab:' .. k, 'interval'))
+    local i = interval_of(rhget('zcrank:tab:' .. k, 'interval'))
     if i and (not best or INTERVALS[i] > INTERVALS[best]) then best = i end
   end
   if best then
     r.interval, r.inherited = best, false
   else
-    r.interval = interval_of(redis.call('HGET', 'zcrank:config', 'interval')) or DEFAULT_INTERVAL
+    r.interval = interval_of(rhget('zcrank:config', 'interval')) or DEFAULT_INTERVAL
     r.inherited = true
   end
   return r
@@ -168,30 +182,152 @@ local function registry_key(k)
   return type(k) == 'string' and string.sub(k, 1, 7) == 'zcrank:' and not string.find(k, '[%*%?]')
 end
 
+-- zcrank.py _norm for ASCII: lowercase, alphanumerics only (the engine's tab_key). Redis Lua runs
+-- in the C locale, so a non-ASCII letter is dropped here and kept there: such a tab just waits
+-- for the engine's next scan, as every tab did before.
+local function canon(s)
+  return (string.gsub(string.lower(s), '[^%w]', ''))
+end
+
+-- A tab op on key K: every pane whose tab is named K (tab_key == canon(K)) is governed by K from
+-- now on, exactly as the engine's next scan will find it (tab_keys_for). Adopting K here lets the
+-- re-resolve that follows show a never-seen tab ON at once, not five minutes later.
+local function adopt_key(key)
+  local c = canon(key)
+  if c == '' then return end
+  for _, hkey in ipairs(redis.call('SMEMBERS', IDX)) do
+    local v = redis.call('HMGET', hkey, 'pane', 'tab_key', 'keys', 'owners')
+    if v[1] and v[2] == c then
+      local kl = decode_list(v[3])
+      local has = false
+      for _, k in ipairs(kl) do if k == key then has = true end end
+      if not has then
+        kl[#kl + 1] = key
+        -- owners as the engine sends them (pane_owners): the keys first, then the tab's own name
+        local ol, seen = {}, {}
+        for _, o in ipairs(kl) do
+          if not seen[o] then ol[#ol + 1], seen[o] = o, true end
+        end
+        for _, o in ipairs(decode_list(v[4])) do
+          if not seen[o] then ol[#ol + 1], seen[o] = o, true end
+        end
+        redis.call('HSET', hkey, 'keys', sk.json_list(kl), 'owners', sk.json_list(ol))
+      end
+    end
+  end
+end
+
+-- What zcrank.py last_run() counts as a run (keep the two in step): a JSON object whose `state` is
+-- not one pjangler writes and whose `ts` parses as LOG_TS, datetime.strptime('%Y-%m-%dT%H:%M:%SZ'):
+-- a 4-digit year, 1-2 digit fields (strptime's %d also takes ' 8'), a real calendar date, sec <= 59.
+local PJ_LOG_STATES = { enabled = true, disabled = true, interval = true, renamed = true }
+local CRON_S, GRACE_S = 300, 300           -- zcrank.py CRON / GRACE
+
+local function days_in_month(y, m)
+  if m == 2 then
+    return ((y % 4 == 0 and y % 100 ~= 0) or y % 400 == 0) and 29 or 28
+  end
+  if m == 4 or m == 6 or m == 9 or m == 11 then return 30 end
+  return 31
+end
+
+local function log_ts_ms(ts)
+  if type(ts) ~= 'string' then return nil end
+  local Y, mo, d, H, Mi, S = string.match(ts,
+    '^(%d%d%d%d)%-(%d%d?)%-([ %d]?%d)T(%d%d?):(%d%d?):(%d%d?)Z$')
+  if not Y then return nil end
+  Y, mo, d, H, Mi, S = tonumber(Y), tonumber(mo), tonumber(d), tonumber(H), tonumber(Mi), tonumber(S)
+  if not d or Y < 1 or mo < 1 or mo > 12 or d < 1 or d > days_in_month(Y, mo)
+      or H > 23 or Mi > 59 or S > 59 then
+    return nil
+  end
+  local y = mo <= 2 and Y - 1 or Y                    -- days from civil (Hinnant)
+  local era = math.floor(y / 400)
+  local yoe = y - era * 400
+  local doy = math.floor((153 * ((mo + 9) % 12) + 2) / 5) + d - 1
+  local days = era * 146097 + yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy - 719468
+  return ((days * 86400) + H * 3600 + Mi * 60 + S) * 1000
+end
+
+local function beat_ms(raw)
+  local ok, d = pcall(cjson.decode, raw)
+  if not ok or type(d) ~= 'table' then return nil end
+  if type(d.state) == 'string' and PJ_LOG_STATES[d.state] then return nil end
+  return log_ts_ms(d.ts)
+end
+
+-- A beat row for key K moves last_run on every pane K governs, as the engine's next scan would
+-- (the newest run across every key's log; only tabs slower than the 5m tick track it at all), and
+-- next_due with it (zcrank.py schedule()): the prompt's countdown is right right after the beat.
+local function stamp_last_run(key, ran, now)
+  for _, hkey in ipairs(redis.call('SMEMBERS', IDX)) do
+    local v = redis.call('HMGET', hkey, 'pane', 'keys', 'last_run', 'interval')
+    local secs = INTERVALS[v[4] or '']
+    if v[1] and secs and secs > CRON_S and ran > (tonumber(v[3]) or 0) then
+      local governs = false
+      for _, k in ipairs(decode_list(v[2])) do if k == key then governs = true end end
+      if governs then
+        local ready = ran + (secs - GRACE_S) * 1000
+        local due = ''
+        if now < ready then due = math.ceil(ready / (CRON_S * 1000)) * CRON_S * 1000 end
+        sk.hset(hkey, { last_run = ran, next_due = due })
+      end
+    end
+  end
+end
+
+-- The fields each op needs as non-empty strings. Checked for EVERY op before the first write: a
+-- bad op used to write 'zcrank:tab:' (an empty key) or half a batch before failing.
+local OP_NEEDS = {
+  tab = { 'key' }, pane = { 'owner', 'pane' }, clear_panes = { 'owner' }, config = {},
+  log = { 'key', 'row' }, replace_log = { 'key' }, del = { 'key' },
+}
+
 -- FCALL crank_apply 0 <ops_json> <by>
 -- ops: a JSON list of
 --   {op="tab", key, enabled?=bool, interval?="5m"|..|"" (clear), root?=str,
 --    root_if_absent?=str, action?=str, interval_action?=str, ts?=iso}
 --       enabled/interval changes append the {ts,state,action} row pjangler and
 --       zcrankctl used to write themselves -- ONLY when the value changed.
+--       A change also adopts K into the governing keys of the panes whose tab K names.
 --   {op="pane", owner, pane, value="1"|"0"|"" (clear)}
 --   {op="clear_panes", owner}            DEL every zcrank:pane:<owner>:* override
 --   {op="config", interval}
---   {op="log", key, row}                 append a raw row (beat rows, renamed rows)
+--   {op="log", key, row}                 append a raw row (beat rows, renamed rows); a beat
+--                                        row also stamps last_run on the panes key governs
 --   {op="replace_log", key, rows=[...]}  replace a whole log atomically
 --   {op="del", key}                      DEL a zcrank:* registry key
--- Returns JSON {changed=<n>, results=[bool per op], edges=[...]}.
+-- Every op is validated before anything is written (error reply, nothing written).
+-- Returns JSON {changed=<n>, results=[bool per op], edges=[...]}. Only ops that can move the
+-- rule re-resolve the panes: a log row never does.
 local function crank_apply(keys, args)
   local ops = cjson.decode(args[1] or '[]')
+  if type(ops) ~= 'table' then return redis.error_reply('crank_apply: ops must be a JSON list') end
+  for i, op in ipairs(ops) do
+    if type(op) ~= 'table' then
+      return redis.error_reply('crank_apply: op ' .. i .. ' is not an object')
+    end
+    local need = OP_NEEDS[op.op]
+    if not need then
+      return redis.error_reply('crank_apply: unknown op ' .. sk.str(op.op) .. ' at ' .. i)
+    end
+    for _, f in ipairs(need) do
+      if type(op[f]) ~= 'string' or op[f] == '' then
+        return redis.error_reply('crank_apply: op ' .. i .. ' (' .. op.op .. '): ' .. f
+          .. ' must be a non-empty string')
+      end
+    end
+  end
   local by = args[2] or ''
   local now = sk.now_ms()
   local iso_now = sk.iso(now)
-  local results, changed = {}, 0
+  local results, changed, rule_changed = {}, 0, 0
   for i, op in ipairs(ops) do
     local did = false
     local kind = op.op
+    local moves_rule = true
     if kind == 'tab' then
-      local hkey = 'zcrank:tab:' .. sk.str(op.key)
+      local hkey = 'zcrank:tab:' .. op.key
       local cur = sk.hgetall(hkey)
       local ts = sk.present(op.ts) and sk.str(op.ts) or iso_now
       if sk.present(op.interval) then
@@ -225,8 +361,9 @@ local function crank_apply(keys, args)
         redis.call('HSET', hkey, 'root', sk.str(op.root_if_absent))
         did = true
       end
+      if did then adopt_key(op.key) end
     elseif kind == 'pane' then
-      local pkey = 'zcrank:pane:' .. sk.str(op.owner) .. ':' .. sk.str(op.pane)
+      local pkey = 'zcrank:pane:' .. op.owner .. ':' .. op.pane
       local want = sk.present(op.value) and sk.str(op.value) or ''
       local cur = redis.call('GET', pkey)
       if want == '' then
@@ -236,7 +373,7 @@ local function crank_apply(keys, args)
         did = true
       end
     elseif kind == 'clear_panes' then
-      local prefix = 'zcrank:pane:' .. sk.str(op.owner) .. ':'
+      local prefix = 'zcrank:pane:' .. op.owner .. ':'
       for _, k in ipairs(redis.call('KEYS', glob_escape(prefix) .. '*')) do
         if not string.find(string.sub(k, #prefix + 1), ':', 1, true) then
           redis.call('DEL', k)
@@ -250,27 +387,31 @@ local function crank_apply(keys, args)
         did = true
       end
     elseif kind == 'log' then
-      local lkey = 'zcrank:log:' .. sk.str(op.key)
-      redis.call('RPUSH', lkey, sk.str(op.row))
+      local lkey = 'zcrank:log:' .. op.key
+      redis.call('RPUSH', lkey, op.row)
       redis.call('LTRIM', lkey, -LOG_CAP, -1)
-      did = true
+      did, moves_rule = true, false
+      local ran = beat_ms(op.row)
+      if ran then stamp_last_run(op.key, ran, now) end
     elseif kind == 'replace_log' then
-      local lkey = 'zcrank:log:' .. sk.str(op.key)
+      local lkey = 'zcrank:log:' .. op.key
       redis.call('DEL', lkey)
       local rows = type(op.rows) == 'table' and op.rows or {}
       for _, row in ipairs(rows) do redis.call('RPUSH', lkey, sk.str(row)) end
       if #rows > 0 then redis.call('LTRIM', lkey, -LOG_CAP, -1) end
-      did = true
+      did, moves_rule = true, false
     elseif kind == 'del' then
       if registry_key(op.key) then did = redis.call('DEL', op.key) == 1 end
-    else
-      return redis.error_reply('crank_apply: unknown op ' .. sk.str(kind) .. ' at ' .. i)
+      moves_rule = string.sub(op.key, 1, 11) ~= 'zcrank:log:'
     end
     results[i] = did
-    if did then changed = changed + 1 end
+    if did then
+      changed = changed + 1
+      if moves_rule then rule_changed = rule_changed + 1 end
+    end
   end
   local edges = {}
-  if changed > 0 then reresolve_all(now, 'registry', by, edges) end
+  if rule_changed > 0 then reresolve_all(now, 'registry', by, edges) end
   return cjson.encode({ changed = changed, results = results, edges = edges })
 end
 
@@ -334,10 +475,14 @@ local function crank_scan(keys, args)
       local since = tonumber(cur.since)
       local info = { pane = pane, tab = sk.str(p.tab), tab_key = tab_key,
                      keys = sk.json_list(kl), owners = sk.json_list(ol) }
+      local holding = false
       if same and owners_unsure and not r.on and cur.on == '1'
           and (tonumber(cur.held) or 0) < HOLD and not gap then
-        -- The owner lookup failed: an OFF read only for want of it is held, not believed.
-        on, held = '1', (tonumber(cur.held) or 0) + 1
+        -- The owner lookup failed: an OFF read only for want of it is held, not believed. The
+        -- hold keeps the last GOOD resolution whole (its governing lists, decided_by, interval):
+        -- storing the empty lists made the next registry re-resolve read the pane unlisted OFF.
+        on, held, holding = '1', (tonumber(cur.held) or 0) + 1, true
+        info.keys, info.owners = cur.keys or '[]', cur.owners or '[]'
       elseif not same then
         local seed = tonumber(p.seed_since_ms)
         since = (r.on and seed and seed > 0 and seed <= now) and seed or now
@@ -353,13 +498,17 @@ local function crank_scan(keys, args)
         since, seq = now, seq + 1
         edge(hkey, cur, 'on', on, on, since, 'gap', seq)
       end
-      if same and cur.interval ~= r.interval and cur.interval ~= nil then
+      if same and not holding and cur.interval ~= r.interval and cur.interval ~= nil then
         seq = seq + 1
         edge(hkey, cur, 'interval', cur.interval, r.interval, since or now, 'scan', seq)
       end
       info.session = session
       info.on, info.since, info.seq, info.held = on, since or now, seq, held
-      info.decided_by, info.interval, info.inherited = r.decided_by, r.interval, bool01(r.inherited)
+      if holding then
+        info.decided_by, info.interval, info.inherited = cur.decided_by, cur.interval, cur.inherited
+      else
+        info.decided_by, info.interval, info.inherited = r.decided_by, r.interval, bool01(r.inherited)
+      end
       info.last_run = sk.present(p.last_run_ms) and sk.str(p.last_run_ms) or ''
       info.next_due = sk.present(p.next_due_ms) and sk.str(p.next_due_ms) or ''
       info.scan_ms = now
