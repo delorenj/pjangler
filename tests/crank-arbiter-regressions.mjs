@@ -46,7 +46,7 @@ function recordingShell(calls, { zcrankctl } = {}) {
   return (command, args, options) => {
     calls.push([command, ...args].join(" "));
     if (command === "zcrankctl") return zcrankctl ? zcrankctl(args) : { stdout: "", status: 127 };
-    const r = spawnSync(command, args, { encoding: "utf8", env: hermeticEnv(), ...(options?.input !== undefined ? { input: options.input } : {}) });
+    const r = spawnSync(command, args, { encoding: "utf8", env: hermeticEnv(), input: options?.input });
     if (r.error) return { stdout: "", status: 127, errorCode: r.error.code };
     return { stdout: r.stdout ?? "", status: r.status ?? 1, stderr: r.stderr ?? "" };
   };
