@@ -197,33 +197,32 @@ Then two 33GOD pipeline segments, crank last:
   Candybar registry (`GET $CANDYBAR_API_URL/candybars`, default
   `http://127.0.0.1:8700`; the project is the `project:<repo>` tag, where
   `<repo>` is the main checkout's basename, exactly as `candybar ls` resolves it).
-- `◌ crank off`, or `⚡ crank ↑3d4h ↻5m ⏳2m` — whether the crank beat may type
-  into **this pane**. The arbiter (`crank.lua`, Redis Functions library `crank`)
-  decides that; the prompt does not re-derive it. In a zellij pane the segment
-  reads the arbiter's resolved hash directly, `HGETALL crank:p:<session>:terminal_<N>`
-  (plus the engine heartbeat `crank:engine`), over a tiny builtins-only RESP2
-  client with a hard 150ms timeout, at the same endpoint `pj crank` uses
-  (`ZCRANK_REDIS_HOST` / `ZCRANK_REDIS_PORT`, default `127.0.0.1:6379`). There is
-  no cache and no background refresh for it: it is what Redis says right now.
-  Outside a zellij pane it shows the project's own switch, as `pj crank`
-  resolves it (`FCALL_RO crank_resolve`), through the cache below. When ON, three
-  numbers follow:
-  - `↑3d4h` how long crank has been ON **without a break** (`22m`, `5h22m`,
-    `3d4h`, `1w3d`): the hash's `since`, which the arbiter restarts when the pane
-    closes, crank goes OFF for it, its tab is renamed, or the engine stops
-    scanning. Outside a pane: the oldest `since` among the ON panes the tab
-    governs. Unknown = left out.
-  - `↻5m` the interval the beat visits the tab at (the hash's `interval`).
-  - `⏳2m` the countdown to the next crank: minutes, then seconds (`42s`) in the
-    last minute, then `now`. Worked out at render time from the interval and the
-    pane's `last_run`, so it keeps counting between prompts.
+- `⚡ crank ↑3d4h ↻5m ⏳2m` — this pane's agent session has a crank v2 binding
+  (`pj crank sessions`): one Candybar-clocked crank per live agent session. In a
+  zellij pane the segment asks the arbiter (`crank.lua`, Redis Functions library
+  `crank`) directly: `FCALL_RO crank_get` follows the pane pointer to the binding,
+  pipelined with the legacy reads over a tiny builtins-only RESP2 client with a
+  hard 150ms timeout, at the same endpoint `pj crank` uses (`ZCRANK_REDIS_HOST` /
+  `ZCRANK_REDIS_PORT`, default `127.0.0.1:6379`). No cache, no background
+  refresh: it is what Redis says right now. Outside a zellij pane it shows the
+  project's crank through the cache below. When ON, three numbers follow:
+  - `↑3d4h` how long the crank has been ON **without a break** (`22m`, `5h22m`,
+    `3d4h`, `1w3d`): the binding's `since`. Unknown = left out.
+  - `↻5m` the binding's interval.
+  - `⏳2m` the countdown to the next fire: minutes, then seconds (`42s`) in the
+    last minute, then `now`, read from the binding's own cron at render time, so
+    it keeps counting between prompts.
+
+  `⚠ crank stalled 25m` means the binding has not fired for max(15m,
+  2×interval + 5m), or its hash expired under a live pane pointer (see the
+  `33god-hub` crank sub-skill, `references/health.md`).
 
   The legacy engine is retired by crank v2 (PJAN-216): a pane's legacy hash is
   believed only while the engine heartbeat (`crank:engine`) is from this zellij
   session and no older than 15 minutes. Once it goes quiet the frozen hashes print
   no segment at all, never `⚠ crank stalled` and never a permanent
-  `◌ crank off`. `⚠ crank stalled` belongs to a v2 binding whose crank stopped
-  firing. A pane with no hash is simply not watched, so it prints no segment.
+  `◌ crank off`; under a fresh heartbeat a legacy OFF pane reads `◌ crank off`.
+  A pane with no binding and no hash is simply not watched, so it prints no segment.
   Redis unreachable (or slower than the budget) prints no crank segment either:
   an unreachable Redis is never read as OFF.
 
