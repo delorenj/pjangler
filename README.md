@@ -69,6 +69,24 @@ True `SessionStart` and `SessionEnd` hooks are projected separately from the
 project-scoped hook masters. Their per-repository policy stays fail-open and
 disabled until explicitly enabled in `.project.json`.
 
+## Project init preview
+
+`pj init <name> --dry-run --json --registry <local-registry>` returns the usual
+registry, manifest, board and proposed-operation plan plus `affectedPaths`:
+target-relative `path`, `type` (`file`, `symlink`, `directory`) and `operation`
+(`create`, `modify`, `remove`). Text output shows the same list. This includes
+hidden and ignored scaffold output, Copier tasks, and enabled local lifecycle
+steps. Sync of an already scaffolded repo does not re-render CommonProject.
+
+Preview rehearses the same ProjectRecipe on a disposable copy inside a networkless,
+read-only mount namespace. It does not mutate the target, registry, board, or
+operator's home. This requires Linux `bwrap`, local installer inputs and a local
+registry snapshot; if an enabled step cannot be safely rehearsed, init exits
+nonzero with `Incomplete init preview` rather than publishing an incomplete list.
+External board/notebook effects cannot be predicted locally; their high-level
+plan remains visible, but no remote call is made. Review the inventory against
+the same starting tree and options before using `--apply`.
+
 ## Parity audit
 
 BMAD recipes support an optional owner-provided g33 companion for registered

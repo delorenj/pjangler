@@ -15,6 +15,7 @@ import {
 } from "./utils/registry";
 import { cancel, multiselect, text, isCancel } from "@clack/prompts";
 import { recipeRegistry, lifecycleContext, runAudit, runMigration, runMigrationForRules, formatAuditReport, formatMigrationReport, formatRulePicker, getParityRuleIds, runMomoReadinessAudit, formatMomoReadinessReport, type AuditFinding } from "./parity/index";
+import { previewProjectInit } from "./project/preview";
 import {
   boardDelivery,
   doctorProjectRegistry,
@@ -789,25 +790,34 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
       };
 
       if (!apply) {
-        const notebookPlan = projectNotebookDryRunProjection(plan, target.syncMode ? "sync" : "create");
+        const mode = target.syncMode ? "sync" : "create";
+        const notebookPlan = projectNotebookDryRunProjection(plan, mode);
+        const proposedOperations = [
+          ...plan.actions
+            .filter((action) => actionNeedsRun(plan, action.kind, target.syncMode))
+            .map((action) => action.kind),
+          ...(preAudit?.rules ?? [])
+            .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
+            .map((rule) => `parity:${rule.id}`),
+        ];
+        const affectedPaths = previewProjectInit(plan, mode, proposedOperations
+          .filter((operation) => operation.startsWith("parity:"))
+          .map((operation) => operation.slice("parity:".length)));
         const payload = {
           ...plan,
-          mode: target.syncMode ? "sync" : "create",
+          mode,
           audit: preAudit,
           board: boardDelivery(plan),
           notebookPlan,
-          proposedOperations: [
-            ...plan.actions
-              .filter((action) => actionNeedsRun(plan, action.kind, target.syncMode))
-              .map((action) => action.kind),
-            ...(preAudit?.rules ?? [])
-              .filter((rule) => rule.fixable && rule.status !== "pass" && rule.status !== "skip")
-              .map((rule) => `parity:${rule.id}`),
-          ],
+          proposedOperations,
+          affectedPaths,
         };
         if (options.json) console.log(JSON.stringify(payload, null, 2));
         else {
           console.log(formatProjectInitPlan(plan));
+          console.log(`  ${bold("Affected paths")} ${dim(`(${affectedPaths.length})`)}`);
+          for (const entry of affectedPaths) console.log(`     ${cyan(glyph.bullet)} ${entry.operation} ${entry.type} ${entry.path}`);
+          console.log("");
           console.log(`  ${bold("Project Notebook")} ${dim(`(${notebookPlan.phases.length} phases)`)}`);
           for (const phase of notebookPlan.phases) {
             console.log(`     ${cyan(glyph.bullet)} ${phase.id} ${dim(`[${phase.scope}/${phase.status}] ${phase.summary}`)}`);

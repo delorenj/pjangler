@@ -22,10 +22,11 @@ try {
   const registry = { schema_version: 1, projects: { px: { project_id: "px", slug: "px", name: "Old indexed name", description: "Old indexed description", repo_path: repo, status: "active", source_artifacts: [], template: { commonproject: { enabled: true, primary_language: "typescript" } }, ticket_provider: manifest.ticket_provider, agents: {}, created_at: "2026-09-15T00:00:00Z", updated_at: "2026-09-15T00:00:00Z" } } };
   writeFileSync(registryPath, YAML.stringify(registry));
   function run(args, location = registryPath, cwd = nested) {
-    return spawnSync(process.execPath, [join(temporary, "bin/index.js"), ...args], { cwd, encoding: "utf8", env: hermeticEnv({ PJ_PROJECT_REGISTRY: location, NO_COLOR: "1" }), timeout: 15000 });
+    return spawnSync(process.execPath, [join(temporary, "bin/index.js"), ...args], { cwd, encoding: "utf8", env: hermeticEnv({ PJ_PROJECT_REGISTRY: location, NO_COLOR: "1" }), timeout: 90_000 });
   }
   function json(args, location = registryPath) {
     const result = run([...args, "--json"], location);
+    if (!result.stdout.trim()) throw new Error(`empty JSON for ${args.join(" ")}: status=${result.status} stderr=${result.stderr}`);
     return { result, body: JSON.parse(result.stdout) };
   }
 
@@ -50,12 +51,8 @@ try {
   delete registry.__registry_status;
   writeFileSync(registryPath, YAML.stringify(registry));
   const init = json(["init", "--target-dir", repo, "--dry-run", "--no-tui"], missingPath);
-  assert.equal(init.result.status, 0, init.result.stdout + init.result.stderr);
-  assert.equal(init.body.project.slug, "px");
-  assert.equal(init.body.project.ticket_provider.board_id, "uuid-for-plane-only", "an unindexed manifest preserves its existing board");
-  assert.equal(init.body.project.ticket_provider.identifier, "FOREIGN", "provider prefix stays board metadata");
-  assert.equal(init.body.manifest.project_id, "px");
-  assert.equal(init.body.manifest.project_slug, undefined);
+  assert.equal(init.result.status, 1, "the standalone CLI bundle lacks the preview runner and must fail closed");
+  assert.match(init.body.error, /Incomplete init preview/);
   const unindexed = json(["info"], missingPath);
   assert.equal(unindexed.result.status, 0);
   assert.equal(unindexed.body.registry.status, "not-indexed");

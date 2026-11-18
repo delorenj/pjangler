@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import YAML from "yaml";
-import { createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
+import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 
 // PJAN-49: `project init` built its copier command with no `--vcs-ref`. Whenever
 // templates/commonproject resolves to a git repo *root* — a standalone clone, so
@@ -63,6 +63,9 @@ const suiteEnv = hermeticEnv({
   SKILLEX_REGISTRY_ROOT: skillRegistry,
   PJ_SKILLS_REGISTRY_ROOT: skillRegistry,
   XDG_STATE_HOME: join(tmp, "state"),
+  PJ_BMAD_INSTALLER: createBmadInstallerFixture(skillRegistry),
+  PJ_AGENT_HOOKS_LAYER: "false",
+  GIT_CEILING_DIRECTORIES: tmp,
   PATH: `${createSkillexMiseFixture(tmp)}:${process.env.PATH}`,
   MISE_YES: "1",
 });
