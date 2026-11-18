@@ -1499,15 +1499,18 @@ function canonicalProjectJson(ctx: Context): Record<string, unknown> & { dropped
   const slug = normalizeProjectId(existing.project_id ?? existing.project_slug ?? slugifyRepoName(basename(ctx.repoRoot)));
   const firstRole = roles[0];
   const binding = existing.ticket_provider as Record<string, unknown> | undefined;
-  const providerType = binding?.type ?? (existing.ticket_provider === undefined ? firstRole?.ticketProviderName : undefined);
+  // A declared canonical provider owns even its empty board identity. Only a
+  // legacy role-only manifest may inherit identity from role.yaml.
+  const legacyRoleOnly = existing.ticket_provider === undefined;
+  const providerType = binding?.type ?? (legacyRoleOnly ? firstRole?.ticketProviderName : undefined);
   const supported = providerType === "plane" || providerType === "trello";
   const ticketProvider: Record<string, unknown> = supported ? {
     ...binding,
     type: providerType,
-    workspace: String((binding?.workspace ?? firstRole?.planeWorkspace ?? "") || ""),
-    identifier: String((binding?.identifier ?? firstRole?.ticketProviderIdentifier ?? "") || ""),
-    board_id: String((binding?.board_id ?? firstRole?.ticketProviderBoardId ?? "") || ""),
-    state: String((binding?.state ?? (firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
+    workspace: String((binding?.workspace ?? (legacyRoleOnly ? firstRole?.planeWorkspace : undefined) ?? "") || ""),
+    identifier: String((binding?.identifier ?? (legacyRoleOnly ? firstRole?.ticketProviderIdentifier : undefined) ?? "") || ""),
+    board_id: String((binding?.board_id ?? (legacyRoleOnly ? firstRole?.ticketProviderBoardId : undefined) ?? "") || ""),
+    state: String((binding?.state ?? (legacyRoleOnly && firstRole?.ticketProviderBoardId ? "linked" : "planned")) || "planned"),
   } : binding ?? { type: "none", state: "skipped" };
   if (supported) {
     delete ticketProvider.board_url;
@@ -1646,7 +1649,7 @@ function projectJsonFinding(ctx: Context): AuditFinding {
     if (!(key in ticketProvider)) details.push(`ticket_provider.${key} missing`);
   }
   if (!unbound && "board_url" in ticketProvider) details.push("ticket_provider.board_url should be removed; derive it from provider/workspace/board_id");
-  if (!unbound && !ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
+  if (data.ticket_provider === undefined && !unbound && !ticketProvider.board_id && roles.some((role) => role.ticketProviderBoardId)) {
     details.push("ticket_provider.board_id missing even though legacy role.yaml contains a board binding");
   }
   // `automation.reconcile` is vestigial and is being removed fleet-wide. It
