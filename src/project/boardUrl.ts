@@ -188,7 +188,7 @@ export function boardUrl(provider: TicketProviderFacts | undefined, options: Boa
   if (!provider) return undefined;
   const env = options.env ?? process.env;
   const home = options.home ?? homedir();
-  const type = (provider.type || "plane").trim().toLowerCase();
+  const type = provider.type?.trim().toLowerCase();
   const boardId = provider.board_id?.trim();
   if (!boardId) return undefined;
 

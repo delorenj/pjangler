@@ -130,7 +130,7 @@ export type ProjectIdentifierSource = (typeof PROJECT_IDENTIFIER_SOURCES)[number
  * and why "is this board real?" has to be a separate question from "did the
  * provider name it?".
  */
-export const IDENTIFIER_ASSIGNING_PROVIDERS = ["plane", "linear"] as const;
+export const IDENTIFIER_ASSIGNING_PROVIDERS = ["plane"] as const;
 
 export function providerAssignsIdentifiers(type: string | undefined): boolean {
   return (IDENTIFIER_ASSIGNING_PROVIDERS as readonly string[]).includes((type ?? "").trim());
@@ -955,6 +955,9 @@ export function provisionTicketProviderBoard(
   env: NodeJS.ProcessEnv = process.env
 ): TicketProviderBoardResult {
   const provider = action.provider;
+  if (provider !== "plane" && provider !== "trello") {
+    return { ok: false, skipped: false, logs: [], error: `Unsupported ticket provider: ${provider}. Supported providers: plane, trello` };
+  }
   const groups = ticketProviderKeyGroups(provider, action.workspace);
   const { values } = resolveTicketProviderCredentials({
     keys: ticketProviderKeyVars(provider, action.workspace),

@@ -28,7 +28,7 @@ import {
 import { PJANGLER_VERSION } from "../utils/version";
 
 /** Providers a `.project.json` may bind a board to. */
-export const BOARD_PROVIDERS = ["plane", "trello", "linear"] as const;
+export const BOARD_PROVIDERS = ["plane", "trello"] as const;
 export type BoardProvider = (typeof BOARD_PROVIDERS)[number];
 
 /**

@@ -193,9 +193,9 @@ console.log("resolution: outside a project fails with the directory it searched 
   assert.ok(error.message.includes(outside), "the message must name where the search started");
 }
 
-console.log("resolution: every provider is accepted; anything else is named and refused");
+console.log("resolution: Plane and Trello are accepted; anything else is named and refused");
 {
-  assert.deepEqual([...BOARD_PROVIDERS], ["plane", "trello", "linear"]);
+  assert.deepEqual([...BOARD_PROVIDERS], ["plane", "trello"]);
   assert.equal(resolveProvider(resolveProject(trelloRepo)), "trello");
 
   const missing = caught(() => resolveProvider(resolveProject(unboundRepo)));
@@ -203,7 +203,10 @@ console.log("resolution: every provider is accepted; anything else is named and 
 
   const unknown = caught(() => resolveProvider(resolveProject(unknownRepo)));
   assert.match(unknown.message, /unsupported ticket_provider\.type "jira"/);
-  assert.match(unknown.message, /plane, trello, linear/, "the message must list what IS supported");
+  assert.match(unknown.message, /plane, trello/, "the message must list what IS supported");
+  const linearRepo = makeRepo("linear-repo", { project_slug: "old", ticket_provider: { type: "linear", board_id: "old-board" } });
+  assert.match(caught(() => resolveProvider(resolveProject(linearRepo))).message, /unsupported ticket_provider\.type "linear".*plane, trello/);
+  assert.match(caught(() => resolveBoardContext(linearRepo)).message, /unsupported ticket_provider\.type "linear"/);
 }
 
 // ---------------------------------------------------------------------------

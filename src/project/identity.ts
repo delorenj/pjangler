@@ -1242,7 +1242,7 @@ export function formatIdentityReport(report: IdentityReport): string {
  *   board_confirmed_at   stamped whenever ANY provider confirms the board is
  *                        real. A link rests on this.
  *   identifier_source    "provider" only where the provider ASSIGNS keys
- *                        (Plane, Linear). Trello assigns none, so its key stays
+ *                        (Plane). Trello assigns none, so its key stays
  *                        a proposal forever and that is not a defect.
  */
 export interface ProjectLinkResult {
@@ -1322,7 +1322,7 @@ export async function linkProjectBoard(options: {
     ? (JSON.parse(readFileSync(manifestFile, "utf8")) as Record<string, unknown>).ticket_provider
     : undefined;
   const current = project.ticket_provider;
-  const type = (current.type || "plane").trim().toLowerCase();
+  const type = current.type?.trim().toLowerCase();
   const workspace = (options.workspace ?? current.workspace ?? DEFAULT_PLANE_WORKSPACE).trim();
   const now = (options.now ?? new Date()).toISOString();
 
