@@ -34,7 +34,7 @@ if (built.status !== 0) {
   console.error(`failed to bundle the crank kit:\n${built.stderr}`);
   process.exit(1);
 }
-const { buildCrankContext, crankTimestamp, disableCrank, enableCrank, redis, setCrankInterval, storedTabKeys, storedTabRoots, snapshotCrank, keysNamingTab } = await import(kitOut);
+const { ARGV_LIMIT_BYTES, defaultShell, buildCrankContext, crankTimestamp, disableCrank, enableCrank, redis, setCrankInterval, storedTabKeys, storedTabRoots, snapshotCrank, keysNamingTab } = await import(kitOut);
 
 const rs = await startThrowawayRedis();
 const bare = await startThrowawayRedis({ arbiter: false });
@@ -43,11 +43,11 @@ let failed;
 
 /** A Shell that runs the real redis-cli and records every command line (zcrankctl is its own seam). */
 function recordingShell(calls, { zcrankctl } = {}) {
-  return (command, args) => {
+  return (command, args, options) => {
     calls.push([command, ...args].join(" "));
     if (command === "zcrankctl") return zcrankctl ? zcrankctl(args) : { stdout: "", status: 127 };
-    const r = spawnSync(command, args, { encoding: "utf8", env: hermeticEnv() });
-    if (r.error) return { stdout: "", status: 127 };
+    const r = spawnSync(command, args, { encoding: "utf8", env: hermeticEnv(), ...(options?.input !== undefined ? { input: options.input } : {}) });
+    if (r.error) return { stdout: "", status: 127, errorCode: r.error.code };
     return { stdout: r.stdout ?? "", status: r.status ?? 1, stderr: r.stderr ?? "" };
   };
 }
@@ -217,6 +217,48 @@ try {
     assert.throws(() => gone.resolve({ keys: ["x"] }), /not answering/);
     const store = redis({ port: rs.port });
     assert.throws(() => store.apply([{ op: "nope" }]), /Redis error reply at .*unknown op nope at 1/);
+  }
+  console.log("a rename that merges a log past Linux's 128 KiB per-argument limit still lands, in ONE atomic FCALL (pjangler-4)");
+  {
+    flush(rs);
+    // 400 rows of ~600 bytes: the merged replace_log op alone is ~250 KB, which no single argv string can carry
+    const bigRows = Array.from({ length: 400 }, (_, i) => row(`2026-10-${String(1 + (i % 28)).padStart(2, "0")}T10:${String(i % 60).padStart(2, "0")}:00Z`, "checked", `${i}-${"x".repeat(520)}`));
+    rs.cli("HSET", "zcrank:tab:GreenInBetween", "enabled", "0");
+    for (let i = 0; i < bigRows.length; i += 50) rs.cli("RPUSH", "zcrank:log:GreenInBetween", ...bigRows.slice(i, i + 50));
+    const calls = [];
+    const store = redis({ port: rs.port, shell: recordingShell(calls) });
+    const ctx = buildCrankContext({ name: "green in between", agents: [] }, [{ name: "green-in-between", position: 0 }], storedTabKeys(store), { identity: "/repos/gib", roots: {} });
+    calls.length = 0;
+    const result = enableCrank(store, ctx, { now: new Date("2026-10-30T00:00:00Z") });
+    assert.deepEqual(result.renamed, [{ from: "GreenInBetween", to: "green-in-between" }]);
+    const f = fcalls(calls);
+    assert.equal(f.length, 1, "still exactly one FCALL: atomic");
+    assert.ok(f.every((c) => c.length < ARGV_LIMIT_BYTES), "no argv string anywhere near the 128 KiB limit");
+    assert.equal(rs.cli("EXISTS", "zcrank:log:GreenInBetween"), "0", "the old log is dropped");
+    assert.equal(rs.cli("HGET", "zcrank:tab:green-in-between", "enabled"), "1");
+    const merged = log(rs, "green-in-between");
+    assert.equal(merged.filter((r) => r.state === "checked").length, 400, "every merged row survived, byte for byte");
+    assert.equal(merged.at(-1).state, "renamed", "the renamed row still lands after the merge");
+    assert.deepEqual(merged.filter((r) => r.state === "checked").map((r) => r.action), bigRows.map((r) => JSON.parse(r)).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).map((r) => r.action));
+    // a small payload keeps the plain argv path (the wire format the other suites pin)
+    const small = [];
+    redis({ port: rs.port, shell: recordingShell(small) }).apply([{ op: "tab", key: "tiny", enabled: true }]);
+    assert.match(fcalls(small)[0], /FCALL crank_apply 0 \[.*\] pj$/);
+    assert.doesNotMatch(fcalls(small)[0], /-X/);
+  }
+
+  console.log("defaultShell says WHY it could not run a command: the spawn error's code, not a collapsed 127 (pjangler-4)");
+  {
+    const huge = defaultShell("true", ["x".repeat(200_000)]);
+    assert.equal(huge.status, 127);
+    assert.equal(huge.errorCode, "E2BIG", "an over-long argument is E2BIG");
+    const missing = defaultShell("pjangler-no-such-binary", []);
+    assert.deepEqual([missing.status, missing.errorCode], [127, "ENOENT"]);
+    assert.equal(defaultShell("true", []).errorCode, undefined, "a command that ran has no error code");
+    const e2big = redis({ port: rs.port, shell: (command, args, options) => (args.includes("--help") ? defaultShell(command, args) : defaultShell("true", ["x".repeat(200_000)], options)) });
+    assert.throws(() => e2big.apply([{ op: "tab", key: "x", enabled: true }]), (e) => /E2BIG/.test(e.message) && /argument list is too long/.test(e.message) && !/not answering/.test(e.message));
+    const noCli = redis({ port: rs.port, shell: (command, args) => (args.includes("--help") ? { stdout: "", status: 127, errorCode: "ENOENT" } : { stdout: "", status: 127, errorCode: "ENOENT" }) });
+    assert.throws(() => noCli.logRows("x"), /redis-cli is not installed/);
   }
 } catch (error) {
   failed = error;

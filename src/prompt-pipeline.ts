@@ -190,8 +190,11 @@ function hashMs(value: string | undefined): number | undefined {
  * and `engine` is HGETALL crank:engine (an absent hash is an empty one). undefined = no segment.
  *
  *   hash on=1   -> ON (since = the arbiter's stamp, interval, last_run); on=0 -> OFF
- *   no hash     -> the engine heartbeat decides: fresh = this pane is not one the engine watches, so
- *                  nothing to say; absent or stale = nothing is resolving crank: "stalled"
+ *   no hash     -> the engine heartbeat decides, but only when it is THIS pane's session's: the
+ *                  engine watches one zellij session (the heartbeat's `session`), so a pane in any other
+ *                  session, or on a machine with no engine (no heartbeat, or one naming no session), was
+ *                  never going to be cranked and gets no segment. Fresh heartbeat of this session = this
+ *                  pane is not one the engine watches, nothing to say; stale = "stalled"
  *   stalled     -> the heartbeat (the hash's own scan_ms when the heartbeat key is gone) is older than
  *                  CRANK_STALL_AFTER_MS: an ON pane is not being cranked, whatever the hash says
  */
@@ -199,11 +202,14 @@ export function crankFromArbiter(
   pane: Record<string, string> | undefined,
   engine: Record<string, string> | undefined,
   nowMs: number,
+  session: string,
 ): CrankState | undefined {
   const hasPane = !!pane && Object.keys(pane).length > 0;
   const heartbeatMs = hashMs(engine?.scan_ms) ?? (hasPane ? hashMs(pane?.scan_ms) : undefined);
   const stalled = heartbeatMs === undefined || nowMs - heartbeatMs > CRANK_STALL_AFTER_MS;
   if (!hasPane || !pane) {
+    // Only the engine that watches this pane's own session can be "stalled" for it.
+    if (!session || engine?.session !== session) return undefined;
     if (!stalled) return undefined;
     return { enabled: true, scope: "pane", stalled: true, ...(heartbeatMs !== undefined ? { engineScanMs: heartbeatMs } : {}) };
   }
@@ -284,7 +290,7 @@ export async function readPaneCrank(env: NodeJS.ProcessEnv = process.env, nowMs:
   const pane = replyToHash(replies[0]);
   const engine = replyToHash(replies[1]);
   if (!pane || !engine) return undefined;
-  return crankFromArbiter(pane, engine, nowMs);
+  return crankFromArbiter(pane, engine, nowMs, where.session);
 }
 
 /**

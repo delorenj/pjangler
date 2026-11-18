@@ -64,15 +64,36 @@ export const ZCRANK_LOG_CAP = 500;
 /** Trailing status glyphs and separators zellij appends to tab names. */
 const TAB_STATUS_SUFFIX = /[\s🟢🟡🔴🔔⚫✳✻●·─]+$/u;
 
-/** Command runner seam: tests substitute this to fake redis-cli/zellij. */
-export type Shell = (command: string, args: string[]) => { stdout: string; status: number; stderr?: string };
+/**
+ * Command runner seam: tests substitute this to fake redis-cli/zellij. `options.input` is the
+ * command's stdin. `errorCode` is the spawn failure's code (ENOENT, E2BIG, ETIMEDOUT, ...) when the
+ * command could not be run at all, never a value the command itself reported.
+ */
+export type Shell = (
+  command: string,
+  args: string[],
+  options?: { input?: string },
+) => { stdout: string; status: number; stderr?: string; errorCode?: string };
 
-export const defaultShell: Shell = (command, args) => {
-  const result = spawnSync(command, args, { encoding: "utf8", timeout: 10_000 });
-  // 127 = could not run it (not installed); 124 = the 10 s budget ran out (the shell convention `timeout` uses too)
-  if (result.error) return { stdout: "", status: (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? 124 : 127 };
+export const defaultShell: Shell = (command, args, options) => {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 10_000, ...(options?.input !== undefined ? { input: options.input } : {}) });
+  if (result.error) {
+    // 127 = could not run it (not installed, argument too long, ...); 124 = the 10 s budget ran out (the
+    // shell convention `timeout` uses too). The code says which: callers must not guess "not installed".
+    const errorCode = (result.error as NodeJS.ErrnoException).code ?? "UNKNOWN";
+    return { stdout: "", status: errorCode === "ETIMEDOUT" ? 124 : 127, errorCode };
+  }
   return { stdout: result.stdout ?? "", status: result.status ?? 1, stderr: result.stderr ?? "" };
 };
+
+/**
+ * One argv string may not pass Linux's MAX_ARG_STRLEN (128 KiB), or spawn fails with E2BIG. An
+ * argument bigger than this many bytes (half of it, with room to spare) travels on redis-cli's stdin
+ * instead (`-X <tag>`), not in argv: still ONE atomic FCALL, with the exact same bytes on the wire.
+ * (`-x` would not do: it feeds the LAST argument, and crank_apply's last argument is `by`.)
+ */
+export const ARGV_LIMIT_BYTES = 64 * 1024;
+const STDIN_TAG = "__PJ_STDIN_ARG__";
 
 /** Strip a live tab name's status suffix (same rule as zcrankctl). */
 export function tabDisplay(name: string | undefined): string {
@@ -193,17 +214,20 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
   // exits 0 on WRONGTYPE/ERR replies, so the error text posed as a value and a failed write
   // read as success (PJAN-186). The exit code — never stdout sniffing — tells a value from an
   // error reply: a stored "WRONGTYPE ..." or "ERR no such key" string still reads back as itself.
-  const call = (args: string[]) => shell("redis-cli", ["--raw", "-e", "-h", host, "-p", String(port), ...args]);
+  const call = (args: string[], input?: string) =>
+    shell("redis-cli", ["--raw", "-e", "-h", host, "-p", String(port), ...(input !== undefined ? ["-X", STDIN_TAG] : []), ...args], input !== undefined ? { input } : undefined);
   // Fail loudly when the installed redis-cli proves (via its own --help) too old for -e,
   // instead of silently regressing to errors-as-values. An unreadable help page (a fake in
   // tests, an odd PATH) stays permissive: the call goes out with -e and its own failure names it.
   let errorExitSupport: "unprobed" | "yes" | "no" | "unknown" = "unprobed";
+  let stdinArgSupport = true;
   const requireErrorExit = (): void => {
     if (errorExitSupport === "unprobed") {
       const help = shell("redis-cli", ["--help"]);
       errorExitSupport = help.status === 0 && /^usage: redis-cli/im.test(help.stdout)
         ? (/(^|\n)\s+-e\s/.test(help.stdout) ? "yes" : "no")
         : "unknown";
+      stdinArgSupport = errorExitSupport !== "yes" || /(^|\n)\s+-X\s/.test(help.stdout);
     }
     if (errorExitSupport === "no") {
       throw new Error(
@@ -216,13 +240,27 @@ export function redis(deps: { shell?: Shell; host?: string; port?: number } = {}
   // stderr at all). Anything else on stderr is the server's error reply, verbatim.
   const notAnswering = (stderr: string): boolean =>
     !stderr || stderr.startsWith("Could not connect to Redis at") || stderr.startsWith("Error: ");
+  // redis-cli never ran (spawn failed): say why, in the spawn error's own terms. A missing binary or
+  // an argument list that is too long is not "Redis is not answering" (pjangler-4).
+  const spawnFailure = (code: string): string => {
+    if (code === "ENOENT") return "redis-cli is not installed (not on PATH)";
+    if (code === "E2BIG") return "redis-cli could not be started: the argument list is too long (E2BIG)";
+    return `redis-cli could not be started (${code})`;
+  };
   // A failed redis-cli (Redis gone, error reply) throws: a write that did not land must never read
   // as success, and a dead read must not pose as "no keys / absent" (PJAN-182 review).
-  const run = (...args: string[]): string => {
+  const run = (...rawArgs: string[]): string => {
     requireErrorExit();
-    const result = call(args);
+    // A command word is never big; the first argument past the argv limit goes on stdin.
+    const bigAt = rawArgs.findIndex((arg, i) => i > 0 && Buffer.byteLength(arg) > ARGV_LIMIT_BYTES);
+    if (bigAt > 0 && !stdinArgSupport) {
+      throw new Error(`redis-cli is too old to carry a ${Buffer.byteLength(rawArgs[bigAt] ?? "")}-byte argument: no -X flag (needs redis-tools >= 7.0) — upgrade redis-tools`);
+    }
+    const args = bigAt > 0 ? rawArgs.map((arg, i) => (i === bigAt ? STDIN_TAG : arg)) : rawArgs;
+    const result = call(args, bigAt > 0 ? rawArgs[bigAt] : undefined);
     if (result.status !== 0) {
       const stderr = (result.stderr ?? "").trim();
+      if (result.errorCode && result.errorCode !== "ETIMEDOUT") throw new Error(`${spawnFailure(result.errorCode)} (${args[0]} failed)`);
       if (notAnswering(stderr)) throw new Error(`Redis is not answering at ${host}:${port} (${args[0]} failed)`);
       throw new Error(`Redis error reply at ${host}:${port}: ${stderr.split("\n")[0]} (${args.join(" ")})`);
     }
