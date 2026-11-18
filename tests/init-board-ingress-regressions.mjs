@@ -114,6 +114,7 @@ function stubAdapter() {
     `#!/bin/sh
 set -eu
 [ "\${1:-}" = create_board ] || { echo "unexpected op: \${1:-}" >&2; exit 2; }
+[ -z "\${PJAN17_ADAPTER_MARKER:-}" ] || : > "$PJAN17_ADAPTER_MARKER"
 [ -n "\${PLANE_API_KEY:-}\${PLANE_33GOD_API_KEY:-}" ] || { echo "no credential reached the adapter" >&2; exit 3; }
 printf '{"board_id":"${BOARD_ID}","identifier":"STUB","board_url":"https://plane.invalid/b"}\\n'
 `,
@@ -146,6 +147,44 @@ const adapters = stubAdapter();
 
 console.log("pj init board ingress");
 try {
+  check("init refuses unsupported and cross-provider inherited boards before writes or adapters", () => {
+    for (const [stored, requested] of [["linear", "plane"], ["trello", "plane"], [undefined, undefined]]) {
+      const name = `Binding ${stored ?? "missing"}`;
+      const slug = name.toLowerCase().replaceAll(" ", "-");
+      const registry = registryFor(slug);
+      const dir = target(name);
+      const manifestPath = join(dir, ".project.json");
+      const manifest = JSON.stringify({ project_id: slug, project_name: name, ticket_provider: {
+        ...(stored ? { type: stored } : {}), board_id: `old-${slug}`, identifier: "OLD", workspace: "33god",
+      } });
+      writeFileSync(manifestPath, manifest);
+      const beforeRegistry = readFileSync(registry, "utf8");
+      const marker = join(workspace, `${slug}-adapter-called`);
+      const run = cli(["init", name, "--target-dir", dir, "--registry", registry, "--apply", "--no-tui", "-y",
+        ...(requested ? ["--ticket-provider", requested] : [])], {
+        PJ_TICKET_PROVIDER_ADAPTERS: adapters, PLANE_API_KEY: SECRET, PJAN17_ADAPTER_MARKER: marker,
+      });
+      assert.equal(run.status, 1, `${run.stdout}${run.stderr}`);
+      assert.match(run.stdout + run.stderr, stored === "linear" ? /Unsupported ticket provider: linear/
+        : stored === "trello" ? /cannot be inherited by plane/ : /no declared supported ticket provider/);
+      assert.equal(readFileSync(manifestPath, "utf8"), manifest);
+      assert.equal(readFileSync(registry, "utf8"), beforeRegistry);
+      assert.equal(existsSync(marker), false);
+    }
+  });
+
+  check("an unbound existing manifest may select a supported provider explicitly", () => {
+    const registry = registryFor("unbound-explicit");
+    const dir = target("Unbound Explicit");
+    writeFileSync(join(dir, ".project.json"), JSON.stringify({ project_id: "unbound-explicit", project_name: "Unbound Explicit",
+      ticket_provider: { type: "none", state: "skipped", board_id: "" } }));
+    const run = cli(["init", "Unbound Explicit", "--target-dir", dir, "--registry", registry,
+      "--ticket-provider", "trello", "--skip-board", "--apply", "-y", "--no-tui"]);
+    assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
+    assert.equal(record(registry, "unbound-explicit").ticket_provider.type, "trello");
+    assert.equal(record(registry, "unbound-explicit").ticket_provider.board_id, "");
+  });
+
   check("a plain `pj init` creates the board — no --live required", () => {
     const registry = registryFor("created");
     const dir = target("Created Board");
@@ -357,6 +396,70 @@ server.listen(0, "127.0.0.1", () => console.log(server.address().port));
     logLevel: "silent",
   });
   const { linkProjectBoard } = createRequire(import.meta.url)(bundleOut);
+
+  await checkAsync("link rejects unsupported, absent, conflicting and malformed canonical bindings before fetch or write", async () => {
+    for (const [label, provider, registryType] of [
+      ["linear", { type: "linear", board_id: "old" }, "plane"],
+      ["trello", { type: "trello", board_id: "old" }, "plane"],
+      ["missing-type", { board_id: "old" }, "plane"],
+      ["absent", undefined, "plane"],
+      ["malformed", { type: 2, board_id: "old" }, "plane"],
+      ["other-board", { type: "plane", board_id: "manifest-board" }, "plane"],
+      ["other-workspace", { type: "plane", workspace: "manifest-space", board_id: "" }, "plane"],
+    ]) {
+      const slug = `link-${label}`;
+      const registry = registryFor(slug);
+      const repo = join(workspace, slug);
+      mkdirSync(repo);
+      const manifestPath = join(repo, ".project.json");
+      const manifestText = JSON.stringify({ project_id: slug, project_name: slug,
+        ...(provider === undefined ? {} : { ticket_provider: provider }) });
+      writeFileSync(manifestPath, manifestText);
+      const registryText = YAML.stringify({ schema_version: 1, projects: { [slug]: {
+        name: slug, slug, repo_path: repo, description: "", status: "active", source_artifacts: [],
+        template: { commonproject: { enabled: true, primary_language: "python" } },
+        ticket_provider: { type: registryType, workspace: "33god", identifier: "OLD", board_id: label === "other-board" ? "registry-board" : "",
+          state: "planned", identifier_source: "proposed" }, agents: {},
+        created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+      } } });
+      writeFileSync(registry, registryText);
+      let calls = 0;
+      const original = globalThis.fetch;
+      globalThis.fetch = async () => { calls++; throw new Error("provider requested"); };
+      try {
+        for (const apply of [false, true]) {
+          await assert.rejects(() => linkProjectBoard({ slug, boardId: BOARD_ID, registryPath: registry, apply,
+            env: hermeticEnv({ PLANE_BASE: "http://127.0.0.1:1", PLANE_API_KEY: SECRET }) }),
+          /Cannot link board:|conflicts with canonical manifest/);
+          assert.equal(calls, 0, `${label}: no provider request`);
+          assert.equal(readFileSync(manifestPath, "utf8"), manifestText);
+          assert.equal(readFileSync(registry, "utf8"), registryText);
+        }
+      } finally { globalThis.fetch = original; }
+    }
+  });
+
+  await checkAsync("registry-only link still uses its supported provider", async () => {
+    const registry = registryFor("registry-only");
+    const repo = join(workspace, "registry-only");
+    mkdirSync(repo);
+    writeFileSync(registry, YAML.stringify({ schema_version: 1, projects: { "registry-only": {
+      name: "Registry Only", slug: "registry-only", repo_path: repo, description: "", status: "active", source_artifacts: [],
+      template: { commonproject: { enabled: true, primary_language: "python" } },
+      ticket_provider: { type: "trello", workspace: "", identifier: "REG", board_id: "", state: "planned", identifier_source: "proposed" },
+      agents: {}, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+    } } }));
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ id: "abc123", name: "Existing Board", closed: false }), { status: 200 }); };
+    try {
+      const result = await linkProjectBoard({ slug: "registry-only", boardId: "abc123", registryPath: registry, apply: false,
+        env: hermeticEnv({ TRELLO_API_KEY: "k", TRELLO_TOKEN: "t" }) });
+      assert.equal(result.provider, "trello");
+      assert.equal(calls, 1);
+      assert.equal(record(registry, "registry-only").ticket_provider.board_id, "");
+    } finally { globalThis.fetch = original; }
+  });
 
   await checkAsync("a Trello link rests on board_confirmed_at, and its key stays a proposal", async () => {
     const registry = registryFor("trello");

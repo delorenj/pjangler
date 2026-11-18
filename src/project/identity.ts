@@ -34,6 +34,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import YAML from "yaml";
+import { readManifest } from "./manifestIndex";
 import { planeBase, DEFAULT_PLANE_WORKSPACE } from "./boardUrl";
 import { BoardError, dotenvValue, resolvePlaneApiKey, resolveSecretValue } from "./boardQuery";
 import {
@@ -1318,12 +1319,45 @@ export async function linkProjectBoard(options: {
   if (!boardId) throw new BoardError("a board id is required");
 
   const manifestFile = join(project.repo_path, ".project.json");
-  const expectedProvider = !isRegistryServiceLocation(registryPath) && existsSync(manifestFile)
-    ? (JSON.parse(readFileSync(manifestFile, "utf8")) as Record<string, unknown>).ticket_provider
-    : undefined;
   const current = project.ticket_provider;
+  let expectedProvider: unknown;
+  let canonicalWorkspace: string | undefined;
+  if (existsSync(manifestFile)) {
+    let manifest: Awaited<ReturnType<typeof readManifest>>;
+    try {
+      manifest = await readManifest(manifestFile);
+    } catch (error) {
+      throw new BoardError(`Cannot link board: invalid canonical manifest ${manifestFile}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (manifest.id !== project.slug) {
+      throw new BoardError(`Cannot link board: ${manifestFile} belongs to ${manifest.id}, not ${project.slug}`);
+    }
+    expectedProvider = manifest.manifest.ticket_provider;
+    const manifestType = typeof expectedProvider === "object" && expectedProvider !== null && !Array.isArray(expectedProvider)
+      ? (expectedProvider as Record<string, unknown>).type : undefined;
+    const declaredType = typeof manifestType === "string" ? manifestType.trim().toLowerCase() : "";
+    if (declaredType !== "plane" && declaredType !== "trello") {
+      throw new BoardError(`Cannot link board: ${manifestFile} has no supported ticket provider (supported: plane, trello)`);
+    }
+    if (current.type?.trim().toLowerCase() !== declaredType) {
+      throw new BoardError(`Cannot link board: registry provider "${current.type}" conflicts with canonical manifest provider "${declaredType}"`);
+    }
+    const manifestBinding = expectedProvider as Record<string, unknown>;
+    const manifestWorkspace = manifestBinding.workspace;
+    if (typeof manifestWorkspace === "string" && manifestWorkspace && current.workspace && manifestWorkspace !== current.workspace) {
+      throw new BoardError(`Cannot link board: registry workspace "${current.workspace}" conflicts with canonical manifest workspace "${manifestWorkspace}"`);
+    }
+    canonicalWorkspace = typeof manifestWorkspace === "string" ? manifestWorkspace : undefined;
+    const manifestBoard = manifestBinding.board_id;
+    if (typeof manifestBoard === "string" && manifestBoard && current.board_id && manifestBoard !== current.board_id) {
+      throw new BoardError(`Cannot link board: registry board ${current.board_id} conflicts with canonical manifest board ${manifestBoard}`);
+    }
+  }
   const type = current.type?.trim().toLowerCase();
-  const workspace = (options.workspace ?? current.workspace ?? DEFAULT_PLANE_WORKSPACE).trim();
+  if (type !== "plane" && type !== "trello") {
+    throw new BoardError(`pj project link cannot read board identity from provider "${type}" (supported: plane, trello)`);
+  }
+  const workspace = (options.workspace ?? canonicalWorkspace ?? current.workspace ?? DEFAULT_PLANE_WORKSPACE).trim();
   const now = (options.now ?? new Date()).toISOString();
 
   let identifier = current.identifier ?? "";
