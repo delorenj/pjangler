@@ -129,7 +129,7 @@ function fail(error: unknown, what: string): never {
 }
 
 function sourceNote(source: string): string {
-  return source === "project" ? "project" : source === "global" ? "global default" : "built-in default";
+  return source === "project" ? ".project.json" : source === "global" ? "global crank.toml" : "built-in default";
 }
 
 export function formatAgo(ms: number, nowMs = Date.now()): string {
@@ -194,14 +194,21 @@ export function registerCrankCli(program: Command): void {
       try {
         const project = projectAt(process.cwd());
         const policy = loadPolicy(project.root);
-        const views = await sessionViews({ root: project.root }).catch(() => [] as SessionView[]);
+        // An unreachable Candybar is "sessions unknown", never "no sessions".
+        let views: SessionView[] = [];
+        let sessionsError: string | undefined;
+        try {
+          views = await sessionViews({ root: project.root });
+        } catch (error) {
+          sessionsError = error instanceof Error ? error.message : String(error);
+        }
         if (options.json) {
-          console.log(JSON.stringify({ project, policy, sessions: views }, null, 2));
+          console.log(JSON.stringify({ project, policy, sessions: sessionsError ? null : views, ...(sessionsError ? { sessionsError } : {}) }, null, 2));
           return;
         }
         printPolicy(project.slug, policy);
         console.log("");
-        console.log(formatSessions(views));
+        console.log(sessionsError ? `  ${yellow(glyph.warn)} sessions unknown: Candybar unreadable (${sessionsError})` : formatSessions(views));
       } catch (error) {
         fail(error, "crank status");
       }
@@ -414,7 +421,7 @@ async function runEnable(options: { interval?: string; global?: boolean; attach?
     }
     updateProjectBlock(project.root, (block) => ({ ...block, enabled: true, ...(interval ? { interval } : {}) }));
     const policy = loadPolicy(project.root);
-    console.log(`  ${green("ON")}  ${cyan(project.slug)} ${dim(`every ${policy.interval} (${sourceNote(policy.intervalSource)}) · .project.json crank block`)}`);
+    console.log(`  ${green("ON")}  ${cyan(project.slug)} ${dim(`every ${policy.interval} (${sourceNote(policy.intervalSource)})`)}`);
     const legacy = retireLegacyTab();
     if (legacy) console.log(`  ${dim(`legacy tab switch zcrank:tab:${legacy} turned off (sessions are cranked one by one now)`)}`);
     if (options.attach === false) return;
@@ -444,8 +451,10 @@ async function runDisable(options: { global?: boolean }): Promise<void> {
     const project = projectAt(process.cwd());
     updateProjectBlock(project.root, (block) => ({ ...block, enabled: false }));
     console.log(`  ${dim("OFF")}  ${cyan(project.slug)}`);
-    printDetached(await detachProject(project.root, "disabled"));
     retireLegacyTab();
+    // Policy first: if Candybar cannot be reached now, every live crank still ends itself on
+    // its next fire (pj crank fire sees the policy OFF and detaches with reason "disabled").
+    printDetached(await detachProject(project.root, "disabled"));
   } catch (error) {
     fail(error, "crank disable");
   }
@@ -481,7 +490,8 @@ function runConfig(action: string | undefined, key: string | undefined, value: s
     const project = projectAt(process.cwd());
     if (verb === "show" || verb === "get") {
       if (key) {
-        console.log(JSON.stringify(readProjectBlock(project.root)?.[key] ?? null));
+        const out = readProjectBlock(project.root)?.[key];
+        console.log(options.json || typeof out === "object" ? JSON.stringify(out ?? null, null, 2) : String(out ?? ""));
         return;
       }
       const policy = loadPolicy(project.root);

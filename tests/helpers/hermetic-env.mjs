@@ -287,8 +287,6 @@ export function suiteGrants(suite, { required = false } = {}) {
  * Keys are registered suites (for a bundled .ts suite, its launcher).
  */
 export const OPERATOR_HOME_READERS = new Map([
-  ["tests/pjan-182-crank-interval-regressions.mjs",
-    "engine parity: runs the operator's installed zcrank engine (~/.agents/tools/jev-clairic/bin/zcrank.py, read-only) against the same throwaway redis; skipped when it is not installed (CI)"],
   ["tests/pjan-67-trusted-lifecycle-regressions.mjs",
     "locates the UV-tool Copier under the OS account home (~/.local/share/uv/tools/copier, read-only), the same anchor src/lifecycle/preflight.ts trusts via userInfo(); a PATH or HOME lookup would find a different, untrusted copier"],
   ["tests/pjan-67-lifecycle-preflight-regressions.mjs",

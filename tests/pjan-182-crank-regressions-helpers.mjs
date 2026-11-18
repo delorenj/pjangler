@@ -1,4 +1,4 @@
-// Helpers for tests/pjan-182-crank-interval-regressions.mjs: a throwaway redis-server and
+// Crank suite helpers (born with the retired PJAN-182 tab suite): a throwaway redis-server and
 // Ink-compatible fake terminal streams. Kept out of the suite so the suite reads as claims.
 
 import { spawn } from "node:child_process";

@@ -26,7 +26,6 @@ writeFileSync(
   join(workspace, "entry.ts"),
   [
     `export * from ${JSON.stringify(join(root, "src/crank/index.ts"))};`,
-    `export * from ${JSON.stringify(join(root, "src/crank/controller.ts"))};`,
     `export { isInteractive, loadScreen, TuiUnavailableError } from ${JSON.stringify(join(root, "src/tui/load.ts"))};`,
   ].join("\n"),
 );
@@ -41,7 +40,7 @@ if (built.status !== 0) {
   process.exit(1);
 }
 const {
-  createCrankController, isInteractive, loadScreen, TuiUnavailableError, parseLogRow, projectAgentsFor, projectNameFor, redis, renderLogRow,
+  isInteractive, loadScreen, TuiUnavailableError, parseLogRow, projectAgentsFor, projectNameFor, redis, renderLogRow,
   // PJAN-201
   ENGINE_DEFAULT_JOB_ID, engineBlockedLabel, engineSources, engineSummary, liveTabs, livePanes, parseEngineStatus, projectIdentity,
   readEngineStatus, unknownEngineStatus, withTabOwners,
@@ -148,45 +147,6 @@ try {
     assert.equal(parseLogRow("nope"), undefined);
     assert.equal(parseLogRow('{"ts":"2026-10-20T12:00:00Z","state":"sent"}').tsMs, Date.parse("2026-10-20T12:00:00Z"));
     assert.equal(renderLogRow("{}"), `  ${"?".padEnd(12)}`);
-  }
-
-  console.log("controller: reads reuse the live-tab list for 30s; every write re-reads it, so a tab renamed under a running TUI is followed");
-  {
-    const store = redis({ port: rs.port });
-    for (const k of rs.cli("KEYS", "zcrank:*").split("\n").filter(Boolean)) rs.cli("DEL", k);
-    let now = Date.parse("2026-10-20T12:00:00Z");
-    let tabs = [{ name: "Old Name", position: 0 }];
-    let zellijCalls = 0;
-    const controller = createCrankController({
-      slug: "demo", project: { name: "Old Name", agents: [{ handle: "new-name-pm", role: "pm" }] }, store,
-      live: () => { zellijCalls += 1; return tabs; }, clock: () => now,
-    });
-    assert.equal(controller.read().resolution.tab, "Old Name");
-    assert.equal(controller.read().resolution.tab, "Old Name");
-    assert.equal(zellijCalls, 1, "two reads inside the TTL cost one zellij call");
-
-    // the operator renames the tab; a read inside the TTL still shows the cached tab...
-    tabs = [{ name: "New Name", position: 0 }];
-    now += 29_000;
-    assert.equal(controller.read().resolution.tab, "Old Name");
-    // ...but a write never trusts the cache, and the cache is refreshed by it
-    controller.disable();
-    assert.equal(zellijCalls, 2);
-    assert.equal(rs.cli("HGET", "zcrank:tab:New Name", "enabled"), "0", "disable hit the renamed tab");
-    assert.equal(rs.cli("EXISTS", "zcrank:tab:Old Name"), "0");
-    assert.equal(controller.read().resolution.tab, "New Name");
-    assert.equal(zellijCalls, 2, "the write's fresh read primed the cache");
-
-    tabs = [{ name: "Newer Name", position: 0 }];
-    controller.setInterval("1h");
-    assert.equal(zellijCalls, 3, "setInterval re-reads too");
-    assert.equal(rs.cli("HGET", "zcrank:tab:New Name", "interval"), "1h", "no live match -> the stored key the agent handle names");
-    // past the TTL a plain read re-reads
-    now += 31_000;
-    controller.read();
-    assert.equal(zellijCalls, 4);
-    assert.equal(controller.slug, "demo");
-    assert.equal(controller.name, "Old Name");
   }
 
   console.log("replaceLog: an empty replacement deletes the list; a non-empty one swaps it whole and leaves no scratch key");
