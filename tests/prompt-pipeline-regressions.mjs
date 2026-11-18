@@ -4,10 +4,11 @@ import "./helpers/hermetic-suite.mjs";
 //     hidden, a stale one is shown AND refreshed;
 //   - the refresh lock: exclusive, and a dead child's lock is taken over;
 //   - the formatting: `<candy U+10EF0D> project/total`, `⚡ crank ↑3d4h ↻5m ⏳2m` / `◌ crank off`, parts
-//     omitted when unknown, `⚠ crank stalled` when the engine stopped scanning;
-//   - the crank segment of a zellij pane: read DIRECTLY from the arbiter's resolved hash
-//     (crank:p:<session>:terminal_<N>) and the engine heartbeat (crank:engine) over a tiny RESP2 client,
-//     against a throwaway redis-server with crank.lua loaded: ON / OFF / not-watched / stalled / Redis down;
+//     omitted when unknown, `⚠ crank stalled` for a v2 binding whose crank stopped firing;
+//   - the LEGACY crank segment of a zellij pane (retired by crank v2, PJAN-216): read DIRECTLY from the arbiter's
+//     resolved hash (crank:p:<session>:terminal_<N>) and believed only while the engine heartbeat (crank:engine)
+//     is fresh and from this session, over a tiny RESP2 client, against a throwaway redis-server with crank.lua
+//     loaded: ON / OFF / not-watched / engine quiet = no segment / Redis down;
 //   - the refresher's halves: candybar counting, and the project's crank outside zellij (the arbiter's verdict);
 //   - end to end: the built dist/prompt.js prints the cached segments, reads crank straight from Redis in a
 //     pane, and stays silent off-project.
@@ -242,29 +243,41 @@ await test("zellijPane: the session and terminal_<N>, only when both are usable"
   assert.equal(zellijPane({ ZELLIJ_SESSION_NAME: "Workspace", ZELLIJ_PANE_ID: "plugin-3" }), undefined);
   assert.equal(zellijPane({}), undefined);
 });
+const W = "Workspace";
+const fresh = (ms = NOW) => ({ scan_ms: String(ms), session: W });
 await test("on=1: since, interval and last_run map straight over; the engine heartbeat is the scan age", () => {
   const hash = { on: "1", since: String(NOW - 3 * 86_400_000), interval: "1h", last_run: String(NOW - 20 * 60_000), decided_by: "tab", scan_ms: String(NOW - 60_000) };
-  const state = crankFromArbiter(hash, { scan_ms: String(NOW - 90_000) }, NOW, "Workspace");
+  const state = crankFromArbiter(hash, fresh(NOW - 90_000), NOW, W);
   assert.deepEqual(state, { enabled: true, scope: "tab", interval: "1h", onSinceMs: NOW - 3 * 86_400_000, lastRunMs: NOW - 20 * 60_000, engineScanMs: NOW - 90_000 });
   assert.equal(formatCrank(state, NOW), "⚡ crank ↑3d ↻1h ⏳35m");
-  assert.equal(crankFromArbiter({ ...hash, decided_by: "pane" }, { scan_ms: String(NOW) }, NOW, "Workspace").scope, "pane");
-  assert.equal(crankFromArbiter({ ...hash, decided_by: "unlisted" }, { scan_ms: String(NOW) }, NOW, "Workspace").scope, "tab");
-  const bare = crankFromArbiter({ on: "1", last_run: "", since: "", interval: "soon" }, { scan_ms: String(NOW) }, NOW, "Workspace");
+  assert.equal(crankFromArbiter({ ...hash, decided_by: "pane" }, fresh(), NOW, W).scope, "pane");
+  assert.equal(crankFromArbiter({ ...hash, decided_by: "unlisted" }, fresh(), NOW, W).scope, "tab");
+  const bare = crankFromArbiter({ on: "1", last_run: "", since: "", interval: "soon" }, fresh(), NOW, W);
   assert.deepEqual(bare, { enabled: true, scope: "tab", engineScanMs: NOW }, "an empty or junk fact is unknown and left out, never guessed");
 });
 await test("on=0 renders OFF (no timing); a hash that says neither is no segment", () => {
-  assert.deepEqual(crankFromArbiter({ on: "0", interval: "5m", decided_by: "pane" }, { scan_ms: String(NOW) }, NOW, "Workspace"), { enabled: false, scope: "pane", interval: "5m" });
-  assert.equal(formatCrank(crankFromArbiter({ on: "0" }, { scan_ms: String(NOW) }, NOW, "Workspace"), NOW), "◌ crank off");
-  assert.equal(crankFromArbiter({ on: "maybe" }, { scan_ms: String(NOW) }, NOW, "Workspace"), undefined);
-  assert.equal(formatCrank(crankFromArbiter({ on: "0" }, {}, NOW - 99 * 3600_000, "Workspace"), NOW), "◌ crank off", "OFF is never an alarm, whatever the heartbeat");
+  assert.deepEqual(crankFromArbiter({ on: "0", interval: "5m", decided_by: "pane" }, fresh(), NOW, W), { enabled: false, scope: "pane", interval: "5m" });
+  assert.equal(formatCrank(crankFromArbiter({ on: "0" }, fresh(), NOW, W), NOW), "◌ crank off");
+  assert.equal(crankFromArbiter({ on: "maybe" }, fresh(), NOW, W), undefined);
 });
-await test("no hash: a fresh heartbeat means the engine does not watch this pane (nothing); an old one FROM THIS SESSION is stalled", () => {
-  const W = "Workspace";
-  assert.equal(crankFromArbiter({}, { scan_ms: String(NOW - 60_000), session: W }, NOW, W), undefined);
-  assert.equal(crankFromArbiter(undefined, { scan_ms: String(NOW - CRANK_STALL_AFTER_MS), session: W }, NOW, W), undefined, "exactly at the limit is still fresh");
-  const old = crankFromArbiter({}, { scan_ms: String(NOW - 25 * 60_000), session: W }, NOW, W);
-  assert.deepEqual(old, { enabled: true, scope: "pane", stalled: true, engineScanMs: NOW - 25 * 60_000 });
-  assert.equal(formatCrank(old, NOW), "⚠ crank stalled 25m");
+await test("legacy is retired (PJAN-216): the hash is believed ONLY under a fresh heartbeat from this session, never stalled", () => {
+  // the last legacy scan leaves every crank:p frozen at on=0 and nothing refreshes crank:engine again
+  const frozenOff = { on: "0", interval: "5m", decided_by: "tab" };
+  const frozenOn = { on: "1", since: String(NOW - 3600_000), interval: "5m", scan_ms: String(NOW - 30 * 60_000) };
+  const stale = fresh(NOW - 25 * 60_000);
+  assert.equal(crankFromArbiter(frozenOff, stale, NOW, W), undefined, "a frozen OFF under a dead engine says nothing (was '◌ crank off' forever)");
+  assert.equal(crankFromArbiter(frozenOn, stale, NOW, W), undefined, "a frozen ON under a dead engine is not 'stalled': stall belongs to v2");
+  assert.equal(crankFromArbiter(frozenOn, {}, NOW, W), undefined, "the heartbeat key gone (TTL)");
+  assert.equal(crankFromArbiter(frozenOn, undefined, NOW, W), undefined);
+  assert.equal(crankFromArbiter(frozenOff, { scan_ms: String(NOW) }, NOW, W), undefined, "a heartbeat that names no session");
+  assert.equal(crankFromArbiter(frozenOff, fresh(), NOW, "Other"), undefined, "another session's heartbeat");
+  assert.equal(crankFromArbiter(frozenOff, fresh(NOW + 25 * 60_000), NOW, W), undefined, "a heartbeat from the future is not fresh");
+  assert.equal(crankFromArbiter(frozenOff, fresh(NOW - CRANK_STALL_AFTER_MS), NOW, W).enabled, false, "exactly at the limit is still fresh");
+});
+await test("no hash: never a segment, whatever the heartbeat", () => {
+  assert.equal(crankFromArbiter({}, fresh(NOW - 60_000), NOW, W), undefined);
+  assert.equal(crankFromArbiter(undefined, fresh(NOW - CRANK_STALL_AFTER_MS), NOW, W), undefined);
+  assert.equal(crankFromArbiter({}, fresh(NOW - 25 * 60_000), NOW, W), undefined, "was '⚠ crank stalled 25m'");
 });
 await test("no hash and the heartbeat is not this session's (or there is none): no segment, never stalled (pjangler-1)", () => {
   const old = { scan_ms: String(NOW - 25 * 60_000) };
@@ -276,14 +289,6 @@ await test("no hash and the heartbeat is not this session's (or there is none): 
   assert.equal(crankFromArbiter({}, {}, NOW, "Workspace"), undefined, "no heartbeat at all");
   assert.equal(crankFromArbiter({}, undefined, NOW, "Workspace"), undefined);
   assert.equal(crankFromArbiter({}, { ...old, session: "" }, NOW, ""), undefined, "an empty session never matches an empty session");
-});
-await test("a hash that exists while the engine went quiet: ON turns stalled (with the age and interval)", () => {
-  const hash = { on: "1", since: String(NOW - 3600_000), interval: "5m", scan_ms: String(NOW - 30 * 60_000) };
-  const quiet = crankFromArbiter(hash, { scan_ms: String(NOW - 25 * 60_000) }, NOW, "Workspace");
-  assert.equal(quiet.stalled, true);
-  assert.equal(formatCrank(quiet, NOW), "⚠ crank stalled 25m ↻5m");
-  // the heartbeat key gone (TTL) but the pane's own scan_ms known: that is the age
-  assert.equal(formatCrank(crankFromArbiter(hash, {}, NOW, "Workspace"), NOW), "⚠ crank stalled 30m ↻5m");
 });
 await test("project outside zellij: the oldest `since` among the ON panes this tab governs", () => {
   const panes = [
@@ -431,17 +436,15 @@ console.log("the prompt reads crank straight from a throwaway redis-server with 
       assert.equal(await readPaneCrank(paneEnv(77), Date.now()), undefined);
       assert.equal(await readPaneCrank({ ...paneEnv(9), ZELLIJ_SESSION_NAME: "Elsewhere" }, Date.now()), undefined, "another session's hash is not this one");
     });
-    await test("no heartbeat at all: no segment (no engine to be stalled); an old one from this session with no hash: stalled with its age", async () => {
+    await test("legacy retired (PJAN-216): a dead or quiet engine leaves frozen hashes unbelieved, no segment and never stalled", async () => {
       const hb = cli("HGETALL", "crank:engine");
       cli("DEL", "crank:engine");
       assert.equal(await readPaneCrank(paneEnv(77), Date.now()), undefined, "no engine on this machine: nothing to say");
-      cli("HSET", "crank:engine", "scan_ms", String(Date.now() - 25 * 60_000));
-      assert.equal(await readPaneCrank(paneEnv(77), Date.now()), undefined, "an old heartbeat that names no session");
-      cli("HSET", "crank:engine", "session", SESSION);
-      assert.equal(formatCrank(await readPaneCrank(paneEnv(77), Date.now()), Date.now()), "⚠ crank stalled 25m");
-      assert.equal(await readPaneCrank(paneEnv(77, { ZELLIJ_SESSION_NAME: "Other", ZELLIJ_PANE_ID: "3" }), Date.now()), undefined, "the engine watches Workspace: a pane in session Other is not stalled (pjangler-1)");
-      assert.match(formatCrank(await readPaneCrank(paneEnv(9), Date.now()), Date.now()), /^⚠ crank stalled 2[45]m ↻1h$/, "an ON pane under a quiet engine is not being cranked");
-      assert.equal(formatCrank(await readPaneCrank(paneEnv(10), Date.now()), Date.now()), "◌ crank off");
+      assert.equal(await readPaneCrank(paneEnv(9), Date.now()), undefined, "an ON hash with no heartbeat");
+      cli("HSET", "crank:engine", "scan_ms", String(Date.now() - 25 * 60_000), "session", SESSION);
+      assert.equal(await readPaneCrank(paneEnv(77), Date.now()), undefined, "no hash under an old heartbeat (was stalled 25m)");
+      assert.equal(await readPaneCrank(paneEnv(9), Date.now()), undefined, "a frozen ON under a quiet engine (was stalled ↻1h)");
+      assert.equal(await readPaneCrank(paneEnv(10), Date.now()), undefined, "a frozen OFF under a quiet engine (was '◌ crank off' forever)");
       reseed();
       assert.ok(hb.length > 0);
     });
@@ -516,7 +519,7 @@ console.log("the prompt reads crank straight from a throwaway redis-server with 
     console.log("end to end: dist/prompt.js in a zellij pane reads the arbiter directly (no cache, no refresher)");
     apply([{ op: "tab", key: "HeyMa", enabled: true }]);
     reseed();
-    await test("a pane outside every project prints the crank segment alone: ON, OFF, nothing, stalled, Redis down", () => {
+    await test("a pane outside every project prints the crank segment alone: ON, OFF, nothing, engine quiet, Redis down", () => {
       const bin = join(root, "dist", "prompt.js");
       assert.ok(existsSync(bin), "dist/prompt.js is built (npm run build)");
       const cacheDirE2e = join(workspace, "direct-cache");
@@ -535,8 +538,10 @@ console.log("the prompt reads crank straight from a throwaway redis-server with 
       cli("DEL", "crank:engine");
       assert.equal(run(77).stdout, "", "no engine on this machine: nothing to be stalled (pjangler-1)");
       cli("HSET", "crank:engine", "scan_ms", String(Date.now() - 25 * 60_000), "session", SESSION);
-      assert.match(run(77).stdout, /^⚠ crank stalled 2[45]m$/u, "the engine of THIS session went quiet");
-      assert.equal(run(3, { ZELLIJ_SESSION_NAME: "Other" }).stdout, "", "a pane in another zellij session is not the engine's to stall (pjangler-1)");
+      assert.equal(run(77).stdout, "", "the engine of THIS session went quiet: legacy is retired, no stall (PJAN-216)");
+      assert.equal(run(9).stdout, "", "a frozen ON hash under a quiet engine says nothing");
+      assert.equal(run(10).stdout, "", "a frozen OFF hash under a quiet engine says nothing");
+      assert.equal(run(3, { ZELLIJ_SESSION_NAME: "Other" }).stdout, "", "a pane in another zellij session");
       cli("HSET", "crank:engine", "scan_ms", saved);
       const t0 = Date.now();
       assert.equal(run(9, { ZCRANK_REDIS_PORT: "1" }).stdout, "", "Redis down: no segment, never OFF");

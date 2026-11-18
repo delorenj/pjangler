@@ -218,12 +218,14 @@ Then two 33GOD pipeline segments, crank last:
     last minute, then `now`. Worked out at render time from the interval and the
     pane's `last_run`, so it keeps counting between prompts.
 
-  If the engine's heartbeat (`crank:engine`) is older than 15 minutes, or absent,
-  it is not cranking anything, whatever the hash says: an ON pane reads
-  `⚠ crank stalled 25m ↻5m`, and a pane with no hash reads `⚠ crank stalled`. A
-  pane with no hash while the heartbeat is fresh is simply not watched by the
-  engine, so it prints no segment. Redis unreachable (or slower than the budget)
-  prints no crank segment either: an unreachable Redis is never read as OFF.
+  The legacy engine is retired by crank v2 (PJAN-216): a pane's legacy hash is
+  believed only while the engine heartbeat (`crank:engine`) is from this zellij
+  session and no older than 15 minutes. Once it goes quiet the frozen hashes print
+  no segment at all, never `⚠ crank stalled` and never a permanent
+  `◌ crank off`. `⚠ crank stalled` belongs to a v2 binding whose crank stopped
+  firing. A pane with no hash is simply not watched, so it prints no segment.
+  Redis unreachable (or slower than the budget) prints no crank segment either:
+  an unreachable Redis is never read as OFF.
 
 The candybar icon (shown as 🍬 above) is really the `outline/candy` icon from
 [delorenj/icons](https://github.com/delorenj/icons), vendored in

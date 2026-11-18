@@ -335,7 +335,7 @@ try {
     const bare = await startThrowawayRedis({ arbiter: false });
     try {
       bare.cli("HSET", "crank:p:Workspace:terminal_19", "on", "1", "decided_by", "tab", "interval", "5m", "since", String(Date.now() - 60_000));
-      bare.cli("HSET", "crank:engine", "scan_ms", String(Date.now()));
+      bare.cli("HSET", "crank:engine", "scan_ms", String(Date.now()), "session", "Workspace");
       const state = await readPaneCrank({ ...paneEnv, ZCRANK_REDIS_PORT: String(bare.port) }, Date.now());
       assert.equal(state.enabled, true);
       assert.equal(state.scope, "tab");

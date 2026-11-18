@@ -196,14 +196,16 @@ function hashMs(value: string | undefined): number | undefined {
  * The crank segment from the arbiter's resolved state: `pane` is HGETALL crank:p:<session>:terminal_<N>
  * and `engine` is HGETALL crank:engine (an absent hash is an empty one). undefined = no segment.
  *
- *   hash on=1   -> ON (since = the arbiter's stamp, interval, last_run); on=0 -> OFF
- *   no hash     -> the engine heartbeat decides, but only when it is THIS pane's session's: the
- *                  engine watches one zellij session (the heartbeat's `session`), so a pane in any other
- *                  session, or on a machine with no engine (no heartbeat, or one naming no session), was
- *                  never going to be cranked and gets no segment. Fresh heartbeat of this session = this
- *                  pane is not one the engine watches, nothing to say; stale = "stalled"
- *   stalled     -> the heartbeat (the hash's own scan_ms when the heartbeat key is gone) is older than
- *                  CRANK_STALL_AFTER_MS: an ON pane is not being cranked, whatever the hash says
+ * This is the LEGACY (tab-model) engine, retired by crank v2 (PJAN-216): its switches were turned off,
+ * its clock paused, and one last scan left every crank:p at on=0. So the legacy hash is believed only
+ * while that engine is demonstrably running — a heartbeat of THIS pane's session no older than
+ * CRANK_STALL_AFTER_MS. Anything else (no heartbeat, a stale one, another session's, no hash) is no
+ * segment: a retired engine is not "stalled", and its frozen hashes must not read as OFF or ON for a
+ * day until their TTL runs out. Stall reporting belongs to v2 (crankFromBinding).
+ *
+ *   fresh heartbeat of this session + hash on=1 -> ON (since = the arbiter's stamp, interval, last_run)
+ *   fresh heartbeat of this session + hash on=0 -> OFF
+ *   anything else                              -> undefined
  */
 export function crankFromArbiter(
   pane: Record<string, string> | undefined,
@@ -211,14 +213,11 @@ export function crankFromArbiter(
   nowMs: number,
   session: string,
 ): CrankState | undefined {
-  const hasPane = !!pane && Object.keys(pane).length > 0;
-  const heartbeatMs = hashMs(engine?.scan_ms) ?? (hasPane ? hashMs(pane?.scan_ms) : undefined);
-  const stalled = heartbeatMs === undefined || nowMs - heartbeatMs > CRANK_STALL_AFTER_MS;
-  if (!hasPane || !pane) {
-    // Only the engine that watches this pane's own session can be "stalled" for it.
-    if (!session || engine?.session !== session) return undefined;
-    if (!stalled) return undefined;
-    return { enabled: true, scope: "pane", stalled: true, ...(heartbeatMs !== undefined ? { engineScanMs: heartbeatMs } : {}) };
+  if (!pane || Object.keys(pane).length === 0) return undefined;
+  if (!session || engine?.session !== session) return undefined;
+  const heartbeatMs = hashMs(engine?.scan_ms);
+  if (heartbeatMs === undefined || nowMs - heartbeatMs > CRANK_STALL_AFTER_MS || heartbeatMs - nowMs > CRANK_STALL_AFTER_MS) {
+    return undefined;
   }
   const scope = pane.decided_by === "pane" ? "pane" : "tab";
   const interval = parseInterval(pane.interval);
@@ -230,8 +229,7 @@ export function crankFromArbiter(
   if (since !== undefined) state.onSinceMs = since;
   const lastRun = hashMs(pane.last_run);
   if (lastRun !== undefined) state.lastRunMs = lastRun;
-  if (heartbeatMs !== undefined) state.engineScanMs = heartbeatMs;
-  if (stalled) state.stalled = true;
+  state.engineScanMs = heartbeatMs;
   return state;
 }
 
