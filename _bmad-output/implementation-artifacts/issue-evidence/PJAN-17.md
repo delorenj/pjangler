@@ -31,4 +31,15 @@ Logs below are absolute paths under `/home/delorenj/.hermes/profiles/pjangler-pm
 - Hermes's three `test_project_skills_policy.py` failures reproduce on its disposable baseline `cbc0d6a9957cdaedf4667dc104872d442afdc406`: `pjan17-r2-hermes-base-policy-retry.log` (exit 1, 3 failed, 48 passed). The policy script reports `status: blocked` (return 3); the candidate full suite reports the same three failures. No policy repair was attempted.
 - Flume's worktree lacks the built `@delorenj/skillex/dist/index.js`; do not treat this environment failure as a passing full gate. Isolated dependency build and PM test provided an executable path without modifying installed/global packages. The first isolated candidate PM test also exposed an outdated assertion against the old unguarded guidance (exit 1); the PJAN-17 assertion was updated and the same isolated test passed. No complete Flume gate is certified.
 
-A passing overall full gate is **not** claimed. Candidate branches are for review with these explicit external/baseline limitations; do not merge into main or close the ticket on this note alone.
+## F1/F2 remediation on the pjangler candidate
+
+`pj init` now validates the existing binding before considering an explicit provider override or default. It rejects Linear even with `--ticket-provider plane`, refuses to inherit a Trello board into Plane, and refuses a nonempty board without a declared provider. A boardless existing `none` binding can still select Trello explicitly. `pj project link` reads and validates the canonical `.project.json` before any credential lookup or provider request, rejects unsupported/missing/conflicting provider, board, and workspace bindings, and retains registry-only compatibility when no manifest exists. Neither rejection writes a manifest or registry row.
+
+Verification on this candidate:
+
+- `node scripts/run-tests.mjs init-board-ingress pjan-17-provider project-identity project-registry pjan-30 pjan-43 board-schema`: exit 0, 8/8 suites, with typecheck and build. The ingress suite checks unchanged registry/manifest bytes, zero `fetch` requests in both dry-run and apply rejection cases, plus registry-only Trello and supported Plane linking.
+- `node /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pjan17-review-published-gla9ruvv/reproduce-binding-gaps.mjs /home/delorenj/code/33GOD/pjangler/.worktrees/PJAN-17-two-providers`: exit 0, failures 0, requests `[]` for all three canonical mismatch fixtures.
+- `npm test`: exit 1, 117/118 suites passed. Only `check:submodules` failed: the pinned CommonProject PJAN-17 commit `f0e4e7cfdd` is not contained in the local CommonProject `main` at `de7a78b242`; this work did not alter or merge that branch. The PJAN-166 suite that previously failed passed on this run.
+- After adding an adapter-invocation marker and a workspace-conflict fixture: `node scripts/run-tests.mjs init-board-ingress pjan-17-provider project-identity pjan-30 pjan-43 board-schema`: exit 0, 7/7 suites, with typecheck and build. `git diff --check`: exit 0.
+
+A passing overall full gate is **not** claimed; the candidate remains for review without a main merge or Plane write.

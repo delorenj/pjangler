@@ -1378,11 +1378,24 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const now = (input.now ?? new Date()).toISOString();
   const indexed = getOwnRecordValue(registry.projects, slug);
   const existing = localManifest ? recordFromManifest(localManifest, localManifestPath) as ProjectRecord : indexed;
-  const identifier = (input.projectIdentifier ?? existing?.ticket_provider?.identifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
+  const existingProvider = existing?.ticket_provider;
+  const existingBoardId = existingProvider?.board_id || undefined;
+  const existingType = declaredTicketProvider(existingProvider?.type);
+  if (existingType) normalizeTicketProvider(existingType);
+  if (existingBoardId && !existingType) {
+    throw new Error(`Existing board ${existingBoardId} has no declared supported ticket provider; resolve its binding before init`);
+  }
+  const requestedProvider = declaredTicketProvider(input.ticketProvider);
+  if (requestedProvider) normalizeTicketProvider(requestedProvider);
+  if (existingBoardId && requestedProvider && requestedProvider.trim().toLowerCase() !== existingType?.trim().toLowerCase()) {
+    throw new Error(`Existing ${existingType} board ${existingBoardId} cannot be inherited by ${requestedProvider}; resolve its binding before init`);
+  }
+  const providerType = requestedProvider ?? existingType ?? "plane";
+  const identifier = (input.projectIdentifier ?? existingProvider?.identifier ?? proposeProjectIdentifier(input.name)).toUpperCase();
   // A board provisioned by an earlier run lives in the registry, not in the CLI
   // flags — inherit it so re-running init re-links instead of minting a second
   // board.
-  const resolvedBoardId = input.boardId ?? input.planeProjectId ?? (existing?.ticket_provider?.board_id || undefined);
+  const resolvedBoardId = input.boardId ?? input.planeProjectId ?? existingBoardId;
   const inheritedProvenance =
     existing?.ticket_provider?.identifier_source === "provider"
       && existing.ticket_provider.identifier?.toUpperCase() === identifier
@@ -1482,7 +1495,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       },
     },
     ticket_provider: { ...existing?.ticket_provider, ...buildTicketProviderBlock({
-      type: declaredTicketProvider(input.ticketProvider) ?? declaredTicketProvider(existing?.ticket_provider?.type) ?? "plane",
+      type: providerType,
       identifier,
       boardId: resolvedBoardId,
       workspace: input.boardWorkspace ?? input.planeWorkspace ?? existing?.ticket_provider.workspace,
