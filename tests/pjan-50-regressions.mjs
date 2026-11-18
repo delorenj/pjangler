@@ -171,12 +171,7 @@ const attachments = [
 ];
 
 try {
-  // `cancelled` is a first-class normalized state, mapped by every provider.
-  assert.match(
-    readFileSync(join(ADAPTERS, "linear.sh"), "utf8"),
-    /cancelled\)\s+WANT_TYPE=canceled;/,
-    "Linear must map normalized cancelled to its canceled workflow type",
-  );
+  // `cancelled` is a first-class normalized state on supported providers.
   assert.match(
     readFileSync(join(ADAPTERS, "trello.sh"), "utf8"),
     /cancelled\).*Cancelled/,

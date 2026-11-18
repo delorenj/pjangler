@@ -4,6 +4,14 @@ Project definitions now live in repository `.project.json` files with one case-i
 
 Project subsystem bootstrapper CLI + MCP server.
 
+Ticket boards: `plane` and `trello` are supported. `.project.json`
+`ticket_provider.type` is the authority for board reads and writes; a missing
+binding or a historical `linear` value is not silently interpreted as Plane.
+`pj board provider` prints the bound supported type, while unsupported bindings fail
+before adapter/network use. Shared board links use Plane issue URLs only for
+Plane and `https://trello.com/b/<board-id>` for Trello; missing boards yield no
+link. Existing Trello operations remain limited to what its adapter implements.
+
 ## Install
 
 Requires Node 24 or newer. Project skills use `@delorenj/skillex` 0.1.2; see

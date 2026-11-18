@@ -618,7 +618,7 @@ const boardCmd = program
 
 boardCmd
   .command("provider")
-  .description("Print this project's ticket provider (plane|trello|linear)")
+  .description("Print this project's ticket provider (plane|trello)")
   .action(() => {
     try {
       console.log(resolveProvider(resolveProject(process.cwd())));
@@ -1038,7 +1038,7 @@ function registerProjectCommands(parent: Command, legacy = false): void {
         console.log(`  ${dim("provider".padEnd(18))} ${result.provider}${result.workspace ? dim(`/${result.workspace}`) : ""}`);
         console.log(`  ${dim("identifier".padEnd(18))} ${cyan(result.identifier || dim("(none)"))}${result.before.identifier && result.before.identifier !== result.identifier ? dim(`  was ${result.before.identifier}`) : ""}`);
         // The two provenance halves are separate facts and are printed as such:
-        // any provider can confirm a board exists; only Plane and Linear assign
+        // any provider can confirm a board exists; only Plane assigns
         // the key, so Trello's stays a proposal by contract, not by failure.
         console.log(`  ${dim("identifier_source".padEnd(18))} ${result.identifierSource}${result.identifierSource === "proposed" ? dim(`  (${result.provider} assigns no key)`) : ""}`);
         console.log(`  ${dim("board_confirmed_at".padEnd(18))} ${result.boardConfirmedAt}`);

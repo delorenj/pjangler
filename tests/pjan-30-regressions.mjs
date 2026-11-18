@@ -38,6 +38,7 @@ const {
   executeProjectInitPlan,
   formatProjectInitPlan,
   planProjectInit,
+  provisionTicketProviderBoard,
 } = createRequire(import.meta.url)(apiBundle);
 
 function makeStubAdapter({ fail = false } = {}) {
@@ -140,6 +141,22 @@ function makePlan({ name, description, repo, registry, identifier, workspace = "
 }
 
 try {
+  {
+    const home = makeDir("unsupported-home");
+    const record = join(home, "unexpected-adapter-call");
+    const adapter = makeStubAdapter();
+    // Even a stale linear.sh file and a Plane key must not authorize a call.
+    writeFileSync(join(adapter, "linear.sh"), `#!/bin/sh\nprintf called > "$PJAN30_RECORD"\n`);
+    const result = provisionTicketProviderBoard({
+      kind: "ticket-provider.create-or-link", provider: "linear", workspace: "33god",
+      identifier: "OLD", repoPath: home, boardName: "Old Board", description: "historical",
+      boardId: "", state: "planned", enabled: true, live: true, reason: "fixture",
+    }, { PJ_TICKET_PROVIDER_ADAPTERS: adapter, PJAN30_RECORD: record, PLANE_API_KEY: SECRET, LINEAR_API_KEY: SECRET });
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, false);
+    assert.match(result.error, /Unsupported ticket provider: linear.*plane, trello/);
+    assert.equal(existsSync(record), false, "unsupported provider must stop before adapter execution");
+  }
   {
     const home = makeDir("live-home");
     const adapters = makeStubAdapter();

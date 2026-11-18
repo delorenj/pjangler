@@ -160,7 +160,7 @@ jobs:
           test -n "$(git -C templates/commonproject tag --list)"
           git -C templates/commonproject describe --tags --abbrev=0 HEAD
 
-      # pjan-23 and pjan-50 test the Krebs tp adapters (plane.sh, linear.sh,
+      # pjan-23 and pjan-50 test the supported Krebs tp adapters (plane.sh,
       # trello.sh): the copy provisionTicketProviderBoard resolves and runs.
       # Krebs owns them and pjangler never vendors them; they live in the public
       # 33GOD monorepo at krebs/adapters/tp. resolveTicketProviderAdapter tries
@@ -176,7 +176,7 @@ jobs:
           git clone --quiet --depth 1 --filter=blob:none --sparse https://github.com/delorenj/33GOD.git "$krebs"
           git -C "$krebs" sparse-checkout set krebs/adapters/tp
           adapters="$krebs/krebs/adapters/tp"
-          for provider in plane linear trello; do test -f "$adapters/$provider.sh"; done
+          for provider in plane trello; do test -f "$adapters/$provider.sh"; done
           echo "Krebs tp adapters at 33GOD $(git -C "$krebs" rev-parse --short HEAD)"
           echo "PJ_TICKET_PROVIDER_ADAPTERS=$adapters" >> "$GITHUB_ENV"
 

@@ -27,7 +27,7 @@ function executable(path, source) {
 executable(join(fakeBin, "copier"), `#!/bin/sh
 if [ -n "\${PJAN67_EFFECT_LOG:-}" ]; then
   printf 'copier:%s\n' "\$*" >> "\$PJAN67_EFFECT_LOG"
-  if env | grep -Eq '^(PLANE_API_KEY|PLANE_[A-Za-z0-9_]+_API_KEY|TRELLO_KEY|TRELLO_TOKEN|LINEAR_API_KEY)='; then
+  if env | grep -Eq '^(PLANE_API_KEY|PLANE_[A-Za-z0-9_]+_API_KEY|TRELLO_KEY|TRELLO_TOKEN)='; then
     printf '%s\n' 'provider-credential-present' >> "\$PJAN67_EFFECT_LOG"
   fi
 fi
@@ -59,7 +59,6 @@ const serverEnv = hermeticEnv({
   PLANE_TEST_SPACE_API_KEY: "pjan67-workspace-test-key",
   TRELLO_KEY: "pjan67-trello-test-key",
   TRELLO_TOKEN: "pjan67-trello-test-token",
-  LINEAR_API_KEY: "pjan67-linear-test-key",
   PJAN67_EFFECT_LOG: effectLog,
   PJAN67_PROVIDER_LOG: providerLog,
 });

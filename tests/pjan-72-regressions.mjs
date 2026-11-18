@@ -176,11 +176,12 @@ test("an absent provider yields undefined", () => {
   assert.equal(boardUrl(undefined, { env: BASE_ENV }), undefined);
 });
 
-test("a missing type defaults to plane", () => {
+test("a missing type never fabricates a Plane URL", () => {
   assert.equal(
     boardUrl({ workspace: "33god", board_id: "b", identifier: "PJAN" }, { env: BASE_ENV }),
-    "https://plane.delo.sh/33god/projects/b/issues",
+    undefined,
   );
+  assert.equal(boardUrl({ type: "linear", workspace: "33god", board_id: "b" }, { env: BASE_ENV }), undefined);
 });
 
 // --------------------------------------------------------------------------

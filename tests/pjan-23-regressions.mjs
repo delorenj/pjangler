@@ -8,7 +8,7 @@ import "./helpers/hermetic-suite.mjs";
 // `create_issue` against the copy pjangler actually executes.
 //
 // Fully hermetic: `curl` is replaced by a recording stub on PATH, so no test
-// here touches Plane, Trello, or Linear.
+// here touches Plane or Trello.
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +20,7 @@ import { findTpAdapters, tpAdaptersFailure } from "./helpers/tp-adapters.mjs";
 const root = resolve(import.meta.dirname, "..");
 const cleanup = [];
 
-const PROVIDERS = ["plane", "linear", "trello"];
+const PROVIDERS = ["plane", "trello"];
 
 /** The normalized op contract every adapter must dispatch. */
 const CONTRACT_OPS = [
@@ -40,13 +40,12 @@ const CONTRACT_OPS = [
  * Provider-specific ops beyond the shared contract, declared per provider.
  * plane.sh dispatches `list_labels` — the scope-label catalog behind the PM
  * scaffold's label stamping (Krebs bd4bb40, mirrored from
- * hermes-agent-template) — ahead of trello/linear. Keep an entry per provider,
+ * hermes-agent-template) — ahead of trello. Keep an entry per provider,
  * even an empty one: adding an op to one adapter must force an explicit
  * decision here — extend the contract, declare the extension, or revert.
  */
 const PROVIDER_EXTENSION_OPS = {
   plane: ["list_labels"],
-  linear: [],
   trello: [],
 };
 
@@ -454,7 +453,6 @@ try {
   const CREDENTIAL_ERRORS = {
     plane: { binding: PLANE_BINDING, pattern: /PLANE_API_KEY is not set/ },
     trello: { binding: { type: "trello", board_id: "board-abc" }, pattern: /TRELLO_KEY and TRELLO_TOKEN must be set/ },
-    linear: { binding: { type: "linear", team: "DEL" }, pattern: /LINEAR_API_KEY is not set/ },
   };
   for (const provider of PROVIDERS) {
     const { binding, pattern } = CREDENTIAL_ERRORS[provider];
@@ -471,7 +469,6 @@ try {
   const CREDENTIALS = {
     plane: PLANE_ENV,
     trello: { TRELLO_KEY: "k", TRELLO_TOKEN: "t" },
-    linear: { LINEAR_API_KEY: "l" },
   };
   for (const provider of PROVIDERS) {
     const { binding } = CREDENTIAL_ERRORS[provider];
