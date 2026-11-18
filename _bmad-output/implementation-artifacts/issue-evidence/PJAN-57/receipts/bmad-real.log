@@ -1,0 +1,4 @@
+npm notice run @delorenj/pjangler@1.5.47 test:bmad-installer-contract
+npm notice run node tests/bmad-installer-contract-regressions.mjs
+Real BMAD pin currency contract passed (pin 6.12.1, npm stable 6.12.4: BMAD 6.12.1 matches the verified installer pin; stable 6.12.4 is newer (advisory))
+Real BMAD installer project_name contract passed (bmad-method@6.12.1, core+bmm+bmb+cis)

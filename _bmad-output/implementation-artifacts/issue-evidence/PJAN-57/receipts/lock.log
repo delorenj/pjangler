@@ -1,0 +1,3 @@
+npm notice run @delorenj/pjangler@1.5.47 check:lock
+npm notice run node scripts/check-package-lock-parity.mjs
+package-lock parity: PASS (@delorenj/pjangler@1.5.47)
