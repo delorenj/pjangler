@@ -620,7 +620,7 @@ test("F14: BMAD pack eviction leaves a skillex-owned bmad-* activation alone and
     const owned = join(f.R, "bmad-html-workspace");
     assert.ok(lstatSync(owned).isSymbolicLink());
     const retired = join(f.R, "bmad-retired-pack");
-    symlinkSync(join(f.base, "registry-cache", "packs", "bmad", "bmad-retired-pack"), retired);
+    symlinkSync(join(f.base, "registry", "packs", "bmad", "6.0.0", "skills", "bmad-retired-pack"), retired);
     const saved = process.env.PJ_BMAD_INSTALLER;
     process.env.PJ_BMAD_INSTALLER = "/bin/false";
     let result;

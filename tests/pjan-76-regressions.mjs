@@ -14,17 +14,17 @@ import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 //   1. nothing resolves a `bmad` pack any more, on a cold cache or otherwise;
 //   2. `.agents/skills.json` never records `bmad-*`, so the installer is the
 //      only writer of those paths;
-//   3. the installer is only ever asked for the six supported CLI roots — no
+//   3. the installer is only ever asked for the seven supported CLI roots — no
 //      .trae / .cline / .cursor / .qwen deluge.
 //
 // (3) is checked structurally rather than by installing, because the failure
 // mode is a missing or widened `--tools`, and a real install is far too slow to
-// run per-tool. The end-to-end proof that a create emits exactly six roots is
+// run per-tool. The end-to-end proof that an init emits exactly seven roots is
 // in the create test below, which does run the real installer.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
@@ -79,14 +79,14 @@ check("no BMAD pack is pinned implicitly on either side", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. The installer is only ever asked for the six supported CLI roots.
+// 2. The installer is only ever asked for the seven supported CLI roots.
 //
 // bmad-method installs for every tool it knows unless `--tools` narrows it,
 // which is how repos sprouted .trae, .cline, .cursor, .qwen and friends. One
 // function builds the argv, so this asserts that function and that every
 // invocation goes through it.
 // ---------------------------------------------------------------------------
-check("bmad-method is only ever invoked with the six supported --tools", () => {
+check("bmad-method is only ever invoked with the seven supported --tools", () => {
   assert.match(
     rulesSource,
     /const BMAD_INSTALL_TOOLS = SUPPORTED_BMAD_TOOLS;/,
@@ -110,7 +110,7 @@ check("bmad-method is only ever invoked with the six supported --tools", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. A real create emits exactly the six supported roots, and BMAD skills come
+// 3. A real init emits exactly the seven supported roots, and BMAD skills come
 //    from the installer rather than a pack.
 //
 // This runs the real `bmad-method` installer against a HOME with no registry
@@ -118,7 +118,7 @@ check("bmad-method is only ever invoked with the six supported --tools", () => {
 // outage. It is the slow check in this file and the only one that proves the
 // whole path.
 // ---------------------------------------------------------------------------
-check("a create on a cold cache installs BMAD and emits only supported CLI roots", () => {
+check("an init on a cold cache installs BMAD and emits only supported CLI roots", () => {
   const home = join(workspace, "home");
   const target = join(workspace, "freshproj");
   // The registry defaults to the SERVICE at http://localhost:8764, so an
@@ -197,6 +197,104 @@ check("a create on a cold cache installs BMAD and emits only supported CLI roots
   for (const supported of SUPPORTED) {
     assert.ok(existsSync(join(target, supported)), `supported CLI root ${supported} was not created`);
   }
+
+  // Retired link provenance is verified against the real CLI entrypoint on the
+  // freshly initialized project, with this suite's isolated HOME/cache/registry.
+  const cli = join(root, "dist", "index.js");
+  const migrate = (dryRun = false) => {
+    const result = spawnSync(process.execPath, [cli, "migrate", "bmad.scaffold", target, "--json", ...(dryRun ? ["--dry-run"] : [])], {
+      cwd: workspace, encoding: "utf8", env: isolatedEnv, timeout: 120_000,
+    });
+    const report = JSON.parse(result.stdout);
+    return { result, rule: report.results.find((entry) => entry.id === "bmad.scaffold") };
+  };
+  const canonical = join(target, ".agents", "skills");
+  const custom = join(workspace, "personal-skill");
+  mkdirSync(custom);
+  writeFileSync(join(custom, "SKILL.md"), "personal bytes\n");
+  const personal = join(canonical, "bmad-my-personal");
+  symlinkSync(custom, personal);
+  const pendingPack = join(workspace, "catalog", "packs", "bmad", "6.0.0", "skills", "bmad-pending");
+  const pendingLink = join(canonical, "bmad-pending");
+  symlinkSync(pendingPack, pendingLink);
+  const blocked = migrate();
+  assert.notEqual(blocked.result.status, 0, "unknown link must refuse migration");
+  assert.equal(blocked.rule.status, "blocked");
+  assert.match(JSON.stringify(blocked.rule), /\.agents\/skills\/bmad-my-personal/);
+  assert.doesNotMatch(JSON.stringify(blocked.rule), /removed retired BMAD pack symlink/);
+  assert.equal(readlinkSync(personal), custom);
+  assert.equal(readlinkSync(pendingLink), pendingPack, "a later conflict must prevent earlier proven removals");
+  assert.equal(readFileSync(join(custom, "SKILL.md"), "utf8"), "personal bytes\n");
+
+  // The same refusal must happen for a dangling custom link and in dry-run.
+  rmSync(personal);
+  symlinkSync(join(workspace, "unknown-missing-skill"), personal);
+  assert.equal(migrate(true).rule.status, "blocked");
+  assert.equal(lstatSync(personal).isSymbolicLink(), true);
+  assert.equal(lstatSync(pendingLink).isSymbolicLink(), true);
+  rmSync(personal);
+  rmSync(pendingLink);
+
+  // Every supported physical skill root, canonical included: live absolute,
+  // live relative, and dangling pack targets. Unlink only the projection.
+  const allRoots = [canonical, ...SUPPORTED.map((name) => join(target, name, "skills"))];
+  const pack = join(workspace, "catalog", "packs", "bmad", "6.0.0", "skills");
+  const links = [];
+  for (const [index, skillRoot] of allRoots.entries()) {
+    // Init's CLI aliases point to canonical: replace the alias with an empty
+    // physical directory so each projection can be verified independently.
+    if (lstatSync(skillRoot).isSymbolicLink()) rmSync(skillRoot);
+    mkdirSync(skillRoot, { recursive: true });
+    const name = `bmad-retired-${index}`;
+    const destination = join(skillRoot, name);
+    const source = join(pack, name);
+    if (index !== 2) {
+      mkdirSync(source, { recursive: true });
+      writeFileSync(join(source, "SKILL.md"), `retired-${index}\n`);
+    }
+    symlinkSync(index % 2 ? relative(skillRoot, source) : source, destination);
+    links.push({ destination, source, index });
+  }
+  const preview = migrate(true);
+  assert.equal(preview.rule.status, "applied", JSON.stringify(preview.rule));
+  for (const { destination } of links) {
+    assert.ok(preview.rule.changedFiles.includes(destination), `preview missed ${destination}`);
+    assert.equal(lstatSync(destination).isSymbolicLink(), true, `preview mutated ${destination}`);
+  }
+  const applied = migrate();
+  assert.equal(applied.result.status, 0, JSON.stringify(applied.rule));
+  for (const { destination, source, index } of links) {
+    assert.ok(applied.rule.changedFiles.includes(destination), `cleanup missed ${destination}`);
+    assert.match(applied.rule.details.join("\n"), new RegExp(`removed retired BMAD pack symlink .*bmad-retired-${index}`));
+    assert.equal(existsSync(destination), false, `retired link survived at ${destination}`);
+    if (index !== 2) assert.equal(readFileSync(join(source, "SKILL.md"), "utf8"), `retired-${index}\n`);
+  }
+  const repeated = migrate();
+  assert.equal(repeated.result.status, 0, JSON.stringify(repeated.rule));
+  assert.doesNotMatch(repeated.rule.details.join("\n"), /retired BMAD pack symlink/);
+
+  // A foreign skills-root alias must not redirect cleanup into another tree.
+  const alias = join(target, ".zcode", "skills");
+  rmSync(alias, { recursive: true, force: true });
+  const foreign = join(workspace, "foreign-skills");
+  mkdirSync(foreign);
+  const foreignLink = join(foreign, "bmad-foreign");
+  symlinkSync(join(pack, "bmad-foreign"), foreignLink);
+  symlinkSync(foreign, alias);
+  const refusedAlias = migrate();
+  assert.equal(refusedAlias.rule.status, "blocked");
+  assert.match(JSON.stringify(refusedAlias.rule), /\.zcode\/skills/);
+  assert.ok(lstatSync(foreignLink).isSymbolicLink());
+  assert.equal(readlinkSync(alias), foreign);
+  rmSync(alias);
+  mkdirSync(alias);
+  const cliCustom = join(alias, "bmad-my-cli-custom");
+  symlinkSync(relative(alias, custom), cliCustom);
+  const refusedCli = migrate(true);
+  assert.equal(refusedCli.rule.status, "blocked");
+  assert.match(JSON.stringify(refusedCli.rule), /\.zcode\/skills\/bmad-my-cli-custom/);
+  assert.equal(readlinkSync(cliCustom), relative(alias, custom));
+  assert.equal(readFileSync(join(custom, "SKILL.md"), "utf8"), "personal bytes\n");
 
   // ...and the generated projections stay out of git through the effective
   // global policy. The repository contract keeps only canonical `.agents`.
