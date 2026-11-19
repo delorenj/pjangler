@@ -2020,18 +2020,22 @@ function bmadProjectNameIssues(repoRoot: string): { paths: string[]; details: st
   const details: string[] = [];
   const configToml = join(repoRoot, "_bmad", "config.toml");
   const tomlText = safeReadText(configToml);
-  const tomlMatch = tomlText?.match(/^project_name\s*=\s*"((?:\\.|[^"\\])*)"\s*$/m);
-  let tomlName: string | undefined;
-  if (tomlMatch) {
+  let tomlName: unknown;
+  let parseFailure = false;
+  if (tomlText !== null) {
     try {
-      tomlName = JSON.parse(`"${tomlMatch[1]}"`) as string;
+      const parsed = parseToml(tomlText) as { core?: { project_name?: unknown } };
+      tomlName = parsed.core?.project_name;
     } catch {
-      tomlName = undefined;
+      parseFailure = true;
     }
   }
-  if (tomlName !== expected) {
+  if (parseFailure) {
     paths.push(configToml);
-    details.push(`_bmad/config.toml project_name must be ${JSON.stringify(expected)}`);
+    details.push("_bmad/config.toml is not valid TOML (the installed resolver cannot read it)");
+  } else if (tomlText !== null && tomlName !== expected) {
+    paths.push(configToml);
+    details.push(`_bmad/config.toml [core].project_name must be ${JSON.stringify(expected)}`);
   }
   const bmadRoot = join(repoRoot, "_bmad");
   if (existsSync(bmadRoot)) {
