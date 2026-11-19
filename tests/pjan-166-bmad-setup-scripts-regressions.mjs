@@ -841,13 +841,17 @@ test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that
     const dir = join(resolved.root, "src", "scripts");
     return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".py")) : [];
   };
-  // The release published right before the constant, read from the registry, so a constant moved later cannot pass.
-  const listed = realSpawnSync("npm", ["view", "bmad-method", "versions", "--json"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
-  assert.equal(listed.status, 0, `npm view failed: ${listed.stderr}`);
-  const versions = JSON.parse(listed.stdout);
-  const at = versions.indexOf(BMAD_FIRST_SCRIPTS_RELEASE);
-  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release`);
-  assert.deepEqual(shipped(versions[at - 1]), [], `${versions[at - 1]}, the release before the boundary, ships no _bmad/scripts source`);
+  // Full `npm view ... versions` occasionally returns an incomplete cached index
+  // under the suite's short-lived HOME. Query the exact releases instead: the
+  // package resolver below checks their actual source, not a metadata list.
+  const predecessor = "6.3.1-next.12";
+  assert.equal(BMAD_FIRST_SCRIPTS_RELEASE, "6.3.1-next.13", "update the predecessor when moving the boundary");
+  for (const version of [predecessor, BMAD_FIRST_SCRIPTS_RELEASE]) {
+    const listed = realSpawnSync("npm", ["view", `bmad-method@${version}`, "version", "--json"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
+    assert.equal(listed.status, 0, `npm view ${version} failed: ${listed.stderr}`);
+    assert.equal(JSON.parse(listed.stdout), version, `the registry must publish bmad-method@${version}`);
+  }
+  assert.deepEqual(shipped(predecessor), [], `${predecessor}, the release before the boundary, ships no _bmad/scripts source`);
   assert.notDeepEqual(shipped(BMAD_FIRST_SCRIPTS_RELEASE), [], "the boundary release ships one");
 });
 
