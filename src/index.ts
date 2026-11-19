@@ -715,6 +715,30 @@ const projectCmd = program
   .command("project", { hidden: true })
   .description("Legacy aliases for project commands");
 
+program
+  .command("migrate-project-status")
+  .description("Preview or apply the explicit registry-only project status backfill to active")
+  .requiredOption("--registry <url>", "Explicit project registry service URL (no default or YAML adapter)")
+  .option("--apply", "Change registry statuses; default is read-only preview")
+  .option("--json", "Output machine-parseable JSON")
+  .action((options: { registry: string; apply?: boolean; json?: boolean }) => {
+    try {
+      const location = resolveRegistryLocation(options.registry);
+      if (!/^https?:\/\//i.test(location)) throw new Error("Status migration requires a registry service URL, not a file");
+      const result = registryRequest<{ registry: string; total: number; affected: Array<{ project_id: string; old_status: unknown; new_status: string }> }>(
+        location, "POST", "/v1/project-status-migration", { apply: Boolean(options.apply) },
+      );
+      if (options.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(`${options.apply ? "Applied" : "Preview"}: ${result.registry} at ${location}; ${result.affected.length} of ${result.total} records`);
+        for (const item of result.affected) console.log(`  ${item.project_id}: ${JSON.stringify(item.old_status)} -> ${item.new_status}`);
+      }
+    } catch (error) {
+      console.error(`${xmark} ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
 projectCmd
   .command("init")
   .argument("[name]", "Project display name")

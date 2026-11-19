@@ -132,7 +132,7 @@ async function writeManifest(original: ReadManifest, manifest: Json): Promise<Re
     try { await dir.sync(); } finally { await dir.close(); }
     return await readManifest(original.path);
   } catch (error) {
-    if (committed) throw new RegistryError(`Manifest committed at ${original.path}, but indexing is stale. Run pj reindex --all. ${String(error)}`, 503, 'index_stale');
+    if (committed) throw new RegistryError(`Manifest committed at ${original.path}, but indexing is stale. Retry the original save/request (reindex cannot recover a registry-only status change). ${String(error)}`, 503, 'index_stale');
     throw error;
   } finally { await unlink(temp).catch(() => {}); }
 }
@@ -196,7 +196,8 @@ export class ManifestIndex {
         END $$;
         ALTER TABLE pjangler_index.projects ADD CONSTRAINT project_id_canonical
           CHECK (project_id::text ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' AND length(project_id::text) <= 128);
-        CREATE TABLE IF NOT EXISTS pjangler_index.settings (key text PRIMARY KEY, value jsonb NOT NULL);`);
+        CREATE TABLE IF NOT EXISTS pjangler_index.settings (key text PRIMARY KEY, value jsonb NOT NULL);
+        ALTER TABLE pjangler_index.projects ADD COLUMN IF NOT EXISTS project_status_override text;`);
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
     finally { client.release(); }
@@ -213,7 +214,7 @@ export class ManifestIndex {
       } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         const path = this.committed.get(client);
-        if (path && !(error instanceof RegistryError && error.code === 'index_stale')) throw new RegistryError(`Manifest committed at ${path}; index is stale. Retry the same request or reindex. ${String(error)}`, 503, 'index_stale');
+        if (path && !(error instanceof RegistryError && error.code === 'index_stale')) throw new RegistryError(`Manifest committed at ${path}; index is stale. Retry the same request (reindex cannot recover a registry-only status change). ${String(error)}`, 503, 'index_stale');
         throw error;
       }
       finally { this.committed.delete(client); client.release(); }
@@ -234,10 +235,13 @@ export class ManifestIndex {
   }
   private async persist(client: PoolClient, read: ReadManifest, oldId?: string) {
     await this.registrationRows(client, read);
+    const prior = oldId && oldId !== read.id ? (await client.query('SELECT project_status_override FROM pjangler_index.projects WHERE project_id=$1 AND manifest_path=$2', [oldId, read.path])).rows[0] : undefined;
     if (oldId && oldId !== read.id) await client.query('DELETE FROM pjangler_index.projects WHERE project_id=$1 AND manifest_path=$2', [oldId, read.path]);
-    await client.query(`INSERT INTO pjangler_index.projects(project_id,manifest_path,snapshot,content_hash) VALUES($1,$2,$3,$4)
-      ON CONFLICT(project_id) DO UPDATE SET manifest_path=excluded.manifest_path,snapshot=excluded.snapshot,
-      content_hash=excluded.content_hash,indexed_at=now(),status='ok',error=NULL`, [read.id, read.path, JSON.stringify(recordFromManifest(read.manifest, read.path)), read.hash]);
+    await client.query(`INSERT INTO pjangler_index.projects(project_id,manifest_path,snapshot,content_hash,project_status_override) VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT(project_id) DO UPDATE SET manifest_path=excluded.manifest_path,
+      snapshot=CASE WHEN pjangler_index.projects.project_status_override IS NULL THEN excluded.snapshot
+        ELSE jsonb_set(excluded.snapshot, '{status}', to_jsonb(pjangler_index.projects.project_status_override)) END,
+      content_hash=excluded.content_hash,indexed_at=now(),status='ok',error=NULL`, [read.id, read.path, JSON.stringify({ ...recordFromManifest(read.manifest, read.path), ...(prior?.project_status_override ? { status: prior.project_status_override } : {}) }), read.hash, prior?.project_status_override ?? null]);
   }
   private async register(client: PoolClient, path: string) {
     let read = await readManifest(path);
@@ -258,7 +262,9 @@ export class ManifestIndex {
     for (const row of rows) {
       try {
         const read = await readManifest(row.manifest_path);
-        if (read.hash !== row.content_hash || row.status !== 'ok' || !equal(row.snapshot, recordFromManifest(read.manifest, read.path))) await this.persist(client, read, row.project_id);
+        const projected = recordFromManifest(read.manifest, read.path);
+        if (row.project_status_override !== null) projected.status = row.project_status_override;
+        if (read.hash !== row.content_hash || row.status !== 'ok' || !equal(row.snapshot, projected)) await this.persist(client, read, row.project_id);
       } catch (error) {
         if (!(error instanceof RegistryError) && !['ENOENT', 'ENOTDIR', 'ELOOP', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
         // Read path stays side-effect free at steady state: only write when the status or error actually changes.
@@ -269,18 +275,42 @@ export class ManifestIndex {
   private async snapshot(client: PoolClient): Promise<Json> {
     const rows = (await client.query('SELECT * FROM pjangler_index.projects ORDER BY project_id')).rows;
     const settings = (await client.query('SELECT key,value FROM pjangler_index.settings')).rows;
-    const projects: Json = Object.create(null), hashes: Json = Object.create(null), statuses: Json = Object.create(null), baseline: Json = Object.create(null);
+    const projects: Json = Object.create(null), hashes: Json = Object.create(null), statuses: Json = Object.create(null), baseline: Json = Object.create(null), manifestStatuses: Json = Object.create(null);
     for (const row of rows) {
       projects[row.project_id] = row.snapshot;
       hashes[row.project_id] = row.content_hash;
       baseline[row.project_id] = structuredClone(row.snapshot);
       statuses[row.project_id] = { status: row.status, error: row.error, manifest_path: row.manifest_path, content_hash: row.content_hash, indexed_at: row.indexed_at };
+      if (row.project_status_override !== null && row.status === 'ok') {
+        try {
+          const read = await readManifest(row.manifest_path);
+          manifestStatuses[row.project_id] = { present: Object.hasOwn(read.manifest, 'status'), value: read.manifest.status ?? null };
+        } catch { /* invalid or missing manifests remain protected by readManifest in save */ }
+      }
     }
     const global = Object.fromEntries(settings.map(row => [row.key, row.value]));
-    return { ...global, schema_version: 1, projects, __registry_hashes: hashes, __registry_baseline: baseline, __registry_status: statuses, __registry_settings_baseline: structuredClone(global) };
+    return { ...global, schema_version: 1, projects, __registry_hashes: hashes, __registry_baseline: baseline, __registry_status: statuses, __registry_manifest_status: manifestStatuses, __registry_settings_baseline: structuredClone(global) };
   }
   load(): Promise<Json> { return this.serialized(async client => { await this.refresh(client); return this.snapshot(client); }); }
   inspect(): Promise<Json> { return this.serialized(client => this.snapshot(client)); }
+  /** Registry-only, explicit status backfill. Manifest files and other fields are never written. */
+  migrateProjectStatus(apply: boolean): Promise<Json> {
+    return this.serialized(async client => {
+      const rows = (await client.query('SELECT project_id, snapshot FROM pjangler_index.projects ORDER BY project_id')).rows;
+      const affected = rows.filter(row => row.snapshot.status !== 'active').map(row => ({
+        project_id: row.project_id as string,
+        old_status: Object.hasOwn(row.snapshot, 'status') ? row.snapshot.status as unknown : null,
+        new_status: 'active',
+      }));
+      if (apply) {
+        await client.query(`UPDATE pjangler_index.projects
+          SET project_status_override='active',
+              snapshot=jsonb_set(snapshot, '{status}', '"active"'::jsonb)
+          WHERE snapshot->>'status' IS DISTINCT FROM 'active'`);
+      }
+      return { apply, registry: 'pjangler_index.projects', total: rows.length, affected };
+    });
+  }
   index(path: string): Promise<Json> { return this.serialized(async client => { await this.register(client, path); await this.refresh(client); return this.snapshot(client); }); }
   rebuild(paths: string[]): Promise<Json> {
     return this.serialized(async client => {
@@ -317,7 +347,7 @@ export class ManifestIndex {
     return this.serialized(async client => {
       await this.refresh(client);
       const rows = (await client.query('SELECT * FROM pjangler_index.projects')).rows;
-      const writes: Array<{ read: ReadManifest; manifest: Json; oldId?: string }> = [];
+      const writes: Array<{ read: ReadManifest; manifest: Json; oldId?: string; releaseStatus?: boolean }> = [];
       const ids = new Set<string>();
       for (const [key, desiredInput] of Object.entries(registry.projects)) {
         if (!object(desiredInput)) throw new RegistryError(`Invalid project record ${key}`);
@@ -346,14 +376,28 @@ export class ManifestIndex {
             if (field === 'notebook' ? read.manifest.notebook?.binding === undefined : field === 'notebook_policy' ? read.manifest.notebook?.policy === undefined : read.manifest[manifestKey] === undefined) next[field] = value;
             else next[field] = mergeMissing(current[field], value);
           }
-        } else if (base) next = mergeChanges(base, desired, current, id);
+        } else if (base) {
+          const migrated = row?.project_status_override === 'active';
+          const statusChanged = migrated && desired.status !== base.status;
+          const manifestBaseline = registry.__registry_manifest_status?.[id];
+          const manifestStatus = { present: Object.hasOwn(read.manifest, 'status'), value: read.manifest.status ?? null };
+          if (statusChanged && object(manifestBaseline) && !equal(manifestStatus, { present: manifestBaseline.present, value: manifestBaseline.value }) && !equal(manifestStatus, { present: true, value: desired.status })) {
+            throw new RegistryError(`Concurrent manifest change conflicts at ${id}.status; reload the registry and retry`, 409, 'stale_manifest');
+          }
+          if (statusChanged && !object(manifestBaseline)) throw new RegistryError(`Missing status baseline for ${id}; reload the registry and retry`, 409, 'stale_manifest');
+          next = mergeChanges(base, desired, migrated ? { ...current, status: base.status } : current, id);
+        }
         else if (equal(current, desired)) next = current;
         else throw new RegistryError(`Missing concurrency baseline for ${id}; reload the registry and retry`, 409, 'stale_manifest');
         if (next.repo_path !== current.repo_path) throw new RegistryError(`Cannot move ${id} through a registry snapshot; register its canonical manifest path`, 409, 'identity_conflict');
         const manifest = applyRecord(read.manifest, current, next);
+        if (row?.project_status_override === 'active' && desired.status === base?.status) {
+          if (Object.hasOwn(read.manifest, 'status')) manifest.status = read.manifest.status;
+          else delete manifest.status;
+        }
         validateManifestShape(manifest, path);
         serializedManifest(manifest);
-        writes.push({ read, manifest, oldId: row?.project_id });
+        writes.push({ read, manifest, oldId: row?.project_id, releaseStatus: row?.project_status_override === 'active' && desired.status !== base?.status });
       }
       let settings = Object.fromEntries(Object.entries(registry).filter(([key]) => !['schema_version', 'projects'].includes(key) && !key.startsWith('__registry_')));
       if (object(registry.__registry_settings_baseline)) {
@@ -366,12 +410,13 @@ export class ManifestIndex {
         for (const write of writes) {
           let read = write.read;
           if (!equal(read.manifest, write.manifest)) { read = await writeManifest(read, write.manifest); committedPath = read.path; this.committed.set(client, read.path); }
+          if (write.releaseStatus) await client.query('UPDATE pjangler_index.projects SET project_status_override=NULL WHERE project_id=$1', [read.id]);
           await this.persist(client, read, write.oldId);
         }
         await this.saveSettings(client, settings);
         return await this.snapshot(client);
       } catch (error) {
-        if (committedPath) throw new RegistryError(`Manifest saved at ${committedPath}; index is stale. Retry the same save or reindex. ${String(error)}`, 503, 'index_stale');
+        if (committedPath) throw new RegistryError(`Manifest saved at ${committedPath}; index is stale. Retry the same save (reindex cannot recover a registry-only status change). ${String(error)}`, 503, 'index_stale');
         throw error;
       }
     });

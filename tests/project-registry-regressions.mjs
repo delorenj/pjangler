@@ -118,6 +118,7 @@ try {
     scaffold: false,
     pjanglerRoot: root,
   });
+  assert.equal(generatedSafePlan.project.status, 'active', 'new project plans default to active');
   assert.equal(generatedSafePlan.project.repo_path, join(directSafetyRoot, "project"), "generated targets must use the safe generated slug");
   assert.equal(existsSync(directRegistry), false, "a direct dry plan must remain side-effect free");
 
@@ -142,12 +143,15 @@ try {
     assert.equal(Object.getPrototypeOf(specialPlan.project.agents), null, "planned agent maps must have no inherited keys");
     const applied = await directExecuteProjectInitPlan(specialPlan);
     assert.equal(applied.ok, true, JSON.stringify(applied.errors));
+    assert.equal(specialPlan.project.status, 'active');
+    assert.equal(JSON.parse(readFileSync(join(directSafetyRoot, specialKey, '.project.json'), 'utf8')).status, 'active');
   }
   const specialRegistry = directLoadProjectRegistry(prototypeRegistry);
   assert.equal(Object.getPrototypeOf(specialRegistry.projects), null, "loaded project maps must have no prototype");
   for (const specialKey of ["constructor", "prototype"]) {
     const project = directGetProject(specialRegistry, specialKey);
     assert.equal(project.slug, specialKey);
+    assert.equal(project.status, 'active', 'persisted registry records for new projects are active');
     assert.equal(Object.getPrototypeOf(project.agents), null, "loaded agent maps must have no prototype");
   }
 

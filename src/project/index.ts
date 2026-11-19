@@ -1479,7 +1479,9 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     // sync path) never rewrites it.
     // NOTE: unrelated to `ticket_provider.state` and `agents.*.provisioning_state`,
     // which are different lifecycles and still default to "planned".
-    status: existing?.status ?? DEFAULT_NEW_PROJECT_STATUS,
+    status: localManifest && isRegistryServiceLocation(registryPath) && (registry as ProjectRegistry & { __registry_manifest_status?: Record<string, unknown> }).__registry_manifest_status?.[slug]
+      ? indexed?.status ?? existing?.status ?? DEFAULT_NEW_PROJECT_STATUS
+      : existing?.status ?? DEFAULT_NEW_PROJECT_STATUS,
     source_artifacts: sourceSkillPath
       ? [{ kind: "skill", path: sourceSkillPath, package_name: input.packageName ?? slug }]
       : existing?.source_artifacts ?? [],
@@ -1522,6 +1524,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
 
   const pjanglerRoot = resolve(input.pjanglerRoot ?? resolvePjanglerRoot());
   const manifest = projectManifestFromRegistryProject(project);
+  if (localManifest && isRegistryServiceLocation(registryPath) && (registry as ProjectRegistry & { __registry_manifest_status?: Record<string, unknown> }).__registry_manifest_status?.[slug]) {
+    if (Object.hasOwn(localManifest, "status")) manifest.status = localManifest.status;
+    else delete manifest.status;
+  }
   // The manifest this plan will WRITE must also be one the registry accepts (a
   // new project's is wholly planned here, an adopted one's is merged from the
   // repo's own).

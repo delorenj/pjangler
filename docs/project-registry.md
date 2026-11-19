@@ -41,6 +41,7 @@ else. A repo with no employees has an empty map.
 | `pj reindex --receipt <path>` | Rebuild discovery from a migration receipt |
 | `pj import <checkout-or-url>` | Adopt a checkout or Git remote as a submodule of the current parent |
 | `pj init --id px` | Initialize/register a project; use `--apply` to apply |
+| `pj migrate-project-status --registry <url>` | Preview every existing registry status that is not `active`; `--apply` updates only registry status, including archived and missing/null values, without changing repo manifests |
 | `pj link px <board-id>` | Bind an existing provider board |
 | `pj rename px px2` | Rename a project: one key becomes the project ID and the board identifier (dry run; `--apply` writes) |
 | `pj identity` | Read board identifiers back from the provider and repair the registries |

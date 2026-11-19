@@ -197,6 +197,89 @@ try {
   registry = await ok(); registry.projects.gamma = { project_id: 'gamma', slug: 'gamma', repo_path: join(temp, 'gamma'), name: 'Legacy name', description: 'Legacy description', agents: {}, status: 'archived', template: { custom: true }, source_artifacts: [{ kind: 'skill', path: '/artifact' }], created_at: '2026-01-01', updated_at: '2026-01-02', extra_legacy: 'keep' };
   await ok('/v1/registry', 'PUT', registry);
   assert.equal(read(gamma).project_name, 'Manifest wins'); assert.equal(read(gamma).project_description, 'Legacy description'); assert.equal(read(gamma).extra_legacy, 'keep'); assert.equal(read(gamma).status, 'archived'); assert.equal(read(gamma).unknown, 'retain');
+  // PJAN-26: the explicit registry backfill touches every indexed record, not manifests.
+  const planned = manifest('planned-status', { project_id: 'planned-status', status: 'planned', ticket_provider: { type: 'plane', state: 'linked' }, agents: { worker: { provisioning_state: 'provisioned' } } });
+  const active = manifest('active-status', { project_id: 'active-status', status: 'active' });
+  const absent = manifest('absent-status', { project_id: 'absent-status' });
+  const nullable = manifest('null-status', { project_id: 'null-status' });
+  for (const path of [planned, active, absent, nullable]) await ok('/v1/index', 'POST', { manifest_path: path });
+  await db.query("UPDATE pjangler_index.projects SET snapshot=snapshot-'status' WHERE project_id='absent-status'");
+  await db.query("UPDATE pjangler_index.projects SET snapshot=jsonb_set(snapshot,'{status}','null'::jsonb) WHERE project_id='null-status'");
+  const beforeStatus = (await db.query('SELECT project_id,manifest_path,snapshot,content_hash,indexed_at,status,error FROM pjangler_index.projects ORDER BY project_id')).rows;
+  const originalManifests = new Map([planned, active, absent, nullable, gamma].map(path => [path, readFileSync(path)]));
+  const preview = await ok('/v1/project-status-migration', 'POST', { apply: false });
+  assert.equal(preview.registry, 'pjangler_index.projects');
+  assert.equal(preview.total, beforeStatus.length);
+  assert.deepEqual(preview.affected.filter(item => ['planned-status', 'active-status', 'absent-status', 'null-status', 'gamma'].includes(item.project_id)), [
+    { project_id: 'absent-status', old_status: null, new_status: 'active' },
+    { project_id: 'gamma', old_status: 'archived', new_status: 'active' },
+    { project_id: 'null-status', old_status: null, new_status: 'active' },
+    { project_id: 'planned-status', old_status: 'planned', new_status: 'active' },
+  ]);
+  assert.deepEqual((await db.query('SELECT project_id,manifest_path,snapshot,content_hash,indexed_at,status,error FROM pjangler_index.projects ORDER BY project_id')).rows, beforeStatus, 'preview must not write rows');
+  assert.equal((await request('/v1/project-status-migration', 'POST', { apply: 'yes' })).status, 400);
+  const applied = await ok('/v1/project-status-migration', 'POST', { apply: true });
+  assert.deepEqual(applied.affected, preview.affected);
+  const migrated = (await db.query('SELECT project_id,manifest_path,snapshot,content_hash,indexed_at,status,error FROM pjangler_index.projects ORDER BY project_id')).rows;
+  assert.equal(migrated.length, beforeStatus.length);
+  for (let i = 0; i < migrated.length; i++) {
+    assert.equal(migrated[i].snapshot.status, 'active');
+    const originalStatus = beforeStatus[i].snapshot.status;
+    const reconstructed = { ...migrated[i], snapshot: { ...migrated[i].snapshot } };
+    if (Object.hasOwn(beforeStatus[i].snapshot, 'status')) reconstructed.snapshot.status = originalStatus;
+    else delete reconstructed.snapshot.status;
+    assert.deepEqual(reconstructed, beforeStatus[i], 'all non-status columns and snapshot fields survive');
+  }
+  assert.equal((await ok('/v1/project-status-migration', 'POST', { apply: true })).affected.length, 0);
+  assert.deepEqual((await db.query('SELECT project_id,manifest_path,snapshot,content_hash,indexed_at,status,error FROM pjangler_index.projects ORDER BY project_id')).rows, migrated, 'repeat apply must not update rows');
+  for (const [path, text] of originalManifests) assert.deepEqual(readFileSync(path), text, 'backfill must not rewrite repo manifests');
+  registry = await ok(); assert.equal(registry.projects['planned-status'].ticket_provider.state, 'linked'); assert.equal(registry.projects['planned-status'].agents.worker.provisioning_state, 'provisioned');
+  assert.equal(registry.projects.gamma.status, 'active'); assert.equal(read(gamma).status, 'archived');
+  registry.projects.gamma.description = 'unrelated post-migration edit';
+  await ok('/v1/registry', 'PUT', registry);
+  assert.equal(read(gamma).status, 'archived', 'ordinary unrelated save must not rewrite manifest status');
+  assert.equal((await ok()).projects.gamma.status, 'active', 'index refresh must preserve migrated status');
+  write(gamma, { ...read(gamma), project_description: 'direct post-migration edit' });
+  const postEdit = await ok();
+  assert.equal(postEdit.projects.gamma.status, 'active', 'direct manifest reindex must preserve migrated status');
+  const oldSnapshot = structuredClone(postEdit);
+  oldSnapshot.projects.gamma.description = 'old snapshot unrelated change';
+  await ok('/v1/registry', 'PUT', oldSnapshot);
+  assert.equal((await ok()).projects.gamma.status, 'active', 'unrelated snapshot save cannot undo the backfill');
+  const beforeMigration = await ok();
+  await ok('/v1/project-status-migration', 'POST', { apply: true });
+  write(gamma, { ...read(gamma), status: 'archived' });
+  beforeMigration.projects.gamma.description = 'pre-migration snapshot metadata';
+  await ok('/v1/registry', 'PUT', beforeMigration);
+  assert.equal(read(gamma).status, 'archived', 'metadata-only save cannot overwrite a concurrent direct status edit');
+  assert.equal((await ok()).projects.gamma.status, 'active');
+  const metadataSnapshot = await ok();
+  write(gamma, { ...read(gamma), status: 'paused' });
+  metadataSnapshot.projects.gamma.description = 'metadata only with direct status edit';
+  await ok('/v1/registry', 'PUT', metadataSnapshot);
+  assert.equal((await ok()).projects.gamma.status, 'active', 'metadata-only save must preserve override despite direct status edit');
+  const refreshedStatus = await ok(); refreshedStatus.projects.gamma.status = 'archived';
+  await ok('/v1/registry', 'PUT', refreshedStatus);
+  assert.equal((await ok()).projects.gamma.status, 'archived', 'fresh intentional status edit can replace direct status edit');
+  await ok('/v1/project-status-migration', 'POST', { apply: true });
+  const staleStatus = structuredClone(await ok());
+  write(gamma, { ...read(gamma), status: 'paused' });
+  staleStatus.projects.gamma.status = 'archived';
+  assert.equal((await request('/v1/registry', 'PUT', staleStatus)).status, 409, 'conflicting direct status edit must fail closed');
+  assert.equal(read(gamma).status, 'paused');
+  write(gamma, { ...read(gamma), status: 'archived' });
+  const statusChoice = await ok(); statusChoice.projects.gamma.status = 'archived';
+  await ok('/v1/registry', 'PUT', statusChoice);
+  assert.equal((await ok()).projects.gamma.status, 'archived', 'explicit status change releases migration override');
+  assert.equal((await db.query("SELECT project_status_override FROM pjangler_index.projects WHERE project_id='gamma'")).rows[0].project_status_override, null);
+  const renameMigrated = manifest('rename-migrated', { project_id: 'rename-migrated', status: 'planned' });
+  await ok('/v1/index', 'POST', { manifest_path: renameMigrated });
+  await ok('/v1/project-status-migration', 'POST', { apply: true });
+  write(renameMigrated, { ...read(renameMigrated), project_id: 'renamed-migrated' });
+  const afterRename = await ok('/v1/index', 'POST', { manifest_path: renameMigrated });
+  assert.equal(afterRename.projects['renamed-migrated'].status, 'active', 'rename preserves registry-only migrated status');
+  assert.equal(afterRename.projects['rename-migrated'], undefined);
+  console.log('PASS PJAN-26 registry-only migration: preview, all statuses incl archived/missing/null, repeat, manifest/non-status preservation, independent provisioning, refresh, intentional status and rename');
   const symlinkPath = join(temp, 'symlink'); mkdirSync(symlinkPath); symlinkSync(alpha, join(symlinkPath, '.project.json'));
   assert.equal((await request('/v1/index', 'POST', { manifest_path: join(symlinkPath, '.project.json') })).status, 422);
   // Force the index transaction to fail after the manifest rename, then prove retry convergence.
@@ -204,6 +287,8 @@ try {
     CREATE TRIGGER reject_update BEFORE UPDATE ON pjangler_index.projects FOR EACH ROW EXECUTE FUNCTION pjangler_index.reject_update()`);
   registry = await ok(); registry.projects.alpha.description = 'saved despite index failure';
   const failed = await request('/v1/registry', 'PUT', registry); assert.equal(failed.status, 503); assert.equal(failed.data.code, 'index_stale');
+  assert.match(failed.data.error, /Retry the same save/);
+  assert.doesNotMatch(failed.data.error, /same save or reindex/);
   assert.equal(read(alpha).project_description, 'saved despite index failure');
   await db.query('DROP TRIGGER reject_update ON pjangler_index.projects');
   await ok('/v1/registry', 'PUT', registry); assert.equal((await ok()).projects.alpha.description, 'saved despite index failure');

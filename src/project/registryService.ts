@@ -63,6 +63,11 @@ export async function createRegistryService(options: { pool?: Pool; port?: numbe
           break;
         case 'GET /v1/registry': result = await index.load(); break;
         case 'GET /v1/index': result = await index.inspect(); break;
+        case 'POST /v1/project-status-migration': {
+          const payload = await body(request);
+          if (typeof payload.apply !== 'boolean' || Object.keys(payload).some(key => key !== 'apply')) throw new RegistryError('Expected apply boolean', 400, 'invalid_request');
+          result = await index.migrateProjectStatus(payload.apply); break;
+        }
         case 'POST /v1/reindex': result = await index.load(); break;
         case 'POST /v1/rebuild': {
           const payload = await body(request);
