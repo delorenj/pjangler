@@ -58,4 +58,4 @@ context: []
 ## Verification
 **Commands:**
 - `node scripts/run-tests.mjs pjan-107 pjan-23 pjan-50` — typecheck, build, adapter suites pass.
-- `node scripts/run-tests.mjs check:hermetic-test-env` — suite containment gate passes.
+- `node scripts/run-tests.mjs check:hermetic-test-env` — fails (exit 1) on `tests/pjan-75-regressions.mjs:55`: `PJAN75_CLI_BUILT` is read but not granted through the hermetic-suite preamble. The same finding reproduces on unchanged main; this is a pre-existing gate failure, not a PJAN-107 pass or a fix in this candidate.
