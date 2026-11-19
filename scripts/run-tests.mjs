@@ -149,6 +149,8 @@ const SUITES = [
   "tests/pjan-211-init-preflight-regressions.mjs",
   "tests/mcp-catalog-regressions.mjs",
   "tests/mcp-server-regressions.mjs",
+  "tests/pjan-70-operation.mjs",
+  "tests/pjan-70-protocol.mjs",
   "tests/pjan-69-mcp-bounds.mjs",
   "tests/project-registry-regressions.mjs",
   "tests/shared-board-scope-regressions.mjs",

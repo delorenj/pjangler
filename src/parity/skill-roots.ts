@@ -1,4 +1,4 @@
-import { runProcess } from "../lifecycle/operation";
+import { assertOperationActive, runProcess } from "../lifecycle/operation";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,

@@ -33,7 +33,7 @@ test("F1/A1: a .agents/skills link back into the alias entry is never a duplicat
     symlinkSync("../../.claude/skills/myskill", join(f.R, "myskill"));
     const before = repoState(f.project);
 
-    const direct = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const direct = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(direct.ok, false, JSON.stringify(direct.details));
     assert.match(direct.blocks.join("\n"), /\.agents\/skills\/myskill.*(resolves|points) (back )?into/);
     assert.deepEqual(repoState(f.project), before, "a blocked root is left exactly as it was");
@@ -52,20 +52,20 @@ test("F1/A1: a .agents/skills link back into the alias entry is never a duplicat
   } finally { f.close(); }
 });
 
-test("F1/s8: a counterpart link into another CLI root keeps both identical copies", () => {
+test("F1/s8: a counterpart link into another CLI root keeps both identical copies", async () => {
   const f = rawRepo("f1s8"); try {
     for (const cli of [".claude", ".codex"]) put(join(f.alias(cli), "foo", "SKILL.md"), "identical\n");
     mkdirSync(f.R, { recursive: true });
     symlinkSync("../../.codex/skills/foo", join(f.R, "foo"));
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills", ".codex/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills", ".codex/skills"] });
     assert.equal(result.ok, false, JSON.stringify(result.details));
     assert.deepEqual(repoState(f.project), before);
     for (const path of [f.alias(".claude"), f.alias(".codex"), f.R]) assert.equal(readSafe(join(path, "foo", "SKILL.md")), "identical\n", path);
   } finally { f.close(); }
 });
 
-test("F3: an alias link whose .agents/skills counterpart resolves back through it keeps the only pointer", () => {
+test("F3: an alias link whose .agents/skills counterpart resolves back through it keeps the only pointer", async () => {
   const f = rawRepo("f3"); try {
     const elsewhere = join(f.base, "elsewhere", "deep", "foo");
     put(join(elsewhere, "SKILL.md"), "real\n");
@@ -74,9 +74,9 @@ test("F3: an alias link whose .agents/skills counterpart resolves back through i
     symlinkSync(elsewhere, join(f.alias(".claude"), "foo"));
     symlinkSync("../../.claude/skills/foo", join(f.R, "foo"));
     const before = repoState(f.project);
-    const dry = applySkillRoots(f.project, { dryRun: true, aliases: [".claude/skills"] });
+    const dry = await applySkillRoots(f.project, { dryRun: true, aliases: [".claude/skills"] });
     assert.equal(dry.ok, false, JSON.stringify(dry.details));
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.deepEqual(repoState(f.project), before);
     assert.equal(readSafe(join(f.alias(".claude"), "foo", "SKILL.md")), "real\n");
@@ -84,7 +84,7 @@ test("F3: an alias link whose .agents/skills counterpart resolves back through i
   } finally { f.close(); }
 });
 
-test("F9/A2: a link into another CLI root's real entry is not that entry's duplicate; content survives every run and converges", () => {
+test("F9/A2: a link into another CLI root's real entry is not that entry's duplicate; content survives every run and converges", async () => {
   const f = rawRepo("a2"); try {
     put(join(f.alias(".opencode"), "code-review", "SKILL.md"), "opencode original\n");
     mkdirSync(f.alias(".claude"), { recursive: true });
@@ -92,7 +92,7 @@ test("F9/A2: a link into another CLI root's real entry is not that entry's dupli
     mkdirSync(f.R, { recursive: true });
     let last;
     for (let run = 0; run < 3; run++) {
-      last = applySkillRoots(f.project, { dryRun: false });
+      last = await applySkillRoots(f.project, { dryRun: false });
       for (const path of [f.alias(".claude"), f.alias(".opencode")]) {
         assert.equal(readSafe(join(path, "code-review", "SKILL.md")), "opencode original\n", `run ${run}: ${path}`);
       }
@@ -114,10 +114,10 @@ test("F2/A4: .agents -> .claude blocks every conversion; nothing is dropped as i
     for (const name of ["alpha", "beta"]) put(join(f.alias(".claude"), name, "SKILL.md"), `${name} only copy\n`);
     symlinkSync(".claude", join(f.project, ".agents"));
     const before = repoState(f.project);
-    const plan = planSkillRoots(f.project);
+    const plan = await planSkillRoots(f.project);
     assert.equal(plan.clean, false);
     assert.equal(plan.operations.length, 0, "a symlinked .agents plans nothing at all");
-    const result = applySkillRoots(f.project, { dryRun: false });
+    const result = await applySkillRoots(f.project, { dryRun: false });
     assert.equal(result.ok, false);
     assert.match(result.blocks.join("\n"), /\.agents is a symlink/);
     assert.deepEqual(repoState(f.project), before);
@@ -134,7 +134,7 @@ test("F2/s3: .agents -> a shared directory never moves project skills out of the
     symlinkSync(shared, join(f.project, ".agents"));
     const before = repoState(f.project);
     const sharedBefore = repoState(shared);
-    const result = applySkillRoots(f.project, { dryRun: false });
+    const result = await applySkillRoots(f.project, { dryRun: false });
     assert.equal(result.ok, false);
     assert.deepEqual(repoState(f.project), before);
     assert.deepEqual(repoState(shared), sharedBefore);
@@ -159,7 +159,7 @@ test("F2 through the rule: skills.project-manifest never deletes before skillex 
 // High: nested repositories and submodules (review F10)
 // ---------------------------------------------------------------------------
 
-test("F10/B1: a CLI skills root that is its own git clone is never relocated", () => {
+test("F10/B1: a CLI skills root that is its own git clone is never relocated", async () => {
   const f = rawRepo("b1"); try {
     const claude = f.alias(".claude");
     put(join(claude, "team-skill", "SKILL.md"), skill("team-skill"));
@@ -168,14 +168,14 @@ test("F10/B1: a CLI skills root that is its own git clone is never relocated", (
     f.gitIn(claude, "remote", "add", "origin", "git@example:team/skills.git");
     f.gitIn(claude, "add", "-A"); f.gitIn(claude, "commit", "-qm", "team");
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.match(result.blocks.join("\n"), /\.claude\/skills.*(its own git repository|another git work tree|nested git)/);
     assert.deepEqual(repoState(f.project), before);
   } finally { f.close(); }
 });
 
-test("F10/B2: a submodule at a CLI skills root is never relocated and the parent stays operable", () => {
+test("F10/B2: a submodule at a CLI skills root is never relocated and the parent stays operable", async () => {
   const f = rawRepo("b2"); try {
     const team = join(f.base, "team");
     put(join(team, "team-skill", "SKILL.md"), skill("team-skill"));
@@ -186,7 +186,7 @@ test("F10/B2: a submodule at a CLI skills root is never relocated and the parent
     f.git("submodule", "add", "-q", team, ".claude/skills");
     f.git("commit", "-qm", "submodule");
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.deepEqual(repoState(f.project), before);
     const status = spawnSync("git", ["status", "--porcelain"], { cwd: f.project, encoding: "utf8", env: hermeticEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CEILING_DIRECTORIES: "/tmp" }) });
@@ -194,13 +194,13 @@ test("F10/B2: a submodule at a CLI skills root is never relocated and the parent
   } finally { f.close(); }
 });
 
-test("F10: an entry holding its own .git is never moved", () => {
+test("F10: an entry holding its own .git is never moved", async () => {
   const f = rawRepo("b3"); try {
     const foo = join(f.alias(".claude"), "foo");
     put(join(foo, "SKILL.md"), skill("foo"));
     f.gitIn(foo, "init", "-q");
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.match(result.blocks.join("\n"), /\.claude\/skills\/foo.*\.git/);
     assert.deepEqual(repoState(f.project), before);
@@ -220,7 +220,7 @@ test("F4/F13: tracked alias links block: nothing is untracked, moved or deleted"
     put(join(f.project, ".gitignore"), "/.agents/skills\n");
     f.git("add", "-f", ".claude", "skills", ".gitignore"); f.git("commit", "-qm", "links");
     const before = repoState(f.project);
-    const direct = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const direct = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(direct.ok, false);
     assert.match(direct.blocks.join("\n"), /\.claude\/skills\/mine.*tracked/);
     assert.match(direct.blocks.join("\n"), /\.claude\/skills\/pilot.*tracked/);
@@ -245,9 +245,9 @@ test("F5/F12: sibling-relative links survive in one run with their relative text
     symlinkSync("foo", join(claude, "zed"));
     symlinkSync("foo", join(claude, "bar"));
     symlinkSync("agent-dev", join(claude, "dev"));
-    const dry = applySkillRoots(f.project, { dryRun: true, aliases: [".claude/skills"] });
+    const dry = await applySkillRoots(f.project, { dryRun: true, aliases: [".claude/skills"] });
     assert.equal(dry.ok, true, JSON.stringify(dry.details));
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.details, stripWould(dry.details));
     for (const [name, target, content] of [["zed", "foo", "foo\n"], ["bar", "foo", "foo\n"], ["dev", "agent-dev", "agent dev\n"]]) {
@@ -275,13 +275,13 @@ test("F5 through migrate --all: bmad.cli-roots never drops a link the skills con
 // Medium: nested links and modes (review F6, F7)
 // ---------------------------------------------------------------------------
 
-test("F6: a nested link that climbs out of its entry blocks the move", () => {
+test("F6: a nested link that climbs out of its entry blocks the move", async () => {
   const f = rawRepo("f6a"); try {
     put(join(f.project, ".claude", "commands", "deploy.md"), "cmd\n");
     put(join(f.alias(".claude"), "foo", "SKILL.md"), "s\n");
     symlinkSync("../../commands", join(f.alias(".claude"), "foo", "commands"));
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.match(result.blocks.join("\n"), /\.claude\/skills\/foo.*commands.*(leaves|escapes|outside)/);
     assert.deepEqual(repoState(f.project), before);
@@ -289,7 +289,7 @@ test("F6: a nested link that climbs out of its entry blocks the move", () => {
   } finally { f.close(); }
 });
 
-test("F6: same-text nested links that resolve to different content are not duplicates", () => {
+test("F6: same-text nested links that resolve to different content are not duplicates", async () => {
   const f = rawRepo("f6b"); try {
     put(join(f.project, ".claude", "commands", "deploy.md"), "real claude cmd\n");
     put(join(f.project, ".agents", "commands", "deploy.md"), "different agents cmd\n");
@@ -298,14 +298,14 @@ test("F6: same-text nested links that resolve to different content are not dupli
       symlinkSync("../../commands", join(base, "foo", "commands"));
     }
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.deepEqual(repoState(f.project), before);
     assert.equal(readSafe(join(f.alias(".claude"), "foo", "commands", "deploy.md")), "real claude cmd\n");
   } finally { f.close(); }
 });
 
-test("F7: executable bits are part of identity for both the duplicate and the stub rule", () => {
+test("F7: executable bits are part of identity for both the duplicate and the stub rule", async () => {
   for (const [label, arrange] of [
     ["duplicate", (f) => {
       put(join(f.alias(".claude"), "foo", "scripts", "run.sh"), "#!/bin/sh\necho foo\n", 0o755);
@@ -322,7 +322,7 @@ test("F7: executable bits are part of identity for both the duplicate and the st
     const f = rawRepo(`f7${label}`); try {
       const executables = arrange(f);
       const before = repoState(f.project);
-      const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+      const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
       assert.equal(result.ok, false, `${label}: ${JSON.stringify(result.details)}`);
       assert.deepEqual(repoState(f.project), before, label);
       for (const path of executables) assert.equal(statSync(path).mode & 0o111, 0o111, `${label}: ${path} stays executable`);
@@ -340,12 +340,12 @@ test("F8: the whole-root plan is exactly what apply does across aliases", async 
     put(join(f.alias(".codex"), "foo", "A"), "A\n");
     put(join(f.alias(".codex"), "foo", "B"), "B\n");
     const codexInode = lstatSync(join(f.alias(".codex"), "foo")).ino;
-    const plan = planSkillRoots(f.project);
-    const dry = applySkillRoots(f.project, { dryRun: true });
+    const plan = await planSkillRoots(f.project);
+    const dry = await applySkillRoots(f.project, { dryRun: true });
     assert.equal(dry.ok, plan.clean);
     const audit = await f.cliRoots.audit(f.ctx);
     assert.equal(audit.fixable, plan.clean, JSON.stringify(audit.details));
-    const result = applySkillRoots(f.project, { dryRun: false });
+    const result = await applySkillRoots(f.project, { dryRun: false });
     assert.equal(result.ok, dry.ok, JSON.stringify({ dry: dry.details, apply: result.details }));
     assert.deepEqual(result.details, stripWould(dry.details));
     assert.equal(result.ok, true);
@@ -497,14 +497,14 @@ test("F15 end to end through the real pj CLI: skillex migrate --apply, then pj m
 // Two-phase apply: quarantine, journal, verification, rollback
 // ---------------------------------------------------------------------------
 
-test("a step that fails mid-apply rolls every earlier step back and leaves the repo exactly as it was", () => {
+test("a step that fails mid-apply rolls every earlier step back and leaves the repo exactly as it was", async () => {
   const f = rawRepo("rb"); try {
     put(join(f.alias(".claude"), "a", "SKILL.md"), "a\n");
     put(join(f.alias(".claude"), "b", "SKILL.md"), "b\n");
     // rename(2) of a directory to a new parent needs write permission on it (to update ..).
     chmodSync(join(f.alias(".claude"), "b"), 0o555);
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"] });
     assert.equal(result.ok, false);
     assert.match(result.blocks.join("\n"), /rolled back/);
     assert.deepEqual(result.changedFiles, []);
@@ -513,11 +513,11 @@ test("a step that fails mid-apply rolls every earlier step back and leaves the r
   } finally { f.close(); }
 });
 
-test("a post-apply mismatch found on disk is reversed from the journal and reported blocked", () => {
+test("a post-apply mismatch found on disk is reversed from the journal and reported blocked", async () => {
   const f = rawRepo("mm"); try {
     put(join(f.alias(".claude"), "a", "run.sh"), "#!/bin/sh\n", 0o644);
     const before = repoState(f.project);
-    const result = applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"],
+    const result = await applySkillRoots(f.project, { dryRun: false, aliases: [".claude/skills"],
       // A concurrent writer between the last step and verification.
       hooks: { beforeVerify: () => chmodSync(join(f.R, "a", "run.sh"), 0o755) } });
     assert.equal(result.ok, false, JSON.stringify(result));
@@ -527,7 +527,7 @@ test("a post-apply mismatch found on disk is reversed from the journal and repor
   } finally { f.close(); }
 });
 
-test("an interrupted run blocks the next plan with its restore instructions, and following them restores the repo byte for byte", () => {
+test("an interrupted run blocks the next plan with its restore instructions, and following them restores the repo byte for byte", async () => {
   const f = rawRepo("crash"); try {
     put(join(f.alias(".claude"), "a", "SKILL.md"), "a\n");
     put(join(f.alias(".claude"), "b", "SKILL.md"), "b\n");
@@ -538,7 +538,7 @@ test("an interrupted run blocks the next plan with its restore instructions, and
       `const m = await import(${JSON.stringify(`file://${sources.bundle}`)}); m.applySkillRoots(${JSON.stringify(f.project)}, { dryRun: false });`],
     { env: hermeticEnv({ PJ_SKILL_ROOTS_CRASH_AFTER: "2", GIT_CEILING_DIRECTORIES: "/tmp" }), encoding: "utf8" });
     assert.equal(crashed.signal, "SIGKILL", crashed.stderr);
-    const plan = planSkillRoots(f.project);
+    const plan = await planSkillRoots(f.project);
     assert.equal(plan.clean, false);
     assert.equal(plan.operations.length, 0);
     const reason = plan.blocks.join("\n");
@@ -551,13 +551,13 @@ test("an interrupted run blocks the next plan with its restore instructions, and
     spawnSync("rm", ["-rf", join(quarantine, run)], { env: hermeticEnv() });
     spawnSync("rmdir", [quarantine], { env: hermeticEnv() });
     assert.deepEqual(repoState(f.project), before);
-    const converged = applySkillRoots(f.project, { dryRun: false });
+    const converged = await applySkillRoots(f.project, { dryRun: false });
     assert.equal(converged.ok, true, JSON.stringify(converged));
     for (const name of ["a", "b", "c"]) assert.equal(readSafe(join(f.alias(".claude"), name, "SKILL.md")), `${name}\n`);
   } finally { f.close(); }
 });
 
-test("a crash after ANY step is reversed byte for byte by the restore command the next plan names", () => {
+test("a crash after ANY step is reversed byte for byte by the restore command the next plan names", async () => {
   const layouts = {
     // Every step kind: stub replacement, moves, duplicate drops, a sibling link,
     // a dangling link, a dangling alias, and absent aliases to create.
@@ -594,14 +594,14 @@ test("a crash after ANY step is reversed byte for byte by the restore command th
           break;
         }
         crashed++;
-        const plan = planSkillRoots(f.project);
+        const plan = await planSkillRoots(f.project);
         assert.equal(plan.operations.length, 0, `${name}@${after}: a leftover quarantine blocks every operation`);
         const restore = plan.blocks.join("\n").match(/sh '([^']+restore\.sh)'/)?.[1];
         assert.ok(restore, `${name}@${after}: ${plan.blocks.join("\n")}`);
         const restored = spawnSync("sh", [restore], { encoding: "utf8", env: hermeticEnv() });
         assert.equal(restored.status, 0, `${name}@${after}: ${restored.stderr}`);
         assert.deepEqual(repoState(f.project), before, `${name}@${after}: the restore is exact`);
-        assert.equal(applySkillRoots(f.project, { dryRun: false }).ok, true, `${name}@${after}: converges after the restore`);
+        assert.equal((await applySkillRoots(f.project, { dryRun: false })).ok, true, `${name}@${after}: converges after the restore`);
       } finally { f.close(); }
     }
     assert.ok(crashed >= (name === "everyKind" ? 12 : 4), `${name}: only ${crashed} crash points exercised`);

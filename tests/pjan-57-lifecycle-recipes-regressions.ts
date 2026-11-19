@@ -65,7 +65,7 @@ const ctx = (repoRoot: string): LifecycleContext => ({
   );
   const versionCheck = createBmadChecks().find((candidate) => candidate.id === "bmad.version");
   assert.ok(versionCheck);
-  const pinned = versionCheck.audit({
+  const pinned = await versionCheck.audit({
     repoRoot: repo,
     pjanglerRoot: root,
     homeDir,
@@ -77,7 +77,7 @@ const ctx = (repoRoot: string): LifecycleContext => ({
   // PJAN-82: an unpinned audit needs a floor that does not move. With only the
   // `next` tag resolved there is no published stable to compare against, so the
   // rule declines to judge rather than reporting a defect it cannot substantiate.
-  const noStableFloor = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  const noStableFloor = await versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
   assert.equal(noStableFloor.status, "skip", "an unpinned audit with no resolvable stable tag cannot judge currency");
   assert.match(noStableFloor.summary, /stable currency floor unknown/);
   // With a stable tag present, being behind THAT is the real currency defect,
@@ -90,12 +90,12 @@ const ctx = (repoRoot: string): LifecycleContext => ({
   // the pin is the version pjangler verified, and stable moves after every bump:
   // warning there made `pj init` (which migrates every fixable finding) install an
   // unverified stable over the pin. That is an advisory pass, never a fixable defect.
-  const atPinBehindStable = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  const atPinBehindStable = await versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
   assert.equal(atPinBehindStable.status, "pass", "a newer upstream stable is advisory for a project at the verified pin");
   assert.equal(atPinBehindStable.fixable, false);
   assert.match(atPinBehindStable.summary, /matches the verified installer pin; stable 99\.0\.0 is newer/);
   writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 6.0.0\n");
-  const behindStable = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  const behindStable = await versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
   assert.equal(behindStable.status, "warn", "an install that is not the pin and is behind the published stable release is a real currency defect");
   assert.equal(behindStable.fixable, true);
   writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), `installation:\n  version: ${BMAD_INSTALLER_VERSION}\n`);
@@ -103,11 +103,11 @@ const ctx = (repoRoot: string): LifecycleContext => ({
     join(homeDir, ".cache", "pjangler", "bmad-dist-tags.json"),
     JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "0.0.1", next: "99.0.1-next.1" } }),
   );
-  const prereleaseOnly = versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
+  const prereleaseOnly = await versionCheck.audit({ repoRoot: repo, pjanglerRoot: root, homeDir, dryRun: true });
   assert.equal(prereleaseOnly.status, "pass", "being behind only the moving prerelease channel is news, not a defect");
   assert.equal(prereleaseOnly.fixable, false);
   writeFileSync(join(repo, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 100.0.0\n");
-  const aheadOfPin = versionCheck.audit({
+  const aheadOfPin = await versionCheck.audit({
     repoRoot: repo,
     pjanglerRoot: root,
     homeDir,

@@ -147,7 +147,7 @@ try {
     const adapter = makeStubAdapter();
     // Even a stale linear.sh file and a Plane key must not authorize a call.
     writeFileSync(join(adapter, "linear.sh"), `#!/bin/sh\nprintf called > "$PJAN30_RECORD"\n`);
-    const result = provisionTicketProviderBoard({
+    const result = await provisionTicketProviderBoard({
       kind: "ticket-provider.create-or-link", provider: "linear", workspace: "33god",
       identifier: "OLD", repoPath: home, boardName: "Old Board", description: "historical",
       boardId: "", state: "planned", enabled: true, live: true, reason: "fixture",

@@ -217,7 +217,7 @@ function outside(project) {
 
 const plannedOps = (result) => result.details.filter((line) => !line.startsWith("blocked:")).map((line) => line.replace(/^would /, ""));
 
-test(`random layouts: apply either blocks without touching anything or preserves every visible name (${ITERATIONS} layouts, seed ${SEED})`, () => {
+test(`random layouts: apply either blocks without touching anything or preserves every visible name (${ITERATIONS} layouts, seed ${SEED})`, async () => {
   const outcomes = { converted: 0, blocked: 0, mixed: 0 };
   const kinds = new Map();
   for (let iteration = 0; iteration < ITERATIONS; iteration++) {
@@ -232,9 +232,9 @@ test(`random layouts: apply either blocks without touching anything or preserves
       for (let run = 0; run < 5; run++) {
         const views = visible(f.project);
         const untouched = outside(f.project);
-        const dry = applySkillRoots(f.project, { dryRun: true });
+        const dry = await applySkillRoots(f.project, { dryRun: true });
         assert.deepEqual(repoState(f.project), state, `dry run wrote something\n${context()}`);
-        const applied = applySkillRoots(f.project, { dryRun: false });
+        const applied = await applySkillRoots(f.project, { dryRun: false });
         assert.ok(!applied.blocks.some((reason) => /rolled back|stopped at/.test(reason)),
           `apply disagreed with its own plan: ${applied.blocks.join("\n")}\n${context()}`);
         assert.equal(applied.ok, dry.ok, `dry ${dry.ok} vs apply ${applied.ok}\n${context()}`);

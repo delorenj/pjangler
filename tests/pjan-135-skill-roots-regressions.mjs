@@ -196,7 +196,7 @@ test("a dangling alias is replaced, an alias already reaching .agents/skills is 
     symlinkSync(elsewhere, f.alias(".gemini"));
     mkdirSync(join(f.project, ".opencode"), { recursive: true });
     symlinkSync(f.R, f.alias(".opencode"));
-    const plan = planSkillRoots(f.project);
+    const plan = await planSkillRoots(f.project);
     const byAlias = Object.fromEntries(plan.aliases.map((entry) => [entry.alias, entry]));
     assert.equal(byAlias[".codex/skills"].state, "dangling");
     // Any spelling that reaches .agents/skills is the alias skillex accepts; skillex
@@ -205,7 +205,7 @@ test("a dangling alias is replaced, an alias already reaching .agents/skills is 
     assert.deepEqual(byAlias[".opencode/skills"].operations, []);
     assert.equal(byAlias[".gemini/skills"].state, "foreign-link");
     assert.match(plan.blocks.join("\n"), new RegExp(`\\.gemini/skills is a symlink to ${elsewhere}`));
-    const applied = applySkillRoots(f.project, { dryRun: false });
+    const applied = await applySkillRoots(f.project, { dryRun: false });
     assert.equal(applied.ok, false);
     assert.equal(readlinkSync(f.alias(".codex")), "../.agents/skills");
     assert.equal(readlinkSync(f.alias(".opencode")), f.R, "an alias that reaches .agents/skills is never rewritten");
@@ -267,7 +267,7 @@ test("an interrupted conversion re-plans from disk and converges", async () => {
     put(join(claude, "bmad-big", "a.md"), "a\n");
     put(join(f.R, "bmad-moved", "SKILL.md"), skill("bmad-moved"));
     put(join(claude, "bmad-rest", "SKILL.md"), skill("bmad-rest"));
-    const plan = planSkillRoots(f.project);
+    const plan = await planSkillRoots(f.project);
     assert.equal(plan.clean, true, plan.blocks.join("\n"));
     assert.deepEqual(plan.aliases[0].operations.map((op) => op.kind), ["drop-duplicate-entry", "move-entry", "convert-alias"]);
     const result = await f.migrate();
@@ -290,10 +290,10 @@ test("a stub counterpart wholly contained in the alias entry is replaced by it (
     // A stub with ANY entry the complete copy lacks is not a subset: blocked.
     put(join(f.R, "bmad-other", "notes.md"), "only here\n");
     put(join(claude, "bmad-other", "SKILL.md"), skill("bmad-other"));
-    const blocked = planSkillRoots(f.project);
+    const blocked = await planSkillRoots(f.project);
     assert.match(blocked.blocks.join("\n"), /\.claude\/skills\/bmad-other differs from \.agents\/skills\/bmad-other: SKILL\.md is missing from the counterpart/);
     rmSync(join(f.R, "bmad-other"), { recursive: true });
-    const plan = planSkillRoots(f.project);
+    const plan = await planSkillRoots(f.project);
     assert.equal(plan.clean, true, plan.blocks.join("\n"));
     assert.ok(plan.operations.some((op) => op.kind === "replace-subset-counterpart"));
     const result = await f.migrate();

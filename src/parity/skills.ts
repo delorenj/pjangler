@@ -357,7 +357,7 @@ function realEntryCollision(label: string, name: string, directory: boolean): Ro
 /** A colliding link, by what it resolves to (`real`, a path that exists now; undefined when it dangles). */
 async function classifyCollidingLink(ctx: Context, name: string, label: string, text: string, real: string | undefined): Promise<RootCollisionDecision> {
   if (real === undefined) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text} (dangling)` };
-  if (!repoOwnsPath(ctx.repoRoot, real)) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text}` };
+  if (!await repoOwnsPath(ctx.repoRoot, real)) return { action: "unlink", detail: `replaced legacy link ${label} -> ${text}` };
   const canonical = await canonicalSkillPath(ctx, name);
   if (canonical && skillContentIdentical(real, canonical)) {
     return { action: "unlink", detail: `replaced link ${label} -> ${text}: its repo-owned content is identical to the catalog skill` };
