@@ -1,3 +1,4 @@
+import { assertOperationActive } from "../lifecycle/operation";
 import type { CommandContext } from "../commands/Command";
 import type { NotebookObservationV1, NotebookPlanV1 } from "../notebook/observation";
 import type { BoundedCapture } from "../mcp-bounds";
@@ -33,6 +34,11 @@ export interface LifecycleContext extends CommandContext {
    * context WITHOUT it, so the identity block and the notebook rules answered
    * about two different registries in one report.
    */
+  /** The SDK request signal and original monotonic deadline travel unchanged to dependencies. */
+  signal?: AbortSignal;
+  deadlineMs?: number;
+  /** Assert before each phase/write; also enforces expiry even if a timer is delayed. */
+  assertActive?: typeof assertOperationActive;
   registryPath?: string;
   live?: boolean;
   bmadVersionPin?: string;

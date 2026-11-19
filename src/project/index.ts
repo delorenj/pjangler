@@ -1,5 +1,6 @@
 import { validateGlobalNotebookConfig } from "./notebookSettingsValidation";
 import { recordFromManifest, validateManifestShape } from "./manifestIndex";
+import { assertOperationActive, currentOperation, runChild } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import { isIP } from "node:net";
 import { chmodSync, closeSync, copyFileSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -372,6 +373,8 @@ export interface ProjectInitExecutionOptions {
   /** Required by MCP create paths; interactive CLI callers may omit it. */
   trustedCopier?: TrustedCopierIdentity;
   requireTrustedCopier?: boolean;
+  signal?: AbortSignal;
+  deadlineMs?: number;
 }
 
 export interface ProjectDoctorResult {
@@ -1696,6 +1699,7 @@ export async function executeProjectInitPlan(
   const registry = loadProjectRegistry(plan.registryPath);
   let pendingRegistryAction: Extract<ProjectInitAction, { kind: "registry.upsert" }> | undefined;
   for (const action of plan.actions) {
+    assertOperationActive();
     if (action.kind === "copier.copy.commonproject") {
       if (options.requireTrustedCopier && !options.trustedCopier) {
         errors.push("MCP project apply requires a preflight-attested Copier identity");
@@ -1724,11 +1728,12 @@ export async function executeProjectInitPlan(
         copierEnv.PYTHONSAFEPATH = "1";
       }
       copierEnv.MISE_YES = "1";
-      const result = spawnSync(copierExecutable, action.command.slice(1), {
-        encoding: "utf8",
-        cwd: action.cwd,
-        env: copierEnv,
-      });
+      const result = currentOperation()
+        ? await runChild(copierExecutable, action.command.slice(1), { cwd: action.cwd, env: copierEnv })
+        : spawnSync(copierExecutable, action.command.slice(1), {
+            encoding: "utf8", cwd: action.cwd, env: copierEnv,
+          });
+      assertOperationActive();
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);
       if (result.stdout?.trim()) logs.push(result.stdout.trim());
@@ -1819,6 +1824,7 @@ export async function executeProjectInitPlan(
     }
   }
 
+  assertOperationActive();
   if (pendingRegistryAction && errors.length === 0) {
     if (!projectRecordEquivalent(getOwnRecordValue(registry.projects, pendingRegistryAction.slug), pendingRegistryAction.project)) {
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;

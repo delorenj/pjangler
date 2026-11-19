@@ -26,6 +26,7 @@ import {
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
 import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
+import { createOperation, withOperation, assertOperationActive, OperationStopped, currentOperation } from "./lifecycle/operation";
 import { BoundedCapture, boundedPayload, MCP_CAPTURE_BYTES, MCP_OUTPUT_BYTES, MCP_PAGE_SIZE, MCP_MAX_PAGE_SIZE, paginate } from "./mcp-bounds";
 
 const server = new McpServer({
@@ -302,7 +303,38 @@ const EXTERNAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHi
 const LOCAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } as const;
 const EXTERNAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
 
+const OPERATION_INPUT = {
+  timeoutMs: z.number().int().min(1).max(600_000).optional()
+    .describe("Whole-request deadline in milliseconds (default 120000, maximum 600000); nested work shares the original deadline."),
+};
+
+/** Keep stop mapping outside the handler's normal result envelope. */
+function mutationHandler<T extends Record<string, unknown>>(
+  handler: (input: T) => Promise<any>,
+) {
+  return async (input: T, extra: { signal: AbortSignal }): Promise<any> => {
+    const operation = createOperation(extra.signal, typeof input.timeoutMs === "number" ? input.timeoutMs : undefined);
+    try {
+      return await withOperation(operation, async () => {
+        assertOperationActive();
+        const result = await handler(input);
+        assertOperationActive();
+        return result;
+      });
+    } catch (error) {
+      return boundedError(error);
+    } finally {
+      operation.close();
+    }
+  };
+}
+
 function boundedError(err: unknown) {
+  const stopped = currentOperation()?.stopReason();
+  if (stopped || err instanceof OperationStopped) {
+    const reason = stopped ?? (err as OperationStopped).reason;
+    return { isError: true, content: [{ type: "text" as const, text: `MCP operation ${reason}${err instanceof Error && !(err instanceof OperationStopped) ? `: ${err.message}` : ""}` }] };
+  }
   const message = err instanceof Error ? err.message : String(err);
   const marker = "… [truncated to MCP 256 KiB]";
   const capture = new BoundedCapture(MCP_OUTPUT_BYTES - Buffer.byteLength(marker, "utf8"));
@@ -376,10 +408,14 @@ async function executeRegisteredProjectPlan(
     requireTrustedCopier: plan.actions.some((action) => action.kind === "copier.copy.commonproject"),
     quiet: true,
   };
+  const operation = currentOperation();
   return await recipeRegistry.initRecipe(
     "project",
     lifecycleContext(plan.project.repo_path, false, false, {
       ...lifecycleOverrides,
+      signal: operation?.signal,
+      deadlineMs: operation?.deadlineMs,
+      assertActive: assertOperationActive,
       force: lifecycleOverrides.force ?? plan.actions.some((action) => action.kind === "copier.copy.commonproject" && action.overwrite),
       live: lifecycleOverrides.live ?? plan.live,
       quiet: lifecycleOverrides.quiet ?? true,
@@ -532,7 +568,8 @@ async function runRecipeWithCapture(recipeName: string, context: CommandContext,
     return { success: false, logs, errors };
   }
   try {
-    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, { ...context, quiet: true, mcpCapture: { logs, errors } });
+    const operation = currentOperation();
+    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, { ...context, signal: operation?.signal, deadlineMs: operation?.deadlineMs, assertActive: assertOperationActive, quiet: true, mcpCapture: { logs, errors } });
     const result = await recipeRegistry.initRecipe(recipeName, ctx, {});
     return { success: result.ok, logs, errors };
   } catch (err) {
@@ -629,11 +666,12 @@ server.registerTool(
       all: z.boolean().optional(),
       dryRun: z.boolean().optional(),
       acceptRegistryMatches: z.boolean().optional(),
+      ...OPERATION_INPUT,
     }),
     outputSchema: MIGRATION_OUTPUT,
     annotations: EXTERNAL_WRITE,
   },
-  async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
+  mutationHandler(async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
     try {
       const runAll = all ?? false;
       if (!runAll && !ruleId) throw new Error("Either ruleId or all=true is required");
@@ -655,7 +693,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(
@@ -688,11 +726,12 @@ server.registerTool(
       registryPath: z.string().optional(),
       sourceSkill: z.string().optional(),
       live: z.boolean().optional(),
+      ...OPERATION_INPUT,
     }),
     outputSchema: PROJECT_LIFECYCLE_OUTPUT,
     annotations: EXTERNAL_WRITE,
   },
-  async (input) => {
+  mutationHandler(async (input) => {
     try {
       const externalEffects = validateExternalEffectConsent(
         { ...input, skipPlane: input.skipPlane ?? true },
@@ -782,7 +821,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(
@@ -809,11 +848,12 @@ server.registerTool(
       workspace: z.string().optional(),
       registryPath: z.string().optional(),
       force: z.boolean().optional(),
+      ...OPERATION_INPUT,
     }),
     outputSchema: PROJECT_LIFECYCLE_OUTPUT,
     annotations: EXTERNAL_WRITE,
   },
-  async (input) => {
+  mutationHandler(async (input) => {
     try {
       const externalEffects = validateExternalEffectConsent(input, { requireNonLocal: false });
       const plan = planProjectInit({
@@ -864,7 +904,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(
@@ -991,11 +1031,12 @@ server.registerTool(
       targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
       force: z.boolean().optional(),
       apply: z.boolean().optional(),
+      ...OPERATION_INPUT,
     }),
     outputSchema: RECIPE_RUN_OUTPUT,
     annotations: EXTERNAL_WRITE,
   },
-  async ({ recipe, targetDir, force, apply }) => {
+  mutationHandler(async ({ recipe, targetDir, force, apply }) => {
     try {
       const resolvedTarget = resolveTargetDir(targetDir);
       const shouldApply = apply === true;
@@ -1015,7 +1056,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 const transport = new StdioServerTransport();

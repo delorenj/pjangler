@@ -16,6 +16,7 @@ import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { planBmadSetupScripts, applyBmadSetupScripts, describeDeclined, inspectBmadSetupScripts, REQUIRED_BMAD_SETUP_SCRIPTS, type DeclinedScript } from "../bmad/setup-scripts";
+import { assertOperationActive, currentOperation, runChild } from "../lifecycle/operation";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
@@ -2443,12 +2444,14 @@ export interface BmadLifecyclePreflightResult {
  * longer exists — and, once the registry dropped that pack, failed every
  * create on any machine without a warm cache.
  */
-export function preflightBmadLifecycle(_ctx: Context): BmadLifecyclePreflightResult {
+export async function preflightBmadLifecycle(_ctx: Context): Promise<BmadLifecyclePreflightResult> {
   const invocation = bmadInstallerInvocation();
-  const probe = spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
-    encoding: "utf8",
-    timeout: 30_000,
-  });
+  const probe = currentOperation()
+    ? await runChild(invocation.command, [...invocation.prefixArgs, "--version"], { timeoutMs: 30_000 })
+    : spawnSync(invocation.command, [...invocation.prefixArgs, "--version"], {
+        encoding: "utf8", timeout: 30_000,
+      });
+  assertOperationActive();
   if (probe.status !== 0) {
     const detail = String(probe.stderr || probe.stdout || probe.error?.message || "installer probe failed").trim();
     return {

@@ -1,3 +1,4 @@
+import { assertOperationActive } from "../lifecycle/operation";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { auditCheck, gatesProject, isHostScoped } from "./types";
@@ -176,7 +177,9 @@ export class RecipeRegistry {
     const results: RecipeInitResult[] = [];
     for (const dependency of this.resolveDependencies(recipeId)) {
       if (excludeRecipeIds.includes(dependency.metadata.id)) continue;
+      assertOperationActive();
       const result = await dependency.init(ctx, input);
+      assertOperationActive();
       results.push(result);
       if (!result.ok) break;
     }
@@ -187,11 +190,13 @@ export class RecipeRegistry {
     this.ensureValid();
     const selected = this.recipes.get(recipeId);
     if (!selected) throw new Error(`Unknown recipe: ${recipeId}`);
-    if (selected.orchestratesDependencies) return selected.init(ctx, input);
+    if (selected.orchestratesDependencies) { assertOperationActive(); return selected.init(ctx, input); }
 
     const results: RecipeInitResult[] = [];
     for (const recipe of this.resolveOrder(recipeId)) {
+      assertOperationActive();
       const result = await recipe.init(ctx, input);
+      assertOperationActive();
       results.push(result);
       if (!result.ok) break;
     }
@@ -297,14 +302,17 @@ export class RecipeRegistry {
     // by the rule's own audit. Only WHEN that audit is read changes.
     const raw: LifecycleMigrationResult[] = [];
     for (const id of ruleIds) {
+      assertOperationActive();
       const owner = this.ruleOwners.get(id)!;
       try {
         const migrated = await owner.recipe.migrate(ctx, [id]);
+        assertOperationActive();
         raw.push(...migrated.map((result) => ({
           ...result,
           recipeId: result.recipeId ?? owner.recipe.metadata.id,
         })));
       } catch (err) {
+        assertOperationActive();
         const check = owner.recipe.checks[owner.checkIndex]!;
         raw.push({
           id,
@@ -318,6 +326,7 @@ export class RecipeRegistry {
       }
     }
     const results = await Promise.all(raw.map((result) => this.verifyMigration(ctx, result)));
+    assertOperationActive();
     return {
       repo: ctx.repoRoot,
       dryRun: Boolean(ctx.dryRun),

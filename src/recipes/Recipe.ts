@@ -1,3 +1,4 @@
+import { assertOperationActive } from "../lifecycle/operation";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { Command } from "../commands/Command";
@@ -67,8 +68,10 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
     let failed = false;
 
     for (const CommandClass of this.ingredientTypes) {
+      assertOperationActive();
       const command = new CommandClass(ctx);
       const result = await command.invoke();
+      assertOperationActive();
       const status = commandStatus(result, Boolean(ctx.dryRun));
       const phaseChangedFiles = status === "changed" && result.filePath
         ? [resolve(ctx.targetDir, result.filePath)]
@@ -121,7 +124,9 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
     const phaseMessage = (message: string) => ctx.mcpCapture ? ctx.mcpCapture.logs.append(message) : message;
 
     for (const check of checks) {
+      assertOperationActive();
       const finding = await check.audit(ctx);
+      assertOperationActive();
       if (finding.status === "pass" || finding.status === "skip") {
         phases.push({ id: check.id, status: finding.status === "skip" ? "skipped" : "unchanged", changedFiles: [], message: phaseMessage(finding.summary) });
         continue;

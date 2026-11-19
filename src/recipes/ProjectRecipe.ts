@@ -1,3 +1,4 @@
+import { assertOperationActive, currentOperation, runChild, OperationStopped } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
@@ -64,12 +65,12 @@ export interface ProjectRecipeResult extends RecipeInitResult {
 
 export interface ProjectRecipeRuntime {
   executePlan(plan: ProjectInitPlan, options?: ProjectInitExecutionOptions): Promise<ProjectInitExecutionResult>;
-  preflightBmad(ctx: LifecycleContext): BmadLifecyclePreflightResult;
+  preflightBmad(ctx: LifecycleContext): BmadLifecyclePreflightResult | Promise<BmadLifecyclePreflightResult>;
   runGit(
     cwd: string,
     args: readonly string[],
     options?: { env?: NodeJS.ProcessEnv },
-  ): { status: number | null; stdout: string; stderr: string; error?: Error };
+  ): { status: number | null; stdout: string; stderr: string; error?: Error } | Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }>;
 }
 
 const BOOTSTRAP_GIT_IDENTITY: NodeJS.ProcessEnv = {
@@ -82,7 +83,8 @@ const BOOTSTRAP_GIT_IDENTITY: NodeJS.ProcessEnv = {
 const PRODUCTION_RUNTIME: ProjectRecipeRuntime = {
   executePlan: executeProjectInitPlan,
   preflightBmad: preflightBmadLifecycle,
-  runGit(cwd, args, options) {
+  async runGit(cwd, args, options) {
+    if (currentOperation()) return await runChild("git", args, { cwd, env: options?.env ? { ...process.env, ...options.env } : process.env });
     const result = spawnSync("git", [...args], {
       cwd,
       encoding: "utf8",
@@ -170,9 +172,9 @@ function publicMigration(report: Awaited<ReturnType<RecipeRegistry["migrateRules
   } as MigrationReport;
 }
 
-function hasGitRepository(runtime: ProjectRecipeRuntime, targetDir: string): boolean {
+async function hasGitRepository(runtime: ProjectRecipeRuntime, targetDir: string): Promise<boolean> {
   if (!existsSync(join(targetDir, ".git"))) return false;
-  return runtime.runGit(targetDir, ["rev-parse", "--is-inside-work-tree"]).status === 0;
+  return (await runtime.runGit(targetDir, ["rev-parse", "--is-inside-work-tree"])).status === 0;
 }
 
 /**
@@ -341,7 +343,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
 
     try {
       if (mode === "create") {
-        const preflight = this.runtime.preflightBmad(transactionContext);
+        const preflight = await this.runtime.preflightBmad(transactionContext);
         phases.push({
           id: "project.preflight:bmad",
           status: preflight.ok ? "unchanged" : "failed",
@@ -364,6 +366,8 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
         ? await this.runtime.executePlan(filesystemPlan, {
             trustedCopier: normalized.trustedCopier,
             requireTrustedCopier: normalized.requireTrustedCopier,
+            signal: ctx.signal,
+            deadlineMs: ctx.deadlineMs,
           })
         : { ok: !planBlocked, plan: filesystemPlan, logs: [], errors: [], changedFiles: [] };
       logs.push(...executed.logs);
@@ -516,7 +520,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       // The optional enrollment reconciliation can write before the finalizer;
       // its failure never changes rollback latches or fails required init.
       if (errors.length === 0 && mode === "create") {
-        if (hasGitRepository(this.runtime, targetDir)) {
+        if (await hasGitRepository(this.runtime, targetDir)) {
           phases.push({ id: "project.git", status: "unchanged", changedFiles: [], message: "Git repository already initialized" });
         } else {
           const gitPath = join(targetDir, ".git");
@@ -529,7 +533,9 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
               options: { env: BOOTSTRAP_GIT_IDENTITY },
             },
           ] as const) {
-            const result = this.runtime.runGit(targetDir, args, options);
+            assertOperationActive();
+            const result = await this.runtime.runGit(targetDir, args, options);
+            assertOperationActive();
             if (result.status !== 0) {
               errors.push(`${label} failed: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
               phases.push({ id: `project.git:${label}`, status: "failed", changedFiles: changedFiles.includes(gitPath) ? [gitPath] : [], message: errors.at(-1) });
@@ -539,8 +545,8 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
             logs.push(`${label}: ok`);
           }
           if (errors.length === 0) {
-            const repositoryReady = hasGitRepository(this.runtime, targetDir);
-            const headReady = repositoryReady && this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"]).status === 0;
+            const repositoryReady = await hasGitRepository(this.runtime, targetDir);
+            const headReady = repositoryReady && (await this.runtime.runGit(targetDir, ["rev-parse", "--verify", "HEAD"])).status === 0;
             if (!headReady) {
               errors.push("git postcondition failed: repository or initial commit is missing");
               phases.push({ id: "project.git:postcondition", status: "failed", changedFiles: existsSync(gitPath) ? [gitPath] : [], message: errors.at(-1) });
@@ -566,6 +572,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       registryFinalizerEligible = errors.length === 0;
 
       if (errors.length === 0 && externalPlanActions.length) {
+        assertOperationActive();
         // Any enabled provider action crosses an adapter boundary, including a
         // link/reconcile of an already-known board. Latch before handing the
         // action to the adapter so fresh-target rollback can never delete local
@@ -593,6 +600,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
 
 
       if (errors.length === 0 && notebookPlan?.remote_effect === "reconcile") {
+        assertOperationActive();
         if (!ctx.live) {
           phases.push({ id: "project.external:notebook", status: "skipped", changedFiles: [], message: "Notebook remote reconciliation requires --live" });
         } else {
@@ -671,6 +679,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       // successes and planned/blocked recovery even when an external effect
       // failed, then no lifecycle writer runs again in this transaction.
       if (registryFinalizerEligible && registryActions.length) {
+        assertOperationActive();
         rollbackEligible = false;
         const registryPlan: ProjectInitPlan = { ...plan, actions: registryActions };
         const persisted = await this.runtime.executePlan(registryPlan);
@@ -711,6 +720,10 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       });
 
     } catch (error) {
+      if (error instanceof OperationStopped || currentOperation()?.stopReason()) {
+        rollbackEligible = false;
+        registryFinalizerEligible = false;
+      }
       errors.push(`project transaction failed: ${error instanceof Error ? error.message : String(error)}`);
       phases.push({
         id: "project.transaction",
