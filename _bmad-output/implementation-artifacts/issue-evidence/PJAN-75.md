@@ -27,4 +27,9 @@
 - `npm run typecheck && npm run build` — passed.
 - The six affected suites listed above — passed.
 
-Independent QUALITY re-review remains pending; no main integration or board changes in this delivery.
+## Independent re-review — accepted candidate
+
+- Independent reviewer examined the complete PJAN-75 diff and current source at candidate commit `391a66d3c71b2cd291d672396e3d78dcc8653642` (`PJAN-75-identity-preservation`): **SPEC PASS; QUALITY PASS; no findings**. The reviewer reran `node tests/pjan-75-regressions.mjs` and `PJAN75_CLI_BUILT="$PWD/dist/index.js" node tests/pjan-75-regressions.mjs`, with all 18 checks passing in each mode after a fresh build. `npm run typecheck` and `npm run build` passed; the six neighboring regression suites listed above passed.
+- Negative control: running the current suite against initial candidate `a247f0202c33b64cb0a7732bbd85074f74bbc27f` failed eight identity checks. Null, tilde, comment-only, and empty-folded identities were mishandled, and valid inline-comment identities were mangled there; they pass at the reviewed commit. The reviewer confirmed real selected `repo_path` writes preserve the non-default agent declaration and provisioning metadata, while unresolved identities return an actionable nonzero outcome rather than deleting that declaration.
+- Review coverage also checked the legacy skill-consent and dry-run migration cases and the six adjacent suites: `tests/project-json-home-repo-path-regressions.mjs`, `tests/pjan-17-canonical-binding-regressions.mjs`, `tests/pjan-17-provider-parity-regressions.mjs`, `tests/pjan-36-regressions.mjs`, `tests/pjan-65-regressions.mjs`, `tests/momo-lifecycle-plane-regressions.mjs`.
+- Candidate commits: [`a247f0202c33b64cb0a7732bbd85074f74bbc27f`](https://github.com/delorenj/pjangler/commit/a247f0202c33b64cb0a7732bbd85074f74bbc27f) and [`391a66d3c71b2cd291d672396e3d78dcc8653642`](https://github.com/delorenj/pjangler/commit/391a66d3c71b2cd291d672396e3d78dcc8653642); source and tests are `src/parity/rules.ts` and `tests/pjan-75-regressions.mjs`. The evidence above records the independent result without depending on a transient reviewer log.
