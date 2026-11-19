@@ -16,7 +16,7 @@ import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { planBmadSetupScripts, applyBmadSetupScripts, describeDeclined, inspectBmadSetupScripts, REQUIRED_BMAD_SETUP_SCRIPTS, type DeclinedScript } from "../bmad/setup-scripts";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { evictReservedModuleEntries, isLegacyReservedModuleEntry } from "../bmad/reserved-modules";
@@ -2088,47 +2088,103 @@ async function skillActivations(ctx: Context): Promise<SkillActivations> {
 }
 
 
-/**
- * Remove `bmad-*` skill entries left behind as SYMLINKS by the retired Skillex
- * `bmad` pin, so `bmad-method install` can write its own real directories.
- *
- * Only symlinks are removed, and only under the `bmad-` namespace. A real
- * directory there is either the installer's own output (which it overwrites in
- * place) or something a human put there, and neither is this function's to
- * delete. The pack symlinks point into a per-machine registry cache that no
- * longer even holds the pack, so leaving them shadows the installer with dead
- * links.
- *
- * PJAN-135: a `bmad-*` link that is a CURRENT skillex activation (owned by the
- * project's activation receipt, or resolving to a selected catalog skill such
- * as bmad-html-workspace) is not retired pack state and is never evicted.
- */
-function evictLegacyBmadPackState(ctx: Context, changedFiles: string[], activations: SkillActivations): string[] {
-  const details: string[] = [];
-  const skillDirs = [
-    join(ctx.repoRoot, ".agents", "skills"),
-    ...SUPPORTED_CLI_ROOTS.map((root) => join(ctx.repoRoot, root, "skills")),
+// Check raw components before normalizing: alias/.. traverses the alias in the
+// filesystem even though resolve() erases it. Ordinary relative ../../ links are
+// safe when each directory visited before a .. is physical. Missing suffixes
+// are allowed for dangling projections, but keep walking after them: a later ..
+// can return to an existing directory containing an alias.
+function hasPhysicalLinkTargetParents(target: string): boolean {
+  let current = parse(target).root;
+  const components = target.slice(current.length).split(sep).filter(Boolean);
+  for (const component of components.slice(0, -1)) {
+    current = join(current, component);
+    const stat = lstatIfPresent(current);
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) return false;
+  }
+  return true;
+}
+
+// Only the literal link text can attest a retired pack projection. realpathSync
+// loses that evidence (and fails for a dangling link), while a name alone says
+// nothing about ownership. Do not infer ownership from a selected catalog target.
+function retiredBmadPackLink(path: string, name: string, ctx: Context): boolean {
+  const text = readlinkSync(path);
+  const rawTarget = isAbsolute(text) ? text : `${dirname(path)}${sep}${text}`;
+  if (!hasPhysicalLinkTargetParents(rawTarget)) return false;
+  const target = resolve(rawTarget);
+  const registryRoots = [
+    { root: process.env.PJ_SKILLS_REGISTRY_ROOT, checkoutParent: false },
+    { root: join(ctx.homeDir, ".agents", ".cache", "registries"), checkoutParent: true },
+    { root: join(ctx.homeDir, "code", "skillex"), checkoutParent: false },
   ];
-  for (const dir of skillDirs) {
-    const dirStat = lstatIfPresent(dir);
-    // A CLI root whose `skills` is itself the .agents/skills alias is covered
-    // by the canonical directory above; following it would double-count.
-    if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
-    let names: string[];
-    try {
-      names = readdirSync(dir);
-    } catch {
+  return registryRoots.some(({ root, checkoutParent }) => {
+    if (!root) return false;
+    const rel = relative(resolve(root), target);
+    if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) return false;
+    const parts = rel.split(sep);
+    // Only the cache's registries parent may contain an extra checkout name.
+    // An arbitrary configured registry must match directly under its own root.
+    const offset = checkoutParent && parts[0] !== "packs" ? 1 : 0;
+    return parts[offset] === "packs" && parts[offset + 1] === "bmad"
+      && Boolean(parts[offset + 2] && parts[offset + 2] !== ".")
+      && parts[offset + 3] === "skills" && parts[offset + 4] === name
+      && parts.length === offset + 5;
+  });
+}
+
+interface RetiredBmadLinkPlan { paths: string[]; conflicts: string[] }
+
+/** Inspect all supported physical roots before any unlink or installer invocation. */
+function planRetiredBmadLinks(ctx: Context, activations: SkillActivations): RetiredBmadLinkPlan {
+  const paths: string[] = [], conflicts: string[] = [];
+  for (const root of [".agents", ...SUPPORTED_CLI_ROOTS]) {
+    const parent = join(ctx.repoRoot, root);
+    const parentStat = lstatIfPresent(parent);
+    if (!parentStat) continue;
+    if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+      conflicts.push(`${root} is not a physical directory`);
       continue;
     }
-    for (const name of names) {
+    const dir = join(parent, "skills");
+    const dirStat = lstatIfPresent(dir);
+    if (!dirStat) continue;
+    // A supported CLI alias to the *canonical* skill directory is already
+    // covered there. All other aliases are foreign trees, not ours to walk.
+    if (dirStat.isSymbolicLink()) {
+      let canonical = false;
+      try {
+        canonical = root !== ".agents"
+          && realpathSync(dir) === realpathSync(join(ctx.repoRoot, ".agents", "skills"));
+      } catch { /* dangling or unreadable */ }
+      if (!canonical) conflicts.push(`${root}/skills is not the managed .agents/skills alias`);
+      continue;
+    }
+    if (!dirStat.isDirectory()) {
+      conflicts.push(`${root}/skills is not a physical directory`);
+      continue;
+    }
+    for (const name of readdirSync(dir)) {
       if (!name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
       const path = join(dir, name);
       if (!lstatIfPresent(path)?.isSymbolicLink()) continue;
-      if (isCurrentActivation(path, activations)) continue;
-      changedFiles.push(path);
-      details.push(`removed retired BMAD pack symlink ${relative(ctx.repoRoot, path)}`);
-      if (!ctx.dryRun) unlinkSync(path);
+      if (isCurrentActivation(path, activations)) {
+        conflicts.push(`${relative(ctx.repoRoot, path)} is a current skill activation; refusing installer collision; review and relocate this activation link before retrying`);
+        continue;
+      }
+      if (retiredBmadPackLink(path, name, ctx)) paths.push(path);
+      else conflicts.push(`${relative(ctx.repoRoot, path)} has unknown BMAD skill link provenance; review and relocate this link before retrying`);
     }
+  }
+  return { paths, conflicts };
+}
+
+/** Only unlink proven links; the plan is fully validated before any write. */
+function evictLegacyBmadPackState(ctx: Context, changedFiles: string[], plan: RetiredBmadLinkPlan): string[] {
+  const details: string[] = [];
+  for (const path of plan.paths) {
+    changedFiles.push(path);
+    details.push(`${ctx.dryRun ? "would remove" : "removed"} retired BMAD pack symlink ${relative(ctx.repoRoot, path)}`);
+    if (!ctx.dryRun) unlinkSync(path);
   }
   return details;
 }
@@ -4587,6 +4643,12 @@ return ([
       }
       const selectedModules = selection.modules;
       const { hadManifestG33, hadTomlG33 } = selection;
+      const linkPlan = planRetiredBmadLinks(ctx, await skillActivations(ctx));
+      if (linkPlan.conflicts.length) return {
+        id: finding.id, title: finding.title, status: "blocked",
+        summary: "BMAD skill links have unknown provenance; refusing installer before any change",
+        changedFiles: [], details: linkPlan.conflicts, wroteNothing: true,
+      };
       const installedBmad = isInstalledBmadProject(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       const preservation = g33BmadUpdateBoundary(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       const channelArgs = bmadUpgradeChannelArgs(ctx.repoRoot, BMAD_INSTALLER_VERSION);
@@ -4611,6 +4673,7 @@ return ([
         }
         changedFiles.push(...issues.gaps.map((gap) => join(ctx.repoRoot, "_bmad", gap.path)));
         changedFiles.push(...issues.nameIssues.paths);
+        const previewLinks = evictLegacyBmadPackState(ctx, changedFiles, linkPlan);
         const reservedPreview = installedBmad ? evictReservedModuleEntries(ctx.repoRoot, true) : undefined;
         changedFiles.push(...(reservedPreview?.changedFiles ?? []));
         return {
@@ -4620,6 +4683,7 @@ return ([
           summary: changedFiles.length ? "Would run non-interactive bmad-method install" : "No changes required",
           changedFiles,
           details: [
+            ...previewLinks,
             ...(reservedPreview?.details ?? []),
             `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs)}`,
             ...companionDetails(companion),
@@ -4643,7 +4707,7 @@ return ([
           scope,
           beforeInstall: async () => {
             const evictedChanges: string[] = [];
-            const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
+            const details = evictLegacyBmadPackState(ctx, evictedChanges, linkPlan);
             // Inside the update's backup window: a failed update rolls this edit back with the rest.
             const reserved = evictReservedModuleEntries(ctx.repoRoot, ctx.dryRun);
             return { changedFiles: [...evictedChanges, ...reserved.changedFiles], details: [...reserved.details, ...details] };
@@ -4684,7 +4748,7 @@ return ([
       // Clear retired pack symlinks first: they point into a registry cache
       // that no longer holds the pack, and the installer must be able to write
       // real directories at those names.
-      const evicted = evictLegacyBmadPackState(ctx, changedFiles, await skillActivations(ctx));
+      const evicted = evictLegacyBmadPackState(ctx, changedFiles, linkPlan);
       // No whole-tree backup on this path, so the manifest edit carries its own undo.
       const reserved = installedBmad ? evictReservedModuleEntries(ctx.repoRoot, false) : undefined;
       if (reserved) evicted.unshift(...reserved.details);
@@ -4942,6 +5006,12 @@ return ([
         : configuredBmadModuleSelection(ctx.repoRoot)?.modules ?? [...DEFAULT_BMAD_MODULES];
       const hadManifestG33 = manifestSelection.status === "valid" && manifestSelection.hasG33;
       const hadTomlG33 = Boolean(configuredBmadModuleSelection(ctx.repoRoot)?.hasG33);
+      const linkPlan = planRetiredBmadLinks(ctx, await skillActivations(ctx));
+      if (linkPlan.conflicts.length) return {
+        id: finding.id, title: finding.title, status: "blocked",
+        summary: "BMAD skill links have unknown provenance; refusing installer before any change",
+        changedFiles: [], details: linkPlan.conflicts, wroteNothing: true,
+      };
       const preservation = g33BmadUpdateBoundary(ctx.repoRoot, hadManifestG33 || hadTomlG33);
       if (preservation) return {
         id: finding.id, title: finding.title, status: "blocked", summary: preservation.summary,
@@ -4968,8 +5038,9 @@ return ([
           title: finding.title,
           status: "applied",
           summary: `Would upgrade BMAD ${installed ?? "?"} -> ${available ?? BMAD_TARGET_CHANNEL}`,
-          changedFiles: [manifestPath],
+          changedFiles: [manifestPath, ...linkPlan.paths],
           details: [
+            ...evictLegacyBmadPackState(ctx, [], linkPlan),
             ...evictReservedModuleEntries(ctx.repoRoot, true).details,
             `Would run: ${bmadInstallDisplay(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs)}`,
             ...companionDetails(companion),
@@ -4988,7 +5059,7 @@ return ([
           scope,
           beforeInstall: async () => {
             const evictedChanges: string[] = [];
-            const details = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
+            const details = evictLegacyBmadPackState(ctx, evictedChanges, linkPlan);
             // Inside the update's backup window: a failed update rolls this edit back with the rest.
             const reserved = evictReservedModuleEntries(ctx.repoRoot, ctx.dryRun);
             return { changedFiles: [...evictedChanges, ...reserved.changedFiles], details: [...reserved.details, ...details] };
@@ -5027,7 +5098,11 @@ return ([
       // PJAN-212: this path has no rollback, so a failed installer may have half-written the repo.
       // The snapshot is taken before any write here; after a failure (and the manifest's own undo)
       // the tree either still matches it, provably untouched, or the damage is named.
+      // Clear proven pack links before the installer, not afterwards: its
+      // mkdir/write operations may otherwise follow a stale link into a cache.
       const beforeInstall = snapshotTree(ctx.repoRoot, { tolerateUnreadable: true, tolerateVanished: true });
+      const evictedChanges: string[] = [];
+      const evicted = evictLegacyBmadPackState(ctx, evictedChanges, linkPlan);
       const reserved = evictReservedModuleEntries(ctx.repoRoot, false);
       const install = await runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs);
       if (!install.ok) {
@@ -5041,18 +5116,16 @@ return ([
           summary: damaged.length
             ? `Failed to upgrade BMAD via installer; it changed ${damaged.length} path(s) before failing (recover with git)`
             : "Failed to upgrade BMAD via installer",
-          changedFiles: [],
+          changedFiles: evictedChanges,
           details: [
+            ...evicted,
             ...(reserved.original !== undefined ? [...reserved.details, "restored _bmad/_config/manifest.yaml after the failed install"] : []),
             install.error ?? "Unknown error",
             ...(damaged.length ? [`left changed by the failed installer: ${damaged.slice(0, 10).join(", ")}${damaged.length > 10 ? `, … ${damaged.length - 10} more` : ""}`] : []),
           ],
-          ...(damaged.length ? {} : { wroteNothing: true }),
+          ...(damaged.length || evictedChanges.length ? {} : { wroteNothing: true }),
         };
       }
-      const evictedChanges: string[] = [];
-      const evicted = evictLegacyBmadPackState(ctx, evictedChanges, await skillActivations(ctx));
-
       const nowInstalled = readInstalledBmadVersion(ctx.repoRoot);
       const upgraded = Boolean(nowInstalled && installed && compareBmadVersions(nowInstalled, installed) > 0);
       const changed = Array.from(new Set([

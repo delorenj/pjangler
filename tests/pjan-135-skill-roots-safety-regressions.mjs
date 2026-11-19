@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { buildSync } from "esbuild";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadSources, lstatSafe, put, rawRepo, readSafe, repoRoot, repoState, skill, skillFixture } from "./helpers/skill-roots-harness.mjs";
@@ -608,28 +608,29 @@ test("a crash after ANY step is reversed byte for byte by the restore command th
   }
 });
 
-// ---------------------------------------------------------------------------
-// Low, pre-existing: BMAD pack eviction (review F14)
-// ---------------------------------------------------------------------------
-
-test("F14: BMAD pack eviction leaves a skillex-owned bmad-* activation alone and reports what it removed", async () => {
+// A selected activation is preserved only if the installer is refused before
+// it can follow the link into the catalog. Even a proven retired sibling stays.
+test("F14: BMAD pack eviction refuses selected activation before touching any link or catalog bytes", async () => {
   const f = await skillFixture(sources, { tag: "f14", select: ["bmad-html-workspace"], catalogSkills: ["alpha", "bmad-html-workspace"] }); try {
     const scaffold = sources.createBmadChecks().find((check) => check.id === "bmad.scaffold");
     const synced = await f.migrate();
     assert.equal(synced.status, "applied", JSON.stringify(synced, null, 2));
     const owned = join(f.R, "bmad-html-workspace");
     assert.ok(lstatSync(owned).isSymbolicLink());
+    const selectedBytes = readFileSync(join(owned, "SKILL.md"));
     const retired = join(f.R, "bmad-retired-pack");
-    symlinkSync(join(f.base, "registry-cache", "packs", "bmad", "bmad-retired-pack"), retired);
+    symlinkSync(join(f.base, "registry", "packs", "bmad", "6.0.0", "skills", "bmad-retired-pack"), retired);
     const saved = process.env.PJ_BMAD_INSTALLER;
     process.env.PJ_BMAD_INSTALLER = "/bin/false";
     let result;
     try { result = await scaffold.migrate(f.ctx, await scaffold.audit(f.ctx)); }
     finally { if (saved === undefined) delete process.env.PJ_BMAD_INSTALLER; else process.env.PJ_BMAD_INSTALLER = saved; }
-    assert.equal(result.status, "partial", "the installer failed after something was already evicted");
-    assert.ok(lstatSafe(owned)?.isSymbolicLink(), "a receipt-owned selected activation is not retired pack state");
-    assert.equal(lstatSafe(retired), undefined, "the retired pack link is evicted");
-    assert.ok(result.changedFiles.includes(retired), `a blocked result still reports what it removed: ${JSON.stringify(result)}`);
+    assert.equal(result.status, "blocked");
+    assert.match(JSON.stringify(result), /bmad-html-workspace/);
+    assert.ok(lstatSafe(owned)?.isSymbolicLink());
+    assert.deepEqual(readFileSync(join(owned, "SKILL.md")), selectedBytes);
+    assert.ok(lstatSafe(retired)?.isSymbolicLink(), "preflight keeps the retired sibling too");
+    assert.deepEqual(result.changedFiles, []);
     assert.equal((await f.audit()).status, "pass");
   } finally { f.close(); }
 });
