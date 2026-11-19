@@ -200,11 +200,13 @@ export class NotebookRecipe extends Recipe<NotebookRecipeInput> {
   async applyExternal(plan: ProjectInitPlan, notebookPlan: NotebookPlanV1): Promise<{ changedFiles: string[]; data: { created: boolean; adopted: boolean; notebook_id: string; overview_note_id: string; journals: RemoteMutationJournalV1[] } }> {
     if (notebookPlan.remote_effect !== "reconcile") return { changedFiles: [], data: { created: false, adopted: false, notebook_id: notebookPlan.config.binding.notebook_id ?? "", overview_note_id: notebookPlan.config.binding.overview_note_id ?? "", journals: [] } };
     const provisioned = await this.module.provisionResolved(resolvedForPlan(plan), notebookPlan.config);
+    assertOperationActive();
     setBinding(plan, provisioned.binding);
     return { changedFiles: [], data: { ...provisioned.data, journals: provisioned.journals ?? [] } };
   }
 
   commitExternal(journals: RemoteMutationJournalV1[]): void {
+    assertOperationActive();
     for (const journal of journals) commitReconciledRemoteMutation(this.module.stateRoot, journal);
   }
 

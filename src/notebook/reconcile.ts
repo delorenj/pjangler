@@ -1,3 +1,4 @@
+import { assertOperationActive } from "../lifecycle/operation";
 import { NotebookError, type OpenNotebookNotebookV1, type OpenNotebookNoteV1 } from "./types";
 import { parseNoteEnvelope } from "./notes";
 import { normalizeOpenNotebookNoteType, OpenNotebookClient } from "./open-notebook-client";
@@ -21,6 +22,7 @@ function recordReconciliation(input: {
   candidateIds: string[];
   duplicateDiagnostic: string;
 }): RemoteMutationJournalV1 {
+  assertOperationActive();
   if (input.journal.state === "reconciled") {
     if (!sameCandidateSet(input.journal.candidate_ids, input.candidateIds)) {
       throw new NotebookError("CONFLICT", "Reconciled remote mutation candidate set changed; durable ownership must be repaired explicitly");
@@ -53,6 +55,7 @@ export async function reconcileProjectNotebook(input: {
   client: OpenNotebookClient;
   beforeRemote?: () => void;
 }): Promise<{ notebook: OpenNotebookNotebookV1; created: boolean; adopted: boolean; journal: RemoteMutationJournalV1 }> {
+  assertOperationActive();
   const marker = projectNotebookMarker(input.projectSlug);
   const description = input.description?.trim() ? `${marker}\n${input.description.trim()}` : marker;
   const digest = mutationInputDigest({ kind: "notebook.create", marker, name: input.name, description });
@@ -65,6 +68,7 @@ export async function reconcileProjectNotebook(input: {
   });
 
   const reconcile = async (): Promise<OpenNotebookNotebookV1[]> => {
+    assertOperationActive();
     input.beforeRemote?.();
     const candidates = (await input.client.listNotebooks()).filter((notebook) => notebook.description?.split(/\r?\n/u)[0] === marker);
     journal = recordReconciliation({
@@ -81,6 +85,7 @@ export async function reconcileProjectNotebook(input: {
   if (candidates.length === 1) {
     let candidate = candidates[0]!;
     if (candidate.name !== input.name || candidate.description !== description || candidate.archived === true) {
+      assertOperationActive();
       input.beforeRemote?.();
       candidate = await input.client.updateNotebook(candidate.id, { name: input.name, description, archived: false });
       if (candidate.name !== input.name || candidate.description !== description || candidate.archived === true) {
@@ -121,6 +126,7 @@ export async function reconcileManagedNote(input: {
   operationId?: string;
   beforeRemote?: () => void;
 }): Promise<{ note: OpenNotebookNoteV1; created: boolean; adopted: boolean; journal: RemoteMutationJournalV1 }> {
+  assertOperationActive();
   const desiredEnvelope = parseNoteEnvelope(input.content)?.envelope;
   if (!desiredEnvelope || desiredEnvelope.project_slug !== input.projectSlug || desiredEnvelope.logical_id !== input.logicalId) {
     throw new NotebookError("INVALID_INPUT", "Managed note create requires an exact owned PJangler envelope");
@@ -140,6 +146,7 @@ export async function reconcileManagedNote(input: {
     operationId: input.operationId,
   });
   const reconcile = async (): Promise<OpenNotebookNoteV1[]> => {
+    assertOperationActive();
     input.beforeRemote?.();
     const notes = await input.client.listNotes(input.notebookId);
     const candidates = notes.filter((note) => parseNoteEnvelope(note.content)?.envelope.logical_id === input.logicalId);
@@ -160,6 +167,7 @@ export async function reconcileManagedNote(input: {
       throw new NotebookError("CONFLICT", "Managed logical ID is occupied by a foreign or forged note envelope");
     }
     if (candidate.title !== input.title || candidate.content !== input.content) {
+      assertOperationActive();
       input.beforeRemote?.();
       candidate = await input.client.updateOwnedNote(input.notebookId, candidate.id, { title: input.title, content: input.content });
       if (candidate.title !== input.title || candidate.content !== input.content) {

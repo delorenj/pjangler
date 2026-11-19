@@ -13,6 +13,7 @@
 // first asks "is this already true?", so a re-run after a partial failure
 // converges: Plane already showing `NEW` is success, not an error.
 
+import { assertOperationActive, rethrowOperationStopped } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -239,6 +240,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     try {
       boards = await fetchBoards(workspace);
     } catch (error) {
+      rethrowOperationStopped(error);
       throw new RenameError("provider_unreachable", message(error));
     }
     live = boards.get(boardId);
@@ -256,6 +258,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
       if (!facts) throw new RenameError("board_not_found", `Trello has no visible board ${boardId}`);
       if (facts.closed) throw new RenameError("board_archived", `Trello board ${boardId} ("${facts.name}") is archived`);
     } catch (error) {
+      rethrowOperationStopped(error);
       if (error instanceof RenameError) throw error;
       // Trello assigns no key, so nothing here depends on it; a missing
       // credential must not block a purely local rename.
@@ -263,6 +266,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     }
   }
 
+  assertOperationActive();
   // Every spelling the old key may carry in a file or record.
   const manifestProvider = manifestBefore?.ticket_provider;
   const manifestIdentifier = isRecord(manifestProvider) ? String(manifestProvider.identifier ?? "") : "";
@@ -305,11 +309,13 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     try {
       await planeCall(workspace, boardId, NEW);
     } catch (error) {
+      rethrowOperationStopped(error);
       patchError = message(error);
     }
     // A 2xx is a claim and a thrown PATCH (a timeout, say) may still have
     // applied. Read the board back before deciding either way.
     try {
+      assertOperationActive();
       const after = (await fetchBoards(workspace)).get(boardId);
       if (after && after.identifier.toUpperCase() === NEW) {
         return { status: "done", detail: `Plane board ${boardId}: ${live.identifier} -> ${NEW}${patchError ? ` (the PATCH reported: ${patchError})` : ""}` };
@@ -319,6 +325,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
       }
       return { status: "failed", detail: `Plane accepted the rename but board ${boardId} reads ${after?.identifier ?? "(missing)"}` };
     } catch (error) {
+      rethrowOperationStopped(error);
       return {
         status: "failed",
         detail: `${patchError ? `${patchError}; ` : ""}the read-back failed (${message(error)}), so the outcome is unknown; re-running is safe`,
@@ -332,6 +339,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     try {
       current = readJsonObject(manifestPath);
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: message(error) };
     }
     const next: Json = { ...current, project_id: newId };
@@ -355,6 +363,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     try {
       atomicWrite(manifestPath, `${JSON.stringify(next, null, 2)}\n`);
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: `could not write ${manifestPath}: ${message(error)}` };
     }
     return { status: "done", detail, files: [manifestPath] };
@@ -391,6 +400,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
         saveProjectRegistry(fresh, registryPath);
       }
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: message(error) };
     }
     return { status: "done", detail, files: service ? [] : [registryPath] };
@@ -407,6 +417,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     try {
       entries = readdirSync(hermesDir, { withFileTypes: true });
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: `${hermesDir}: ${message(error)}` };
     }
     for (const entry of entries) {
@@ -432,6 +443,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
         if (JSON.stringify(after) !== JSON.stringify(before)) throw new Error("the edit changed more than plane.identifier");
         atomicWrite(path, text);
       } catch (error) {
+        rethrowOperationStopped(error);
         return { status: "failed", detail: `${path}: ${message(error)}` };
       }
     }
@@ -468,6 +480,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
       }
       return { status: "done", detail: `${stale.length} fleet agent(s): plane.identifier -> ${NEW} (${hermesPath})`, files: [hermesPath] };
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: message(error) };
     }
   };
@@ -506,6 +519,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
       if (doApply) atomicWrite(path, out.join("\n"));
       return { status: doApply ? "done" : "planned", detail: `Board: (${oldIdentifier}) -> (${NEW})`, files: [path] };
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: message(error) };
     }
   };
@@ -541,6 +555,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
       atomicWrite(path, `${JSON.stringify({ ...hints, projects: rekeyed }, null, 2)}\n`);
       return { status: "done", detail, files: [path] };
     } catch (error) {
+      rethrowOperationStopped(error);
       return { status: "failed", detail: message(error) };
     }
   };
@@ -589,6 +604,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
   ];
   let blockedBy: string | undefined;
   for (const [name, run] of critical) {
+    assertOperationActive();
     if (blockedBy) {
       note(name, { status: "blocked", detail: `not attempted: ${blockedBy} failed` });
       continue;
@@ -605,6 +621,7 @@ export async function renameProject(options: RenameOptions): Promise<RenameResul
     ["candystore", candystoreStep],
   ];
   for (const [name, run] of downstream) {
+    assertOperationActive();
     if (blockedBy) note(name, { status: "blocked", detail: `not attempted: ${blockedBy} failed` });
     else note(name, await run(apply));
   }

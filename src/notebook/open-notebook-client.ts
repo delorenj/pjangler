@@ -1,3 +1,4 @@
+import { assertOperationActive, rethrowOperationStopped, withHttpResponse } from "../lifecycle/operation";
 import { runtimeNotebookCredential, validateNotebookBaseUrl } from "./config";
 import {
   NotebookError,
@@ -119,6 +120,7 @@ async function readResponseBody(response: Response, maxBytes: number): Promise<B
   try {
     while (true) {
       const next = await reader.read();
+      assertOperationActive();
       if (next.done) break;
       const chunk = Buffer.from(next.value);
       bytes += chunk.byteLength;
@@ -160,8 +162,8 @@ export class OpenNotebookClient {
     return { version, auth_enabled: authEnabled };
   }
 
-  async authStatus(): Promise<boolean> {
-    const value = await this.request("/api/auth/status", { skipAuthProbe: true, suppressAuthorization: true });
+  async authStatus(deadlineMonotonicMs?: number): Promise<boolean> {
+    const value = await this.request("/api/auth/status", { skipAuthProbe: true, suppressAuthorization: true, deadlineMonotonicMs });
     if (!isRecord(value) || typeof value.auth_enabled !== "boolean") throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook auth status returned an invalid response");
     this.authEnabled = value.auth_enabled;
     return value.auth_enabled;
@@ -313,21 +315,33 @@ export class OpenNotebookClient {
     await this.request(`/api/sources/${encodeURIComponent(sourceId)}`, { method: "DELETE", allowEmpty: true });
   }
 
-  private async ensureAuthProbe(): Promise<void> {
+  private async ensureAuthProbe(deadlineMonotonicMs: number): Promise<void> {
+    assertOperationActive();
     if (this.authEnabled !== undefined) return;
     if (this.config.auth.mode === "none") { this.authEnabled = null; return; }
     try {
-      await this.authStatus();
+      await this.authStatus(deadlineMonotonicMs);
+      assertOperationActive();
     } catch (error) {
+      rethrowOperationStopped(error);
       // A real 401/403 remains authoritative. Other config-probe failures do
       // not downgrade the requested operation or cause credentials to leak.
-      if (error instanceof NotebookError && error.code === "AUTHENTICATION_FAILED") throw error;
+      if (error instanceof NotebookError && (error.code === "AUTHENTICATION_FAILED" || error.code === "TIMEOUT")) throw error;
       this.authEnabled = null;
     }
   }
 
   private async request(path: string, options: RequestOptions = {}): Promise<unknown> {
-    if (!options.skipAuthProbe) await this.ensureAuthProbe();
+    assertOperationActive();
+    // The probe and its dependent request share one local budget as well as
+    // the enclosing MCP deadline. A failed probe cannot reset either clock.
+    const deadline = Math.min(
+      performance.now() + this.config.limits.overall_timeout_ms,
+      this.deadlineMonotonicMs ?? Infinity,
+      options.deadlineMonotonicMs ?? Infinity,
+    );
+    if (!options.skipAuthProbe) await this.ensureAuthProbe(deadline);
+    assertOperationActive();
     const method = options.method ?? "GET";
     const url = new URL(path, `${this.baseUrl}/`);
     if (url.origin !== new URL(this.baseUrl).origin) throw new NotebookError("INVALID_INPUT", "Open Notebook request escaped the configured origin");
@@ -338,43 +352,33 @@ export class OpenNotebookClient {
     if (!options.suppressAuthorization && this.config.auth.mode === "environment" && this.authEnabled !== false) {
       headers.Authorization = `Bearer ${runtimeNotebookCredential(this.config, this.env)}`;
     }
-    const deadline = Math.min(
-      this.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
-      options.deadlineMonotonicMs ?? Number.POSITIVE_INFINITY,
-    );
-    const remaining = deadline === Number.POSITIVE_INFINITY
-      ? this.config.limits.overall_timeout_ms
-      : Math.floor(deadline - performance.now());
-    if (remaining <= 0) throw new NotebookError("TIMEOUT", "Open Notebook request timed out", true);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(this.config.limits.overall_timeout_ms, remaining)));
     try {
-      options.possiblyDispatched?.();
-      const response = await this.fetchImpl(url, {
-        method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: controller.signal,
+      return await withHttpResponse(url, { method, headers, body, redirect: "manual" }, async (response) => {
+        if (response.status >= 300 && response.status < 400) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook redirect was rejected");
+        if (!response.ok) {
+          if (response.status === 400 || response.status === 422) options.definitivelyRejected?.(response.status);
+          try { await readResponseBody(response, Math.min(this.config.limits.response_max_bytes, 4_096)); }
+          catch (error) { rethrowOperationStopped(error); /* preserve HTTP status without response data */ }
+          assertOperationActive();
+          throw errorForStatus(response.status, `Open Notebook returned HTTP ${response.status}`);
+        }
+        if (options.allowEmpty && (response.status === 204 || response.headers.get("content-length") === "0")) return null;
+        const buffer = await readResponseBody(response, this.config.limits.response_max_bytes);
+        assertOperationActive();
+        if (!buffer.byteLength && options.allowEmpty) return null;
+        try { return JSON.parse(buffer.toString("utf8")) as unknown; }
+        catch { throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned malformed JSON"); }
+      }, {
+        timeoutMs: this.config.limits.overall_timeout_ms,
+        deadlineMonotonicMs: deadline,
+        fetch: this.fetchImpl,
+        beforeDispatch: options.possiblyDispatched,
       });
-      if (response.status >= 300 && response.status < 400) throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook redirect was rejected");
-      if (!response.ok) {
-        if (response.status === 400 || response.status === 422) options.definitivelyRejected?.(response.status);
-        try { await readResponseBody(response, Math.min(this.config.limits.response_max_bytes, 4_096)); }
-        catch { /* preserve the categorized HTTP status without response data */ }
-        throw errorForStatus(response.status, `Open Notebook returned HTTP ${response.status}`);
-      }
-      if (options.allowEmpty && (response.status === 204 || response.headers.get("content-length") === "0")) return null;
-      const buffer = await readResponseBody(response, this.config.limits.response_max_bytes);
-      if (!buffer.byteLength && options.allowEmpty) return null;
-      try { return JSON.parse(buffer.toString("utf8")) as unknown; }
-      catch { throw new NotebookError("REMOTE_PROTOCOL_ERROR", "Open Notebook returned malformed JSON"); }
     } catch (error) {
+      rethrowOperationStopped(error);
       if (error instanceof NotebookError) throw error;
-      if (controller.signal.aborted || (error as Error).name === "AbortError") throw new NotebookError("TIMEOUT", "Open Notebook request timed out", true);
+      if (performance.now() >= deadline || ["AbortError", "TimeoutError"].includes((error as Error).name)) throw new NotebookError("TIMEOUT", "Open Notebook request timed out", true);
       throw new NotebookError("SERVICE_UNAVAILABLE", "Open Notebook request failed", true, {}, { cause: error });
-    } finally {
-      clearTimeout(timeout);
     }
   }
 }

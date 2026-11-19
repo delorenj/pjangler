@@ -17,7 +17,7 @@
 // The repo-local `.project.json` owns the board binding. Applied repairs
 // persist changed fields there through the registry service, then refresh its index.
 
-import { assertOperationActive } from "../lifecycle/operation";
+import { assertOperationActive, rethrowOperationStopped, withHttpResponse } from "../lifecycle/operation";
 import { isDeepStrictEqual } from "node:util";
 import {
   closeSync,
@@ -234,22 +234,23 @@ export async function fetchPlaneBoards(
     const url = new URL(`${base}/api/v1/workspaces/${encodeURIComponent(workspace)}/projects/`);
     url.searchParams.set("per_page", String(PAGE_SIZE));
     if (cursor) url.searchParams.set("cursor", cursor);
-    let response: Response;
+    let body: unknown;
     try {
-      response = await fetch(url, {
+      body = await withHttpResponse(url, {
         headers: { "X-API-Key": apiKey, "User-Agent": `pjangler/${PJANGLER_VERSION}` },
-        signal: AbortSignal.timeout(20_000),
-      });
+      }, async (response) => {
+        if (!response.ok) throw new BoardError(`Plane returned ${response.status} listing workspace "${workspace}" projects`);
+        return await response.json();
+      }, { timeoutMs: 20_000 });
     } catch (error) {
+      rethrowOperationStopped(error);
+      if (error instanceof BoardError) throw error;
       throw new BoardError(
         `could not reach Plane at ${base} for workspace "${workspace}": ` +
           (error instanceof Error ? error.message : String(error)),
       );
     }
-    if (!response.ok) {
-      throw new BoardError(`Plane returned ${response.status} listing workspace "${workspace}" projects`);
-    }
-    const body: unknown = await response.json();
+    assertOperationActive();
     const results = isRecord(body) && Array.isArray(body.results) ? body.results : Array.isArray(body) ? body : [];
     for (const entry of results) {
       if (!isRecord(entry)) continue;
@@ -298,9 +299,8 @@ export async function patchPlaneBoardIdentifier(
   }
   const base = planeBase(env, home);
   const url = `${base}/api/v1/workspaces/${encodeURIComponent(workspace)}/projects/${encodeURIComponent(boardId)}/`;
-  let response: Response;
   try {
-    response = await fetch(url, {
+    await withHttpResponse(url, {
       method: "PATCH",
       headers: {
         "X-API-Key": apiKey,
@@ -308,19 +308,23 @@ export async function patchPlaneBoardIdentifier(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ identifier }),
-      signal: AbortSignal.timeout(20_000),
-    });
+    }, async (response) => {
+      if (!response.ok) {
+        let detail = "";
+        try { detail = (await response.text()).replace(/\s+/g, " ").trim().slice(0, 200); }
+        catch (error) { rethrowOperationStopped(error); /* status is enough */ }
+        throw new BoardError(
+          `Plane refused identifier "${identifier}" for board ${boardId} (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+        );
+      }
+      await response.body?.cancel();
+    }, { timeoutMs: 20_000 });
   } catch (error) {
+    rethrowOperationStopped(error);
+    if (error instanceof BoardError) throw error;
     throw new BoardError(
       `could not reach Plane at ${base} to rename board ${boardId}: ` +
         (error instanceof Error ? error.message : String(error)),
-    );
-  }
-  if (!response.ok) {
-    let detail = "";
-    try { detail = (await response.text()).replace(/\s+/g, " ").trim().slice(0, 200); } catch { /* status is enough */ }
-    throw new BoardError(
-      `Plane refused identifier "${identifier}" for board ${boardId} (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
     );
   }
 }
@@ -368,20 +372,23 @@ export async function fetchTrelloBoard(
   url.searchParams.set("fields", "id,name,closed");
   url.searchParams.set("key", key);
   url.searchParams.set("token", token);
-  let response: Response;
+  let body: unknown;
   try {
-    response = await fetch(url, {
+    body = await withHttpResponse(url, {
       headers: { "User-Agent": `pjangler/${PJANGLER_VERSION}` },
-      signal: AbortSignal.timeout(20_000),
-    });
+    }, async (response) => {
+      if (response.status === 404) return undefined;
+      if (!response.ok) throw new BoardError(`Trello returned ${response.status} for board ${boardId}`);
+      return await response.json();
+    }, { timeoutMs: 20_000 });
   } catch (error) {
+    rethrowOperationStopped(error);
+    if (error instanceof BoardError) throw error;
     throw new BoardError(
       `could not reach Trello for board ${boardId}: ` + (error instanceof Error ? error.message : String(error)),
     );
   }
-  if (response.status === 404) return null;
-  if (!response.ok) throw new BoardError(`Trello returned ${response.status} for board ${boardId}`);
-  const body: unknown = await response.json();
+  if (body === undefined) return null;
   if (!isRecord(body) || typeof body.id !== "string") {
     throw new BoardError(`Trello returned an unreadable board payload for ${boardId}`);
   }
@@ -885,7 +892,9 @@ async function reconcileOneProject(
     let board: TrelloBoardFacts | null;
     try {
       board = await ctx.fetchTrello(boardId);
+      assertOperationActive();
     } catch (error) {
+      rethrowOperationStopped(error);
       const detail = error instanceof Error ? error.message : String(error);
       ctx.errors.push(`${slug}: ${detail}`);
       return preserve(slug, provider, `${detail}; nothing written`);
@@ -1065,7 +1074,9 @@ export async function reconcileProjectIdentity(options: IdentityOptions = {}): P
     try {
       const fetcher = options.fetchBoards ?? ((ws: string) => fetchPlaneBoards(ws, env, home));
       boardsByWorkspace.set(workspace, await fetcher(workspace));
+      assertOperationActive();
     } catch (error) {
+      rethrowOperationStopped(error);
       workspacesFailed += 1;
       errors.push(error instanceof Error ? error.message : String(error));
     }
@@ -1152,6 +1163,7 @@ export async function reconcileProjectIdentity(options: IdentityOptions = {}): P
   }
 
   if (apply) {
+    assertOperationActive();
     if (hermesIdentifiers.size || deletions.length) {
       applyHermesIdentifiers(hermesRegistryPath, hermesIdentifiers, deletions);
     }
@@ -1416,6 +1428,7 @@ export async function linkProjectBoard(options: {
   const changedFiles: string[] = [];
   let manifestPath: string | undefined;
   if (apply) {
+    assertOperationActive();
     registry.projects[project.slug] = { ...project, ticket_provider: { ...current, ...block }, updated_at: now };
     if (isRegistryServiceLocation(registryPath)) {
       const beforeManifest = existsSync(manifestFile) ? readFileSync(manifestFile, "utf8") : null;

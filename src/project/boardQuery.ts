@@ -13,6 +13,7 @@
 // `--project` flag by design: the board binding is a property of where you
 // are standing.
 
+import { rethrowOperationStopped, withHttpResponse } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -322,31 +323,33 @@ async function planeGet(
   );
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
 
-  let response: Response;
   try {
-    response = await fetch(url, {
+    return await withHttpResponse(url, {
       headers: { "X-API-Key": client.apiKey, "User-Agent": `pjangler/${PJANGLER_VERSION}` },
-      signal: AbortSignal.timeout(client.timeoutMs),
-    });
+    }, async (response) => {
+      if (!response.ok) {
+        const credentials = response.status === 401 || response.status === 403;
+        throw new BoardError(
+          `Plane returned ${response.status} for ${path}` +
+            (credentials
+              ? ` — the API key was rejected; check ${planeApiKeyNames(client.workspace).join(" / ")}`
+              : response.status === 404
+                ? ` — no such board in workspace "${client.workspace}"; check ticket_provider.board_id`
+                : ""),
+        );
+      }
+      try {
+        return await response.json();
+      } catch (error) {
+        rethrowOperationStopped(error);
+        throw new BoardError(`Plane returned a non-JSON body for ${path}`);
+      }
+    }, { timeoutMs: client.timeoutMs });
   } catch (error) {
+    rethrowOperationStopped(error);
+    if (error instanceof BoardError) throw error;
     const detail = error instanceof Error ? error.message : String(error);
     throw new BoardError(`could not reach Plane at ${client.base} (${path}): ${detail}`);
-  }
-  if (!response.ok) {
-    const credentials = response.status === 401 || response.status === 403;
-    throw new BoardError(
-      `Plane returned ${response.status} for ${path}` +
-        (credentials
-          ? ` — the API key was rejected; check ${planeApiKeyNames(client.workspace).join(" / ")}`
-          : response.status === 404
-            ? ` — no such board in workspace "${client.workspace}"; check ticket_provider.board_id`
-            : ""),
-    );
-  }
-  try {
-    return await response.json();
-  } catch {
-    throw new BoardError(`Plane returned a non-JSON body for ${path}`);
   }
 }
 

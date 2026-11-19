@@ -57,6 +57,55 @@ export function rethrowOperationStopped(error: unknown): void {
   if (error instanceof OperationStopped) throw error;
   assertOperationActive();
 }
+export interface HttpOptions {
+  timeoutMs: number;
+  /** Optional local composite deadline, e.g. a notebook hook's budget. */
+  deadlineMonotonicMs?: number;
+  fetch?: typeof globalThis.fetch;
+  beforeDispatch?: () => void;
+}
+
+/** Keep the shared stop signal and local timeout alive through response consumption. */
+export async function withHttpResponse<T>(
+  url: string | URL,
+  init: RequestInit,
+  consume: (response: Response) => Promise<T>,
+  options: HttpOptions,
+): Promise<T> {
+  const operation = currentOperation();
+  const controller = new AbortController();
+  const deadline = Math.min(
+    performance.now() + options.timeoutMs,
+    options.deadlineMonotonicMs ?? Infinity,
+    operation?.deadlineMs ?? Infinity,
+  );
+  const signal = AbortSignal.any([controller.signal, ...(operation ? [operation.signal] : []), ...(init.signal ? [init.signal] : [])]);
+  const assertActive = () => {
+    assertOperationActive(operation);
+    if (performance.now() >= deadline) controller.abort(new DOMException("HTTP request timed out", "TimeoutError"));
+    signal.throwIfAborted();
+  };
+  const timer = setTimeout(() => controller.abort(new DOMException("HTTP request timed out", "TimeoutError")), Math.max(1, Math.ceil(deadline - performance.now())));
+  try {
+    assertActive();
+    options.beforeDispatch?.();
+    assertActive();
+    const response = await (options.fetch ?? globalThis.fetch)(url, { ...init, signal });
+    assertActive();
+    const result = await consume(response);
+    assertActive();
+    return result;
+  } catch (error) {
+    if (error instanceof OperationStopped) throw error;
+    assertOperationActive(operation);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    // Release unread/error bodies too; never leave a raced fetch running behind a reply.
+    controller.abort();
+  }
+}
+
 export async function runProcess(command: string, args: readonly string[], options: ChildOptions & { timeout?: number; encoding?: string } = {}): Promise<ChildOutcome> {
   const { timeout, encoding: _encoding, ...rest } = options;
   return runChild(command, args, { ...rest, timeoutMs: rest.timeoutMs ?? timeout });

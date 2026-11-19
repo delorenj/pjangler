@@ -42,7 +42,7 @@ import { validateCommittedGitRef } from "./git-evidence";
 import { prepareNotebookObservation } from "./observation";
 import { createNotebookChecks } from "./checks";
 import { homedir } from "node:os";
-import { currentOperation } from "../lifecycle/operation";
+import { assertOperationActive, currentOperation, rethrowOperationStopped } from "../lifecycle/operation";
 import { installProjectNotebookIntegration, installProjectNotebookIntegrationAsync, repairProjectNotebookSkillProjection, type ProjectNotebookHostBlockV1, type ProjectNotebookSkillRepairV1 } from "./hooks";
 import { reconcileNotebookEntropy, type EntropyReconciliationResultV1 } from "./entropy";
 import {
@@ -257,8 +257,10 @@ export class NotebookModule {
     if (!live) throw new NotebookError("INVALID_INPUT", "notebook create requires --live");
     const ctx = this.context(repo, true);
     const provisioned = await this.provisionResolved(ctx.resolved, ctx.config);
+    assertOperationActive();
     const changedFiles = persistProjectNotebookBinding(ctx.resolved, provisioned.binding);
     await this.persistRegistryAdapter(ctx.resolved.registry);
+    assertOperationActive();
     for (const journal of provisioned.journals) commitReconciledRemoteMutation(this.stateRoot, journal);
     const config = loadEffectiveNotebookConfig(repo, this.registryPath);
     return { config, health: "healthy", data: provisioned.data, changedFiles };
@@ -271,6 +273,7 @@ export class NotebookModule {
     try {
       await this.registryStore.save(registry);
     } catch (error) {
+      rethrowOperationStopped(error);
       throw new NotebookError("SERVICE_UNAVAILABLE", "Project registry indexing failed after the canonical manifest was durably preserved", true, {}, { cause: error });
     }
   }
@@ -289,7 +292,9 @@ export class NotebookModule {
       description: resolved.project.description,
       client,
     });
+    assertOperationActive();
     const compiledOverview = await compileOverviewArtifact({ config, projectName: resolved.project.name, purpose: resolved.project.description });
+    assertOperationActive();
     const overviewContent = renderOverviewContent({ config, descriptor: compiledOverview.descriptor, referenceContents: compiledOverview.reference_contents });
     const overview = await reconcileManagedNote({
       stateRoot: this.stateRoot,
@@ -300,6 +305,7 @@ export class NotebookModule {
       content: overviewContent,
       client,
     });
+    assertOperationActive();
     const binding: ProjectNotebookBindingV1 = {
       ...config.binding,
       state: "linked",
