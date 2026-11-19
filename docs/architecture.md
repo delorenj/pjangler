@@ -164,7 +164,7 @@ metadata prove ownership and every owned file remains unmodified.
 | `recipe list/describe/run` | Recipe metadata + execution |
 | `command|cmd list/describe/create` | Command metadata (`create` is a STORY-005 placeholder) |
 | `audit [repo]` | Deterministic parity audit (exit 1 if not ok); `--rules <ids>` narrows it, and an unknown id is an error |
-| `migrate [rule-id] [repo]` | Idempotent migration; `--all`, or interactive rule selector TUI |
+| `migrate [rule-id] [repo]` | Idempotent migration into an existing directory; `--rules <comma,separated,ids>` selects multiple rules, `--all` selects every rule, or omit the rule to open the interactive selector. An extra rule-id positional is rejected. |
 | `describe [repo]` | Report what a repo actually is, for agent context; `--interactive` applies fixable findings |
 
 **Deprecated shims (still work, warn):** `pjangler init <subsystem>` → `pjangler add <subsystem>`; `pjangler project init` → `pjangler init`.

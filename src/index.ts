@@ -1476,6 +1476,7 @@ program
   .argument("[repo]", "Path to repo (default: cwd)")
   .description("Idempotent migration recipe for a parity rule (or open the rule selector)")
   .option("--all", "Apply every migration recipe in order")
+  .option("--rules <ids>", "Comma-separated rule ids to migrate (instead of a positional rule id)")
   .option("--dry-run", "Preview changes without writing files")
   .option(
     "--accept-registry-matches",
@@ -1489,6 +1490,39 @@ program
       const dryRun = options.dryRun ?? false;
       const acceptRegistryMatches = options.acceptRegistryMatches ?? false;
       const registryOverride = options.registry as string | undefined;
+      const knownRules = getParityRuleIds();
+      const selectedRules = String(options.rules ?? "").split(",").map((id: string) => id.trim()).filter(Boolean);
+
+      if (ruleId && repo && knownRules.includes(repo)) {
+        console.error(`${xmark} unexpected positional: ${repo}; did you mean --rules ${ruleId},${repo}?`);
+        process.exit(1);
+      }
+      if (selectedRules.length && (all || repo || (ruleId && knownRules.includes(ruleId)))) {
+        console.error(`${xmark} --rules accepts only one optional repo path and cannot be combined with --all or a positional rule id`);
+        process.exit(1);
+      }
+      if (all && ruleId && repo) {
+        console.error(`${xmark} unexpected positional: ${repo}; --all accepts only one optional repo path`);
+        process.exit(1);
+      }
+      const unknownRules = selectedRules.filter((id: string) => !knownRules.includes(id));
+      if (unknownRules.length) {
+        console.error(`${xmark} Unknown parity rule id(s): ${unknownRules.join(", ")}`);
+        process.exit(1);
+      }
+
+      const target = selectedRules.length || all ? ruleId : repo ?? (ruleId && !knownRules.includes(ruleId) ? ruleId : undefined);
+      const targetPath = resolve(target ?? process.cwd());
+      if (!existsSync(targetPath) || !statSync(targetPath).isDirectory()) {
+        console.error(`${xmark} Target repo must be an existing directory: ${targetPath}`);
+        process.exit(1);
+      }
+
+      if (selectedRules.length) {
+        const report = await runMigrationForRules(selectedRules, target, dryRun, acceptRegistryMatches, registryOverride);
+        printMigrationReport(report, options.json);
+        process.exit(report.ok ? 0 : 1);
+      }
 
       if (all) {
         // When --all is used, any positional argument is the repo path, not a rule-id.
