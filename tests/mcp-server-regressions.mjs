@@ -8,6 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import YAML from "yaml";
+import Ajv from "ajv";
 
 const root = resolve(import.meta.dirname, "..");
 const serverPath = resolve(root, "dist", "mcp-server.js");
@@ -47,6 +48,45 @@ async function expectInvalidParams(name, args, message) {
 await client.connect(transport);
 try {
   const listed = await client.listTools();
+  const ajv = new Ajv({ strict: false });
+  const advertised = new Map(listed.tools.map((tool) => [tool.name, tool]));
+  const validated = new Set();
+  async function callContract(name, args, { error = false, formatted = false } = {}) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError === true, error, `${name} unexpected error state: ${JSON.stringify(result)}`);
+    const text = result.content.find((item) => item.type === "text")?.text;
+    assert.ok(text?.length, `${name}: readable text is required`);
+    assert.ok(result.structuredContent && typeof result.structuredContent === "object", `${name}: missing structuredContent`);
+    const validate = ajv.compile(advertised.get(name).outputSchema);
+    assert.ok(validate(result.structuredContent), `${name} schema: ${ajv.errorsText(validate.errors)} ${JSON.stringify(result.structuredContent)}`);
+    if (!formatted) assert.deepEqual(JSON.parse(text), result.structuredContent, `${name}: text and structured content must agree`);
+    validated.add(name);
+    return result;
+  }
+  const expectedHints = {
+    pjangler_list_capabilities: [true, false, true, false],
+    pjangler_list_parity_rules: [true, false, true, false],
+    pjangler_audit_project: [true, false, true, true],
+    pjangler_migrate_project: [false, true, false, true],
+    pjangler_bootstrap_33god_project: [false, true, false, true],
+    pjangler_project_init: [false, true, false, true],
+    pjangler_info: [true, false, true, true],
+    pjangler_project_list: [true, false, true, true],
+    pjangler_project_show: [true, false, true, true],
+    pjangler_describe_project: [true, false, true, true],
+    pjangler_describe_recipe: [true, false, true, false],
+    pjangler_run_recipe: [false, true, false, true],
+  };
+  assert.deepEqual(Object.keys(expectedHints).sort(), listed.tools.map((tool) => tool.name).sort(), "review every actual tool, not a stale catalog");
+  for (const tool of listed.tools) {
+    assert.ok(tool.outputSchema && tool.outputSchema.type === "object", `${tool.name}: missing object output schema`);
+    const keys = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"];
+    for (const key of keys) {
+      assert.equal(typeof tool.annotations?.[key], "boolean", `${tool.name}: ${key} must be explicit`);
+    }
+    assert.deepEqual(keys.map((key) => tool.annotations[key]), expectedHints[tool.name], `${tool.name}: hints must match reviewed handler effects`);
+    assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} must reject unknown top-level arguments`);
+  }
   const toolNames = new Set(listed.tools.map((tool) => tool.name));
   for (const tool of [
     "pjangler_list_capabilities",
@@ -255,20 +295,74 @@ try {
   const projectListPayload = JSON.parse(projectList.content[0].text);
   assert.deepEqual(projectListPayload.projects, {});
 
+  // PJAN-68: exercise discovery and every success contract with isolated inputs.
+  const catalog = await callContract("pjangler_list_capabilities", {});
+  assert.ok(catalog.structuredContent.recipes.length);
+  await callContract("pjangler_list_parity_rules", {});
+  await callContract("pjangler_project_list", { registryPath: infoRegistry });
+  await callContract("pjangler_project_show", { slug: "test-info", registryPath: infoRegistry });
+  await callContract("pjangler_info", { project_id: "TEST-INFO", registryPath: infoRegistry });
+  await callContract("pjangler_describe_recipe", { recipe: "node" });
+  await callContract("pjangler_project_init", { name: "Contract Preview", targetDir: join(mcpTmp, "contract-preview"), registryPath: infoRegistry });
+  await callContract("pjangler_bootstrap_33god_project", { parentDir: mcpTmp, projectName: "Contract Boot", projectSlug: "contract-boot", dryRun: true, registryPath: infoRegistry });
+  const recipePreviewDir = join(mcpTmp, "contract-recipe-preview");
+  mkdirSync(recipePreviewDir);
+  const previewRecipe = await callContract("pjangler_run_recipe", { recipe: "node", targetDir: recipePreviewDir });
+  assert.equal(previewRecipe.structuredContent.dryRun, true);
+  assert.equal(existsSync(join(recipePreviewDir, "package.json")), false);
+  const contractAuditDir = join(mcpTmp, "contract-audit");
+  mkdirSync(contractAuditDir);
+  writeFileSync(join(contractAuditDir, "README.md"), "# Isolated contract fixture\n");
+  const auditJson = await callContract("pjangler_audit_project", { targetDir: contractAuditDir });
+  const auditText = await callContract("pjangler_audit_project", { targetDir: contractAuditDir, json: false }, { formatted: true });
+  assert.deepEqual(auditText.structuredContent.rules, auditJson.structuredContent.rules);
+  assert.ok(!auditText.content[0].text.startsWith("{"));
+  const describeJson = await callContract("pjangler_describe_project", { targetDir: recipePreviewDir, registryPath: infoRegistry });
+  const describeText = await callContract("pjangler_describe_project", { targetDir: recipePreviewDir, registryPath: infoRegistry, json: false }, { formatted: true });
+  assert.deepEqual(describeText.structuredContent.identity, describeJson.structuredContent.identity);
+  const migrationPreview = await callContract("pjangler_migrate_project", { targetDir: contractAuditDir, ruleId: "sot.agent-symlinks", dryRun: true }, { error: false });
+  assert.equal(migrationPreview.structuredContent.dryRun, true);
+  const migrationApply = await callContract("pjangler_migrate_project", { targetDir: contractAuditDir, ruleId: "sot.agent-symlinks", dryRun: false });
+  assert.equal(migrationApply.structuredContent.dryRun, false);
+  const blockedMigrationDir = join(mcpTmp, "blocked-migration");
+  mkdirSync(blockedMigrationDir);
+  const blockedMigration = await callContract("pjangler_migrate_project", {
+    targetDir: blockedMigrationDir, ruleId: "sot.agent-symlinks", dryRun: false,
+  }, { error: true });
+  assert.equal(blockedMigration.structuredContent.ok, false);
+  assert.equal(blockedMigration.structuredContent.results[0].status, "blocked");
+  assert.ok(blockedMigration.structuredContent.results[0].details.length);
+  const partialMigrationDir = join(mcpTmp, "partial-migration");
+  mkdirSync(partialMigrationDir);
+  writeFileSync(join(partialMigrationDir, "AGENTS.md"), "# Canonical\n");
+  writeFileSync(join(partialMigrationDir, "CLAUDE.md"), "# User-owned conflict\n");
+  const partialMigration = await callContract("pjangler_migrate_project", {
+    targetDir: partialMigrationDir, ruleId: "sot.agent-symlinks", dryRun: false,
+  }, { error: true });
+  assert.equal(partialMigration.structuredContent.ok, false);
+  assert.equal(partialMigration.structuredContent.results[0].status, "blocked");
+  assert.ok(partialMigration.structuredContent.results[0].changedFiles.length, "partial migration records completed work");
+  assert.ok(partialMigration.structuredContent.results[0].details.length, "partial migration retains conflict diagnostics");
+  const failedBootstrap = await callContract("pjangler_bootstrap_33god_project", {
+    parentDir: mcpTmp, projectName: "Failed Contract Bootstrap", projectSlug: "failed-contract-bootstrap", dryRun: false,
+  }, { error: true });
+  assert.equal(failedBootstrap.structuredContent.ok, false);
+  assert.ok(failedBootstrap.structuredContent.phases?.length);
+  assert.ok(failedBootstrap.structuredContent.errors?.length);
+  assert.equal(existsSync(join(mcpTmp, "failed-contract-bootstrap")), false);
   // PJAN-57: MCP recipe dispatch must preserve the caller's force flag.
   const forceRecipeTarget = join(mcpTmp, "force-recipe");
   mkdirSync(forceRecipeTarget);
   const forceSentinel = '{"name":"keep-me"}\n';
   writeFileSync(join(forceRecipeTarget, "package.json"), forceSentinel);
-  const noForceRecipe = await client.callTool({
-    name: "pjangler_run_recipe",
-    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: false, apply: true },
-  });
-  assert.equal(noForceRecipe.isError, true, "MCP recipe without force must refuse existing output");
+  const noForceRecipe = await callContract("pjangler_run_recipe", {
+    recipe: "node", targetDir: forceRecipeTarget, force: false, apply: true,
+  }, { error: true });
+  assert.equal(noForceRecipe.structuredContent.success, false);
+  assert.ok(noForceRecipe.structuredContent.errors.length);
   assert.equal(readFileSync(join(forceRecipeTarget, "package.json"), "utf8"), forceSentinel);
-  const forceRecipe = await client.callTool({
-    name: "pjangler_run_recipe",
-    arguments: { recipe: "node", targetDir: forceRecipeTarget, force: true, apply: true },
+  const forceRecipe = await callContract("pjangler_run_recipe", {
+    recipe: "node", targetDir: forceRecipeTarget, force: true, apply: true,
   });
   assert.notEqual(forceRecipe.isError, true, JSON.stringify(forceRecipe));
   assert.equal(JSON.parse(readFileSync(join(forceRecipeTarget, "package.json"), "utf8")).name, "my-project");
@@ -282,13 +376,14 @@ try {
   assert.equal(spawnSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: existingRepo, env: hermeticEnv() }).status, 0);
   writeFileSync(join(existingRepo, "package.json"), '{"name":"existing-sync","description":"MCP sync fixture"}\n');
   writeFileSync(join(existingRepo, "mise.toml"), "# user-owned sentinel\n[env]\nVALUE = \"keep\"\n");
-  const existingSync = await client.callTool({
-    name: "pjangler_project_init",
-    arguments: { name: "Existing Sync", targetDir: existingRepo, apply: true },
-  });
-  const existingPayload = JSON.parse(existingSync.content[0].text);
+  const existingSync = await callContract("pjangler_project_init", {
+    name: "Existing Sync", targetDir: existingRepo, apply: true,
+  }, { error: true });
+  const existingPayload = existingSync.structuredContent;
   assert.equal(existingPayload.mode, "sync");
   assert.equal(existingPayload.ok, false, "dirty existing repo should fail the final audit without implicit repair");
+  assert.ok(existingPayload.phases?.length, "failed init keeps lifecycle phases");
+  assert.ok(existingPayload.errors?.length, "failed init keeps diagnostics");
   assert.equal(existingPayload.migrationReport, undefined);
   assert.deepEqual(existingPayload.selectedParityRules, []);
   assert.equal(existsSync(join(existingRepo, ".env.op")), false, "MCP sync must not run migrate-all");
@@ -312,6 +407,9 @@ try {
     assert.deepEqual(migratePayload.selectedRules, ["sot.agent-symlinks"]);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+  for (const tool of listed.tools) {
+    assert.ok(validated.has(tool.name), `${tool.name}: successful call must be schema-validated`);
   }
 } finally {
   await client.close();

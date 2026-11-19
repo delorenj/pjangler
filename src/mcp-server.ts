@@ -137,8 +137,56 @@ function slugify(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
 
-function asText(payload: unknown) {
-  return { content: [{ type: "text" as const, text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2) }] };
+// Discovery schemas describe the stable envelope and retain the richer, evolving
+// lifecycle/registry fields rather than dropping diagnostics on the wire.
+const RECORD = z.record(z.string(), z.unknown());
+const RULES = z.array(z.string());
+const CAPABILITIES_OUTPUT = z.object({
+  recipes: z.array(RECORD), commands: z.array(RECORD), parityRules: RULES,
+  recommendedWorkflows: RECORD, skillSynergy: RECORD,
+}).passthrough();
+const PARITY_RULES_OUTPUT = z.object({ parityRules: RULES, guidance: RECORD }).passthrough();
+const AUDIT_OUTPUT = z.object({
+  repo: z.string(), ok: z.boolean(), auditedAt: z.string(), rules: z.array(RECORD),
+  summary: z.object({ counts: z.record(z.string(), z.number()), nextActions: RULES }),
+  guidance: RECORD,
+}).passthrough();
+const MIGRATION_OUTPUT = z.object({
+  repo: z.string(), ok: z.boolean(), dryRun: z.boolean(), selectedRules: RULES,
+  changedFiles: RULES, results: z.array(RECORD),
+  summary: z.object({ counts: z.record(z.string(), z.number()), changedFileCount: z.number() }),
+}).passthrough();
+const PROJECT_LIFECYCLE_OUTPUT = z.object({
+  ok: z.boolean(), plan: RECORD.optional(), actions: z.array(RECORD).optional(),
+  phases: z.array(RECORD).optional(), errors: RULES.optional(), warnings: RULES.optional(),
+}).passthrough();
+const INFO_OUTPUT = z.object({
+  ok: z.literal(true), project_id: z.string(), repo_path: z.string(),
+  manifest_path: z.string(), manifest: RECORD, registry: RECORD,
+}).passthrough();
+const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: RECORD }).passthrough();
+const PROJECT_SHOW_OUTPUT = z.object({ slug: z.string(), repo_path: z.string() }).passthrough();
+const DESCRIBE_OUTPUT = z.object({
+  repo: z.string(), describedAt: z.string(), git: RECORD, activity: RECORD,
+  type: RECORD, identity: RECORD, subsystems: z.array(RECORD),
+  configFiles: z.array(RECORD), nextSteps: z.array(RECORD), parity: RECORD,
+}).passthrough();
+const RECIPE_INFO_OUTPUT = z.object({ name: z.string(), description: z.string(), commands: RULES }).passthrough();
+const RECIPE_RUN_OUTPUT = z.object({
+  success: z.boolean(), recipe: z.string(), targetDir: z.string(),
+  apply: z.boolean(), dryRun: z.boolean(), logs: RULES, errors: RULES,
+}).passthrough();
+
+const LOCAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
+const EXTERNAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
+const LOCAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } as const;
+const EXTERNAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
+
+function asResult<T extends object>(payload: T, text?: string) {
+  return {
+    structuredContent: { ...payload } as Record<string, unknown>,
+    content: [{ type: "text" as const, text: text ?? JSON.stringify(payload, null, 2) }],
+  };
 }
 
 function publicProjectPlan(plan: ReturnType<typeof planProjectInit>) {
@@ -340,6 +388,8 @@ server.registerTool(
     title: "List pjangler capabilities",
     description: "Returns available recipes, commands, parity rules, workflows, and @33god-projects tool guidance.",
     inputSchema: z.strictObject({}),
+    outputSchema: CAPABILITIES_OUTPUT,
+    annotations: LOCAL_READ,
   },
   async () => {
     const payload = {
@@ -362,7 +412,7 @@ server.registerTool(
       skillSynergy: parityGuidance(),
     };
 
-    return asText(payload);
+    return asResult(payload);
   }
 );
 
@@ -372,8 +422,10 @@ server.registerTool(
     title: "List pjangler parity rules",
     description: "Returns parity rule ids plus brief @33god-projects guidance.",
     inputSchema: z.strictObject({}),
+    outputSchema: PARITY_RULES_OUTPUT,
+    annotations: LOCAL_READ,
   },
-  async () => asText({ parityRules: getParityRuleIds(), guidance: parityGuidance() })
+  async () => asResult({ parityRules: getParityRuleIds(), guidance: parityGuidance() })
 );
 
 server.registerTool(
@@ -385,13 +437,15 @@ server.registerTool(
       targetDir: z.string().optional(),
       json: z.boolean().optional(),
     }),
+    outputSchema: AUDIT_OUTPUT,
+    annotations: EXTERNAL_READ,
   },
   async ({ targetDir, json }) => {
     try {
       const resolvedTarget = resolveTargetDir(targetDir);
       const report = await runAudit(resolvedTarget);
       const payload = { ...report, summary: auditSummary(report), guidance: parityGuidance() };
-      return asText(json === false ? formatAuditReport(report) : payload);
+      return asResult(payload, json === false ? formatAuditReport(report) : undefined);
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -410,6 +464,8 @@ server.registerTool(
       dryRun: z.boolean().optional(),
       acceptRegistryMatches: z.boolean().optional(),
     }),
+    outputSchema: MIGRATION_OUTPUT,
+    annotations: EXTERNAL_WRITE,
   },
   async ({ targetDir, ruleId, all, dryRun, acceptRegistryMatches }) => {
     try {
@@ -420,7 +476,7 @@ server.registerTool(
       const report = await runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll, acceptRegistryMatches ?? false);
       return {
         isError: !report.ok,
-        ...asText({
+        ...asResult({
           ok: report.ok,
           repo: report.repo,
           dryRun: report.dryRun,
@@ -467,6 +523,8 @@ server.registerTool(
       sourceSkill: z.string().optional(),
       live: z.boolean().optional(),
     }),
+    outputSchema: PROJECT_LIFECYCLE_OUTPUT,
+    annotations: EXTERNAL_WRITE,
   },
   async (input) => {
     try {
@@ -522,14 +580,14 @@ server.registerTool(
       });
 
       if (dryRun) {
-        return asText(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
+        return asResult(publicCompositeProjectResponse({ ...publicProjectPlan(plan), guidance: parityGuidance() }, plan));
       }
 
       const preflight = await preflightProjectApply(plan, pjanglerRoot);
       if (preflight.failure) {
         return {
           isError: true,
-          ...asText(publicCompositeProjectResponse(
+          ...asResult(publicCompositeProjectResponse(
             { ...preflight.failure, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
             plan,
           )),
@@ -544,14 +602,14 @@ server.registerTool(
       if (!result.ok) {
         return {
           isError: true,
-          ...asText(publicCompositeProjectResponse(
+          ...asResult(publicCompositeProjectResponse(
             { ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
             plan,
           )),
         };
       }
 
-      return asText(publicCompositeProjectResponse(
+      return asResult(publicCompositeProjectResponse(
         { ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}), guidance: parityGuidance() },
         plan,
       ));
@@ -586,6 +644,8 @@ server.registerTool(
       registryPath: z.string().optional(),
       force: z.boolean().optional(),
     }),
+    outputSchema: PROJECT_LIFECYCLE_OUTPUT,
+    annotations: EXTERNAL_WRITE,
   },
   async (input) => {
     try {
@@ -612,12 +672,12 @@ server.registerTool(
         overwrite: input.force ?? false,
         scaffold: !(input.targetDir && existsSync(join(resolve(input.targetDir), ".git"))),
       });
-      if (!input.apply) return asText(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
+      if (!input.apply) return asResult(publicCompositeProjectResponse(publicProjectPlan(plan), plan));
       const preflight = await preflightProjectApply(plan, resolvePjanglerRoot());
       if (preflight.failure) {
         return {
           isError: true,
-          ...asText(publicCompositeProjectResponse(
+          ...asResult(publicCompositeProjectResponse(
             { ...preflight.failure, ...(plan.warnings ? { warnings: plan.warnings } : {}) },
             plan,
           )),
@@ -630,7 +690,7 @@ server.registerTool(
       }, preflight.trustedCopier);
       return {
         isError: !result.ok,
-        ...asText(publicCompositeProjectResponse(
+        ...asResult(publicCompositeProjectResponse(
           { ...result, ...(plan.warnings ? { warnings: plan.warnings } : {}) },
           plan,
         )),
@@ -647,10 +707,11 @@ server.registerTool(
     title: "Project information",
     description: "Read the current repository manifest or look up a case-insensitive project_id in the PostgreSQL index.",
     inputSchema: z.strictObject({ project_id: z.string().optional(), targetDir: z.string().optional(), registryPath: z.string().optional() }),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    outputSchema: INFO_OUTPUT,
+    annotations: EXTERNAL_READ,
   },
   async ({ project_id, targetDir, registryPath }) => {
-    try { return asText(readProjectInfo({ projectId: project_id, cwd: targetDir ?? process.cwd(), registryPath })); }
+    try { return asResult(readProjectInfo({ projectId: project_id, cwd: targetDir ?? process.cwd(), registryPath })); }
     catch (err) { return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] }; }
   }
 );
@@ -663,8 +724,10 @@ server.registerTool(
     inputSchema: z.strictObject({
       registryPath: z.string().optional(),
     }),
+    outputSchema: PROJECT_LIST_OUTPUT,
+    annotations: EXTERNAL_READ,
   },
-  async ({ registryPath }) => asText(loadProjectRegistry(registryPath ?? projectRegistryPath()))
+  async ({ registryPath }) => asResult(loadProjectRegistry(registryPath ?? projectRegistryPath()))
 );
 
 server.registerTool(
@@ -676,10 +739,12 @@ server.registerTool(
       slug: PROJECT_SLUG_SCHEMA,
       registryPath: z.string().optional(),
     }),
+    outputSchema: PROJECT_SHOW_OUTPUT,
+    annotations: EXTERNAL_READ,
   },
   async ({ slug, registryPath }) => {
     try {
-      return asText(getProject(loadProjectRegistry(registryPath ?? projectRegistryPath()), slug));
+      return asResult(getProject(loadProjectRegistry(registryPath ?? projectRegistryPath()), slug));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -697,6 +762,8 @@ server.registerTool(
       registryPath: z.string().optional(),
       json: z.boolean().optional(),
     }),
+    outputSchema: DESCRIBE_OUTPUT,
+    annotations: EXTERNAL_READ,
   },
   async ({ targetDir, registryPath, json }) => {
     try {
@@ -704,7 +771,7 @@ server.registerTool(
         repoArg: resolveTargetDir(targetDir),
         registryPath: registryPath ?? projectRegistryPath(),
       });
-      return asText(json === false ? formatProjectDescription(description) : description);
+      return asResult(description, json === false ? formatProjectDescription(description) : undefined);
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -719,6 +786,8 @@ server.registerTool(
     inputSchema: z.strictObject({
       recipe: z.string(),
     }),
+    outputSchema: RECIPE_INFO_OUTPUT,
+    annotations: LOCAL_READ,
   },
   async ({ recipe }) => {
     const info = getRecipeInfo(recipe);
@@ -729,7 +798,7 @@ server.registerTool(
       };
     }
 
-    return asText({
+    return asResult({
       name: info.name,
       description: info.description,
       commands: info.commands,
@@ -748,6 +817,8 @@ server.registerTool(
       force: z.boolean().optional(),
       apply: z.boolean().optional(),
     }),
+    outputSchema: RECIPE_RUN_OUTPUT,
+    annotations: EXTERNAL_WRITE,
   },
   async ({ recipe, targetDir, force, apply }) => {
     try {
@@ -763,7 +834,7 @@ server.registerTool(
       const result = await runRecipeWithCapture(recipe, context);
       return {
         isError: !result.success,
-        ...asText({
+        ...asResult({
           success: result.success,
           recipe,
           targetDir: resolvedTarget,
