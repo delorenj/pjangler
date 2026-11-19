@@ -326,7 +326,7 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
     run(["migrate", "mise.config-root", repo, "--json"]);
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.match(mise, /_\.path = \["\.mise\/scripts", "bin", "agents\/hermes\/pm"\]/, "mise.toml _.path should include agents/hermes/pm and preserve existing entries");
+    assert.match(mise, /_\.path = \["\.mise\/scripts", "bin"\]/, "mise.toml _.path keeps .mise/scripts, preserves existing entries and never adds agents/hermes/pm");
     assert.doesNotMatch(mise, /skills:sync/, "the retired skills task must not be installed; skill operations invoke skillex directly");
     assert.doesNotMatch(mise, /(?:run|script) = "sync-skills\.py --scope project"/, "mise.toml must not invoke a missing bare sync-skills executable");
 
@@ -340,15 +340,15 @@ script = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
     repos.push(repo);
     mkdirSync(join(repo, "agents", "hermes", "pm"), { recursive: true });
     writeFileSync(join(repo, "agents", "hermes", "pm", "hermes"), "#!/usr/bin/env bash\necho hermes\n");
+    // Story 7.1 AC4: a carried shadowing entry (directory or file) is removed.
+    writeFileSync(join(repo, "mise.toml"), "[env]\n_.path = [\".mise/scripts\", \"agents/hermes/pm\", \"agents/hermes/pm/hermes\", \"bin\"]\n");
+    const before = JSON.parse(runAllowFailure(["audit", repo, "--json"])).rules.find((rule) => rule.id === "mise.config-root");
+    assert.ok(before.details.some((detail) => /must not include agents\/hermes\/pm, agents\/hermes\/pm\/hermes/.test(detail)), JSON.stringify(before));
     run(["migrate", "mise.config-root", repo, "--json"]);
 
     const mise = readFileSync(join(repo, "mise.toml"), "utf8");
-    assert.match(mise, /agents\/hermes\/pm/, "mise.toml _.path should include the launcher directory");
-    assert.doesNotMatch(
-      mise,
-      /"agents\/hermes\/pm\/hermes"/,
-      "mise.toml _.path must never include the executable file itself",
-    );
+    assert.match(mise, /_\.path = \["\.mise\/scripts", "bin"\]/, "the PM launcher directory leaves PATH; other entries stay in order");
+    assert.doesNotMatch(mise, /agents\/hermes\/pm/, "mise.toml _.path must not put the PM launcher on PATH (it shadows the global hermes)");
 
     const audit = JSON.parse(runAllowFailure(["audit", repo, "--json"]));
     const finding = audit.rules.find((rule) => rule.id === "mise.config-root");

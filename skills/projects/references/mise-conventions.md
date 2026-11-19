@@ -14,7 +14,7 @@ CommonProject renders this (see `template/mise.toml.jinja`); keep new/edited rep
 
 ```toml
 [env]
-_.path = [".mise/scripts", "agents/hermes/pm"]   # repo scripts + PM hermes wrapper on PATH
+_.path = [".mise/scripts"]                       # repo scripts only; never agents/hermes/pm (see note)
 _.file = [".env"]                                 # load .env (produced by op inject, below)
 
 [hooks]
@@ -33,6 +33,10 @@ run = "{{config_root}}/.mise/scripts/link-agentfiles.sh"
 ```
 
 Notes:
+- The PM launcher `agents/hermes/pm/hermes` is never on PATH. On PATH it shadowed the
+  global `hermes` (forcing the PM's HERMES_HOME on every `hermes -p <other>` call). Talk to
+  the repo's PM with `hermes-pm` (finds the nearest launcher) or the explicit path.
+  `pj audit` flags a carried entry and `pj migrate mise.config-root` removes it.
 - `{{config_root}}` is rendered to the repo root at copier time; in a live (non-template)
   `mise.toml` it is mise's built-in template var — leave it literal.
 - Repos may add `[tools]` (node/python/go/…) — **everything that can be mise-managed must be**.

@@ -716,15 +716,31 @@ function unsupportedVersionTypes(conf: string, script: string): string[] {
 }
 
 
-const BASE_MISE_PATH_ENTRIES = [".mise/scripts", "agents/hermes/pm"];
+const BASE_MISE_PATH_ENTRIES = [".mise/scripts"];
+
+/**
+ * Story 7.1 AC4 (2026-11-19): `_.path` entries a migrate REMOVES.
+ * `agents/hermes/pm` holds the PM launcher, a file named `hermes`, so putting
+ * the directory on PATH made bare `hermes` mean "this repo's PM profile"
+ * inside every PM repo (and every child repo, since mise merges parent
+ * configs) and the global Hermes everywhere else. The launcher forces
+ * HERMES_HOME to the PM profile, so `hermes -p <other>` (Candybar's hermes
+ * runner, `flume launch` without a pinned runtime, bloodbank target-watch)
+ * silently ran as the PM. The launcher stays at agents/hermes/pm/hermes; reach
+ * it by that path or with the global `hermes-pm`, which finds the nearest one.
+ * `agents/hermes/pm/hermes` itself is a file, never a valid PATH component.
+ */
+const RETIRED_MISE_PATH_ENTRIES: readonly string[] = ["agents/hermes/pm", "agents/hermes/pm/hermes"];
 
 
 function requiredMisePathEntries(_ctx: Context): string[] {
-  // mise PATH entries are directories. agents/hermes/pm already makes the
-  // executable wrapper at agents/hermes/pm/hermes discoverable; adding the
-  // wrapper file itself creates a false audit disagreement and an invalid PATH
-  // component on every rendered PM role.
   return [...BASE_MISE_PATH_ENTRIES];
+}
+
+/** The `_.path` a migrate writes: retired entries dropped, required ones appended in order. */
+function reconciledMisePath(current: readonly unknown[], required: readonly string[]): unknown[] {
+  const kept = current.filter((entry) => !(typeof entry === "string" && RETIRED_MISE_PATH_ENTRIES.includes(entry)));
+  return [...kept, ...required.filter((entry) => !kept.includes(entry))];
 }
 
 
@@ -1210,10 +1226,10 @@ function upsertMisePathText(text: string, required: readonly string[]): { text: 
   if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
     return { text, refused: `[env]._.path is not a list of paths; add ${required.join(", ")} by hand` };
   }
-  const missing = required.filter((entry) => !value.includes(entry));
-  if (!missing.length) return { text };
+  const next = reconciledMisePath(value, required) as string[];
+  if (next.length === value.length && next.every((entry, index) => entry === value[index])) return { text };
   const indent = /^\s*/.exec(lines[pathStatement.start]!)![0];
-  const rendered = `${indent}${render([...value, ...missing])}`;
+  const rendered = `${indent}${render(next)}`;
   const replacement = pathStatement.end - pathStatement.start === 1 && pathStatement.comments.length === 1
     ? [`${rendered}  ${pathStatement.comments[0]!.trim()}`]
     : [...pathStatement.comments.map((comment) => `${indent}${comment.trim()}`), rendered];
@@ -1247,7 +1263,7 @@ function expectedLinkModel(base: TomlTable, required: readonly string[]): TomlTa
   const env = isTable(model.env) ? model.env : (model.env = {});
   const underscore = isTable(env._) ? env._ : (env._ = {});
   const current = Array.isArray(underscore.path) ? underscore.path as unknown[] : [];
-  underscore.path = [...current, ...required.filter((entry) => !current.includes(entry))];
+  underscore.path = reconciledMisePath(current, required);
   const managed = managedLinkTables();
   const tasks = isTable(model.tasks) ? model.tasks : (model.tasks = {});
   for (const name of RETIRED_LINK_TASKS) delete tasks[name];
@@ -3384,6 +3400,10 @@ return [
         const pathValues = Array.isArray(underscore.path) ? underscore.path as unknown[] : [];
         const missingPathValues = requiredMisePathEntries(ctx).filter((value) => !pathValues.includes(value));
         if (missingPathValues.length) toml.push(`[env]._.path should include ${missingPathValues.join(", ")}`);
+        const retiredPathValues = RETIRED_MISE_PATH_ENTRIES.filter((value) => pathValues.includes(value));
+        if (retiredPathValues.length) {
+          toml.push(`[env]._.path must not include ${retiredPathValues.join(", ")} (it shadows the global hermes; use hermes-pm or agents/hermes/pm/hermes)`);
+        }
         toml.push(...managedLinkHookIssues(parsed));
         const managed = managedLinkTables();
         const watches = Array.isArray(parsed.watch_files) ? parsed.watch_files as unknown[] : [];

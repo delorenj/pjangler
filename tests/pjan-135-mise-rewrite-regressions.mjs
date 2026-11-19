@@ -417,7 +417,8 @@ test("the first migrate is a fixed point on a file with no [env] and on one whos
     const { first, written } = await migrateToFixedPoint(mise, repo);
     assert.notEqual(first.status, "partial", JSON.stringify(first));
     const parsed = parseToml(written);
-    assert.deepEqual(parsed.env._.path.slice(-2), [".mise/scripts", "agents/hermes/pm"]);
+    // Story 7.1 AC4: agents/hermes/pm is retired from _.path (it shadowed the global hermes).
+    assert.deepEqual(parsed.env._.path, [".mise/scripts"]);
     for (const [key, value] of Object.entries(parseToml(text))) {
       if (key === "tasks") for (const [task, body] of Object.entries(value)) assert.deepEqual(parsed.tasks[task], body, `tasks.${task} is untouched:\n${written}`);
       else if (key !== "env") assert.deepEqual(parsed[key], value, `${key} is untouched:\n${written}`);
