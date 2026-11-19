@@ -64,6 +64,7 @@ const SUITES = [
   "tests/pjan-165-import-regressions.mjs",
   "tests/pjan-165-import-receipt-recovery.mjs",
   "tests/pjan-80-cli-regressions.mjs",
+  "tests/pjan-114-add-guard-regressions.mjs",
   "tests/pjan-80-bootstrap-regressions.mjs",
   "tests/pjan-80-registry-consumers.mjs",
   "tests/pjan-80-consumer-concurrency.mjs",

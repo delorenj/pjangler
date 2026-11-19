@@ -439,6 +439,21 @@ async function resolveProjectInitTarget(name: string | undefined, options: Proje
   };
 }
 
+/**
+ * Recipes whose `init` requires a resolved plan that only a higher-level
+ * command builds: ProjectRecipe reads `input.actions`/`input.plan` and
+ * NotebookRecipe reads `input.plan`, but `pj add` / `pj recipe run` have no
+ * plan to give them — they used to pass `{}` and crash with a TypeError
+ * (PJAN-114). They are rejected cleanly here instead, naming the real door.
+ * Every entry point that scaffolds a recipe by name funnels through
+ * runRecipeSubsystem, so this one seam covers `pj add <id>`,
+ * `pj recipe run <id>` and the deprecated `pj init <id>` forwarding.
+ */
+const PLAN_BACKED_RECIPE_GUIDANCE: Record<string, string> = {
+  project: '"pj add project" cannot scaffold a project from a name alone — use "pj init" to create or sync a project.',
+  notebook: '"pj add notebook" cannot bootstrap the Project Notebook — use "pj notebook" (or "pj init") instead.',
+};
+
 /** Shared body for scaffolding a single subsystem/recipe into the cwd. Used by
  * `pjangler add`, `pjangler recipe run`, and the deprecated `pjangler init <subsystem>`. */
 async function runRecipeSubsystem(name: string, options: { force?: boolean; dryRun?: boolean; json?: boolean }): Promise<void> {
@@ -451,6 +466,12 @@ async function runRecipeSubsystem(name: string, options: { force?: boolean; dryR
     if (!recipeRegistry.get(name)) {
       console.error(`${xmark} Unknown subsystem: ${bold(name)}`);
       console.error(`  ${dim("Available:")} ${getRecipeNames().map((available) => cyan(available)).join(dim(", "))}`);
+      process.exit(1);
+    }
+    const guidance = PLAN_BACKED_RECIPE_GUIDANCE[name];
+    if (guidance) {
+      if (options.json) console.log(JSON.stringify({ ok: false, error: guidance }, null, 2));
+      else console.error(`${xmark} ${guidance}`);
       process.exit(1);
     }
     const result = await recipeRegistry.initRecipe(
@@ -1501,19 +1522,29 @@ program
         process.exit(report.ok ? 0 : 1);
       }
 
+      // Any positional read as a rule-id must be a KNOWN rule id, before any
+      // picker or audit runs (PJAN-114). `pj migrate <typo>` with no repo used
+      // to fall through to the picker branch with the typo as targetRepo and
+      // audit a directory named after it.
+      if (ruleId && !getParityRuleIds().includes(ruleId)) {
+        if (options.json) {
+          console.log(JSON.stringify({ ok: false, error: `Unknown parity rule: ${ruleId}`, validRuleIds: getParityRuleIds() }, null, 2));
+        } else {
+          console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
+          console.error(`  ${dim("Valid rule ids:")} ${getParityRuleIds().map((id) => cyan(id)).join(dim(", "))}`);
+        }
+        process.exit(1);
+      }
+
       // Explicit rule-id + repo.
       if (ruleId && repo) {
-        if (!getParityRuleIds().includes(ruleId)) {
-          console.error(`${xmark} Unknown parity rule: ${bold(ruleId)}`);
-          process.exit(1);
-        }
         const report = await runMigration(ruleId, repo, dryRun, false, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
       }
 
-      // Single valid rule-id applies to cwd.
-      if (ruleId && getParityRuleIds().includes(ruleId)) {
+      // Single (validated) rule-id applies to cwd.
+      if (ruleId) {
         const report = await runMigration(ruleId, undefined, dryRun, false, acceptRegistryMatches, registryOverride);
         printMigrationReport(report, options.json);
         process.exit(report.ok ? 0 : 1);
@@ -1531,7 +1562,7 @@ program
         process.exit(1);
       }
 
-      // No rule-id (or a lone positional that isn't a valid rule-id) opens the TUI.
+      // No rule-id (positional rule-ids are validated above) opens the TUI.
       const targetRepo = ruleId ?? repo;
       const audit = await runAudit(targetRepo);
       const ruleIds = await promptForRuleIds(audit.rules);
