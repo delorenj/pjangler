@@ -24,14 +24,19 @@ export async function companion(request) {
   if(options.behavior==='false-convergence')return result(operation==='observe'?'missing':'unchanged','False convergence',['metadata exists']);
   // Repair behavior: owner detects missing override on observe (conflict),
   // plans the repair on plan (planned), and writes it on apply (changed).
+  // Once the override holds the team, the owner reports convergence with evidence.
   if(options.behavior==='repair-missing-override') {
-    if(operation==='observe')return result('conflict','Missing g33 team override in bmad-build.toml');
-    if(operation==='plan')return result('planned','Would create missing g33 team override');
+    const overridePath=join(projectRoot,'_bmad','custom','bmad-build.toml');
+    const team='[team]\\nname = "33GOD"\\n';
+    const present=existsSync(overridePath)&&readFileSync(overridePath,'utf8')===team;
+    const proof=['g33 team override bytes verified'];
+    if(operation==='observe')return present?result('installed','g33 team override present',proof):result('conflict','Missing g33 team override in bmad-build.toml');
+    if(operation==='plan')return present?result('unchanged','g33 team override converged',proof):result('planned','Would create missing g33 team override');
     if(operation==='apply'){
-      const overridePath=join(projectRoot,'_bmad','custom','bmad-build.toml');
+      if(present)return result('unchanged','g33 team override converged',proof);
       mkdirSync(dirname(overridePath),{recursive:true});
-      writeFileSync(overridePath,'[team]\\nname = "33GOD"\\n');
-      return result('changed','Created missing g33 team override');
+      writeFileSync(overridePath,team);
+      return result('changed','Created missing g33 team override',proof);
     }
   }
   if(operation==='observe')return result(valid?'installed':'missing',valid?'Content and mappings observed':'Missing content or mapping',valid?['Exact companion bytes verified','Exact mapping bytes verified']:[]);

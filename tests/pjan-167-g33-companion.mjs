@@ -410,7 +410,8 @@ try {
     const repairPreview = run(repairTarget, ["migrate", "bmad.g33-companion", "--dry-run"]);
     assert.equal(repairPreview.results[0].status, "applied");
     assert.equal(repairPreview.results[0].bmadCompanion.status, "planned");
-    assert.ok(repairPreview.results[0].bmadCompanion.details.some((d) => d.includes("Would create missing g33 team override")));
+    // The owner's plan summary reaches the rule's details (companionDetails), not the owner's own details.
+    assert.ok(repairPreview.results[0].details.some((d) => d.includes("Would create missing g33 team override")), JSON.stringify(repairPreview.results[0].details));
     assert.deepEqual(snapshot(repairTarget), snapshot(repairTarget), "preview must not write");
     // Apply should create the override
     const repairApplied = run(repairTarget, ["migrate", "bmad.g33-companion"]);

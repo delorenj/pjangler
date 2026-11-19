@@ -1078,7 +1078,7 @@ export function createG33CompanionCheck(): RecipeOwnedCheck {
         : ctx.dryRun ? (result.status === "planned" ? "applied" : result.status === "unchanged" ? "noop" : "partial")
         : !proven ? "partial"
         : result.status === "changed" || wrote ? "applied" : "noop";
-      return { ...base, status, summary: result.summary, details, changedFiles };
+      return { ...base, status, summary: result.summary, details, changedFiles, bmadCompanion: result };
     },
   };
 }
