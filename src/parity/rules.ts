@@ -518,7 +518,9 @@ function templateScript(ctx: Context, name: string): string | undefined {
 
 
 function templateVersioningScript(ctx: Context): string | undefined {
-  return templateScript(ctx, "versioning.sh");
+  // PJAN-116 (same PJAN-82 fix as the link-agentfiles script above):
+  // read the CommonProject template copy instead of pjangler's own .mise script.
+  return templateCommonProjectText(ctx, ".mise/scripts/versioning.sh");
 }
 
 
