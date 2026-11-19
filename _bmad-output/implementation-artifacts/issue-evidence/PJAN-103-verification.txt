@@ -1,4 +1,20 @@
 PJAN-103 repair verification; 2026-11-19
+
+LANDED ADDENDUM (2026-11-19; operator-authorized main integration, no board write)
+Independent SPEC review PASS all six scoped AC and QUALITY no blocking findings on exact reviewed heads: canonical af7fbc0dbb6b3e7856995824a4a44f82ad649db9; template 71a3a183cbe32e3d151cf6dfd16f27eb2b7f16ea; Flume d2537b04aa7e0200da21f0eb49a302ee5a352f81; PJangler db9d11af9e57bea82930421283a1552eeb4ec571. Those reviews are not PM merge approval. Operator granted standing approval to land.
+Template main af82ef125f6cb7382f17f9e5dda596658a2784f5: https://github.com/delorenj/hermes-agent-template/commit/af82ef125f6cb7382f17f9e5dda596658a2784f5
+Flume ticket-only pin update 2497922 (template gitlink now af82ef1), main 029d1b3317ec5da51b5ecf2c974bc597e6256bd4: https://github.com/delorenj/flume/commit/029d1b3317ec5da51b5ecf2c974bc597e6256bd4
+33GOD canonical main 275b1b432a37ac7f86cc5c706f5e6af6fd0b86e4: https://github.com/delorenj/33GOD/commit/275b1b432a37ac7f86cc5c706f5e6af6fd0b86e4
+PJA main initial merge 31d1b5d3f42d486a37a1f46533e40816c84cb426: https://github.com/delorenj/pjangler/commit/31d1b5d3f42d486a37a1f46533e40816c84cb426
+POST-INTEGRATION COMMAND: KREBS_TP_ADAPTERS=/home/delorenj/code/33GOD/krebs/adapters/tp uv run --with pytest pytest -q -p no:cacheprovider --basetemp $TMPDIR/PJAN-103-landed/template/pytest tests/test_pjan103_generated_role.py tests/test_tp_adapter_vendoring.py (template main worktree, trusted mise config)
+EXIT: 0; 5 passed in 0.54s
+POST-INTEGRATION COMMAND: PJ_TICKET_PROVIDER_ADAPTERS=/home/delorenj/code/33GOD/krebs/adapters/tp node scripts/run-tests.mjs pjan-103 pjan-23 pjan-50 (PJangler main, isolated TMPDIR)
+EXIT: 0; typecheck ok (2.3s); build ok (187ms); 3/3 suites passed (9.2s).
+POST-INTEGRATION COMMAND: node scripts/run-tests.mjs pjan-103 pjan-48 role-contract scaffold-conditional (Flume main, isolated TMPDIR)
+FIRST EXIT: 1; generated consumption saw unstarted: "" because the shared nested template checkout still pointed to detached 3b9b7e8 though the committed Flume gitlink already pinned af82ef1. No code changed. Fetched template main and detached that nested checkout only at af82ef1.
+RETRY EXIT: 0; typecheck ok (3.6s); build ok (281ms); 4/4 suites passed (30.0s), including real generated consumer and hermes.pm-scaffold post-audit.
+No full PJangler green claimed; existing PJAN75_CLI_BUILT hermetic-env baseline remains. No rollout, ticket write, schedule, restart, or credential operation.
+
 All temporary fixtures used active-profile scratch; bubblewrap mounted scratch onto /tmp for runners that force /tmp.
 No full-suite pass claimed. Prior full PJangler run stopped at 40/124.
 
