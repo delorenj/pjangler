@@ -2,7 +2,7 @@
 title: 'PJAN-113 notebook bulk migration ownership'
 type: 'bugfix'
 created: '2026-11-19'
-status: 'in-review'
+status: 'done'
 baseline_commit: 'c1c4e0700c3b3bf35e6af633cc19513274e887f3'
 review_loop_iteration: 0
 context: []
@@ -35,4 +35,4 @@ context: []
 5. Given remote work is required, when the repo bulk run lacks explicit live consent, then no remote mutation occurs; focused notebook repair retains its explicit `--apply --live` path.
 
 ## Verification
-`npm run typecheck`, `npm run build`, `node tests/pjan-113-notebook-bulk-regressions.mjs`, `node tests/pjan-77-notebook-hooks-capture.mjs`, and `node tests/pjan-77-notebook-cli-contract.mjs` passed after initializing only the pinned `templates/commonproject` submodule. The filtered `node scripts/run-tests.mjs --no-build pjan-113 pjan-75 pjan-84-finding pjan-135-guidance pjan-57-lifecycle pjan-77-notebook-cli-contract pjan-77-notebook-hooks-capture` passed 7/7. Full `npm test` (prior to the focused-audit correction): 121/126 passed, 5 failed. Four failures (`check:hermetic-test-env`, `bmad-version-surface-regressions`, `pjan-167-g33-companion`, `pjan-196-suite-env-canary`) were independently reproduced in unchanged main; they are baseline failures, not attributed to PJAN-113. The fifth (`pjan-77-notebook-cli-contract`) was caused by a changed focused-audit detail and was repaired; its standalone rerun passes. A full-suite rerun after that correction remains outstanding. The previous candidate's 24 failures were not individually attributed and must not be described collectively as unrelated.
+`npm run typecheck`, `npm run build`, `node tests/pjan-113-notebook-bulk-regressions.mjs`, `node tests/pjan-77-notebook-hooks-capture.mjs`, and `node tests/pjan-77-notebook-cli-contract.mjs` passed after initializing only the pinned `templates/commonproject` submodule. The filtered `node scripts/run-tests.mjs --no-build pjan-113 pjan-75 pjan-84-finding pjan-135-guidance pjan-57-lifecycle pjan-77-notebook-cli-contract pjan-77-notebook-hooks-capture` passed 7/7. Independent focused review of candidate `aac744cb1f6bcc924657178d594d7d5e5490a082` reported no blocking findings: binding dry-run/apply/idempotence, separate non-mutating host results, honest journal/remote blockers, and recovery contracts were checked. The final full `npm test` attempted 126 suites: 122 passed, 4 failed (`check:hermetic-test-env`, `bmad-version-surface-regressions`, `pjan-167-g33-companion`, `pjan-196-suite-env-canary`). All four also failed on unchanged main under `node scripts/run-tests.mjs --no-build` with the same selected names. The earlier changed focused-audit detail was corrected: `pjan-77-notebook-cli-contract` passed in the final full suite. No PJAN-113 failure remains in the final full run; the four baseline failures are not attributed to this change. The previous candidate's 24 failures were not individually attributed and must not be described collectively as unrelated.
