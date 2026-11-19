@@ -618,10 +618,14 @@ const boardCmd = program
 
 boardCmd
   .command("provider")
-  .description("Print this project's ticket provider (plane|trello)")
-  .action(() => {
+  .description("Print this project's ticket provider (plane|trello|linear)")
+  .option("--json", "Emit the provider as a JSON string")
+  .action((options: { json?: boolean }) => {
     try {
-      console.log(resolveProvider(resolveProject(process.cwd())));
+      const project = resolveProject(process.cwd());
+      // Linear is a valid local binding, but has no remote board reader yet.
+      const provider = project.facts?.type?.trim().toLowerCase() === "linear" ? "linear" : resolveProvider(project);
+      console.log(options.json ? JSON.stringify(provider) : provider);
     } catch (error) {
       boardFailure(error);
     }
@@ -630,9 +634,11 @@ boardCmd
 boardCmd
   .command("slug")
   .description("Print this project's slug")
-  .action(() => {
+  .option("--json", "Emit the slug as a JSON string")
+  .action((options: { json?: boolean }) => {
     try {
-      console.log(resolveProject(process.cwd()).slug);
+      const slug = resolveProject(process.cwd()).slug;
+      console.log(options.json ? JSON.stringify(slug) : slug);
     } catch (error) {
       boardFailure(error);
     }
