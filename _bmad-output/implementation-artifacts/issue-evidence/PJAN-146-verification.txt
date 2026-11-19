@@ -1,0 +1,13 @@
+PJAN-146 verification — 2026-11-19
+
+Candidate: https://github.com/delorenj/pjangler/commit/46eac01b6dc4c66b20715752e7c17259b1cfcb03 and https://github.com/delorenj/pjangler/commit/e3d0435dce988f9b426832e17b39a3b99a81c305 (reviewed tip).
+Independent read-only rereview on e3d0435: SPEC PASS, QUALITY PASS for reviewed CLI guards; no findings (review session e1a3374d-aba1-5798-a3e2-821914d66712). This is not PM merge approval; integration uses operator standing authority.
+
+AC1: migrate rejects a nonexistent directory before initializing/scaffolding or writing receipts. tests/pjan-146-migrate-guards.mjs exercises a single rule, --all, and --rules against a nonexistent path and verifies no target or HOME receipts appear; it also exercises a real existing directory.
+AC2: migrate <ruleA> <ruleB> rejects a second known rule-id positional with a --rules suggestion before writes, even if a directory named <ruleB> exists. Extra --all positional and incompatible/malformed --rules input reject before writes; valid --rules <comma,separated,ids> targets an existing directory and selects both rules. tests/pjan-146-migrate-guards.mjs verifies these behaviors and dry-run selection.
+
+Candidate command: node scripts/run-tests.mjs pjan-146-migrate-guards parity-migrate-regressions pjan-36-regressions pjan-75-regressions
+EXIT 0: typecheck ok (2.2s), build ok (195ms), four suites PASS (58.7s), 4 attempted / 4 passed / 0 failed.
+Full npm test is NOT green/claimed: earlier candidate run first failed with an uninitialized worktree submodule (now initialized); unrelated existing failures include check:hermetic-test-env reading PJAN75_CLI_BUILT in pjan-75-regressions.mjs. No full-suite certification.
+
+Landed gate results and final main revision are reported by the landing worker after integration; this record does not present candidate gates as landed results.
