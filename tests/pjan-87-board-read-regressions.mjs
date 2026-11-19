@@ -154,7 +154,20 @@ const trelloRepo = makeRepo("trello-repo", {
   project_slug: "cards",
   ticket_provider: { type: "trello", board_id: "abc123" },
 });
-
+const linearRepo = makeRepo("linear-repo", {
+  project_slug: "old",
+  ticket_provider: { type: "linear", board_id: "old-board" },
+});
+const canonicalRepo = makeRepo("canonical-repo", {
+  project_id: "Canonical-ID", project_slug: "legacy-id",
+  ticket_provider: { type: "plane" },
+});
+const nearestRepo = makeRepo("nearest-repo", {
+  project_id: "outer", ticket_provider: { type: "plane" },
+});
+writeFileSync(join(nearestRepo, "nested", ".project.json"), JSON.stringify({
+  project_id: "inner", ticket_provider: { type: "trello" },
+}), "utf8");
 const unboundRepo = makeRepo("unbound-repo", { project_slug: "unbound", ticket_provider: {} });
 const unknownRepo = makeRepo("unknown-repo", { project_slug: "weird", ticket_provider: { type: "jira" } });
 const namelessRepo = makeRepo("nameless-repo", { project_name: "no slug here" });
@@ -203,8 +216,7 @@ console.log("resolution: Plane and Trello are accepted; anything else is named a
 
   const unknown = caught(() => resolveProvider(resolveProject(unknownRepo)));
   assert.match(unknown.message, /unsupported ticket_provider\.type "jira"/);
-  assert.match(unknown.message, /plane, trello/, "the message must list what IS supported");
-  const linearRepo = makeRepo("linear-repo", { project_slug: "old", ticket_provider: { type: "linear", board_id: "old-board" } });
+  assert.match(unknown.message, /plane, trello/, "the message must list what IS supported by the remote readers");
   assert.match(caught(() => resolveProvider(resolveProject(linearRepo))).message, /unsupported ticket_provider\.type "linear".*plane, trello/);
   assert.match(caught(() => resolveBoardContext(linearRepo)).message, /unsupported ticket_provider\.type "linear"/);
 }
@@ -633,23 +645,92 @@ function run(args, cwd = planeRepo, extraEnv = {}) {
   });
 }
 
-console.log("cli: provider and slug print one bare, script-consumable line");
+console.log("cli: provider and slug preserve bare lines and return JSON string scalars");
 {
-  for (const cwd of [planeRepo, join(planeRepo, "nested", "deep")]) {
-    assert.equal(run(["board", "provider"], cwd).stdout, "plane\n", "no decoration a script would have to strip");
-    assert.equal(run(["board", "slug"], cwd).stdout, "pjangler\n");
+  const cases = [
+    [planeRepo, "plane", "pjangler"],
+    [trelloRepo, "trello", "cards"],
+    [linearRepo, "linear", "old"],
+    [canonicalRepo, "plane", "canonical-id"],
+    [namelessRepo, null, "nameless-repo"],
+    [brokenRepo, null, "broken-repo"],
+  ];
+  for (const [root, provider, slug] of cases) {
+    for (const cwd of [root, ...(root === brokenRepo ? [] : [join(root, "nested", "deep")])]) {
+      for (const [verb, expected] of [["provider", provider], ["slug", slug]]) {
+        if (expected === null) continue;
+        const plain = run(["board", verb], cwd);
+        const json = run(["board", verb, "--json"], cwd);
+        assert.equal(plain.status, 0, `${verb} plain in ${cwd}: ${plain.stderr}`);
+        assert.equal(json.status, 0, `${verb} JSON in ${cwd}: ${json.stderr}`);
+        assert.equal(plain.stderr, "");
+        assert.equal(json.stderr, "");
+        assert.equal(plain.stdout, `${expected}\n`, "one undecorated line");
+        assert.equal(json.stdout, `${JSON.stringify(expected)}\n`, "only a JSON string scalar");
+        assert.equal(JSON.parse(json.stdout), plain.stdout.trimEnd());
+      }
+    }
   }
-  assert.equal(run(["board", "provider"], trelloRepo).stdout, "trello\n");
-  assert.equal(run(["board", "slug"], trelloRepo).stdout, "cards\n");
+  for (const [cwd, provider, slug] of [
+    [nearestRepo, "plane", "outer"],
+    [join(nearestRepo, "nested", "deep"), "trello", "inner"],
+  ]) {
+    for (const [verb, expected] of [["provider", provider], ["slug", slug]]) {
+      assert.equal(run(["board", verb], cwd).stdout, `${expected}\n`);
+      const result = run(["board", verb, "--json"], cwd);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout), expected, "the nearest manifest wins");
+    }
+  }
+  for (const verb of ["provider", "slug"]) {
+    const help = run(["board", verb, "--help"]);
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /--json/, `${verb} must advertise its JSON option`);
+  }
+}
+
+console.log("cli: invalid bindings fail without success output (plain and JSON)");
+{
+  for (const [cwd, verb, message] of [
+    [unboundRepo, "provider", /no ticket_provider\.type/],
+    [unknownRepo, "provider", /unsupported ticket_provider\.type "jira"/],
+    [brokenRepo, "provider", /no ticket_provider\.type/],
+    [linearRepo, "status", /unsupported ticket_provider\.type "linear"/],
+  ]) {
+    for (const flags of [[], ["--json"]]) {
+      const result = run(["board", verb, ...flags], cwd);
+      assert.equal(result.status, 1, `${verb} ${flags} in ${cwd}`);
+      assert.match(result.stderr, message);
+      assert.equal(result.stdout, "");
+    }
+  }
 }
 
 console.log("cli: reads outside a project exit non-zero and explain");
 {
   for (const verb of ["provider", "slug", "status", "recent", "modules"]) {
-    const result = run(["board", verb], outside);
-    assert.equal(result.status, 1, `board ${verb} must fail outside a project`);
-    assert.match(result.stderr, /not inside a pjangler project/);
-    assert.equal(result.stdout, "", "nothing may reach stdout when the command failed");
+    for (const flags of [[], ["--json"]]) {
+      const result = run(["board", verb, ...flags], outside);
+      assert.equal(result.status, 1, `board ${verb} ${flags} must fail outside a project`);
+      assert.match(result.stderr, /not inside a pjangler project/);
+      assert.equal(result.stdout, "", "nothing may reach stdout when the command failed");
+    }
+  }
+}
+
+console.log("cli: status, recent and modules resolve from root and nested directories");
+{
+  for (const cwd of [planeRepo, join(planeRepo, "nested", "deep")]) {
+    for (const verb of ["status", "recent", "modules"]) {
+      const plain = run(["board", verb], cwd);
+      const json = run(["board", verb, "--json"], cwd);
+      assert.equal(plain.status, 0, `${verb} plain in ${cwd}: ${plain.stderr}`);
+      assert.equal(json.status, 0, `${verb} JSON in ${cwd}: ${json.stderr}`);
+      assert.equal(plain.stderr, "");
+      assert.equal(json.stderr, "");
+      assert.ok(plain.stdout.trim(), `${verb} must retain human-readable output`);
+      assert.ok(Array.isArray(JSON.parse(json.stdout)), `${verb} must return a JSON array`);
+    }
   }
 }
 
@@ -665,9 +746,12 @@ console.log("cli: recent defaults to five and rejects a nonsense count");
   assert.deepEqual(parse(run(["board", "recent", "2", "--json"])), ["PJAN-14", "PJAN-11"]);
 
   for (const bad of ["0", "-1", "abc", "2.5"]) {
-    const result = run(["board", "recent", bad]);
-    assert.equal(result.status, 1, `count "${bad}" must be refused`);
-    assert.match(result.stderr, /count must be a positive integer/);
+    for (const flags of [[], ["--json"]]) {
+      const result = run(["board", "recent", bad, ...flags]);
+      assert.equal(result.status, 1, `count "${bad}" ${flags} must be refused`);
+      assert.match(result.stderr, /count must be a positive integer/);
+      assert.equal(result.stdout, "");
+    }
   }
 }
 
