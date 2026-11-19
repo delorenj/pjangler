@@ -128,9 +128,10 @@ export async function runChild(command: string, args: readonly string[], options
   const budget = timeoutMs === undefined ? remaining : Math.min(timeoutMs, remaining ?? timeoutMs);
   return await new Promise<ChildOutcome>((resolve, reject) => {
     const child = spawn(command, [...args], { ...spawnOptions, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"], shell: false });
-    let stdout = "", stderr = "", size = 0;
+    const stdoutChunks: Buffer[] = [], stderrChunks: Buffer[] = [];
+    let size = 0;
     let error: Error | undefined;
-    let stopped: StopReason | "output-overflow" | undefined;
+    let stopped: StopReason | "local-timeout" | "output-overflow" | undefined;
     let settled = false;
     let status: number | null = null;
     let grace: NodeJS.Timeout | undefined, forceWait: NodeJS.Timeout | undefined, timeout: NodeJS.Timeout | undefined;
@@ -149,17 +150,16 @@ export async function runChild(command: string, args: readonly string[], options
       clearTimeout(timeout); clearTimeout(grace); clearTimeout(forceWait);
       operation?.signal.removeEventListener("abort", aborted);
       child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy();
-      const reason = operation?.stopReason() ?? (stopped === "output-overflow" || !operation ? undefined : stopped);
+      const reason = operation?.stopReason() ?? (stopped === "cancelled" || stopped === "deadline-exceeded" ? stopped : undefined);
       if (reason) reject(new OperationStopped(reason, error ? { cause: error } : undefined));
       else if (error?.message.startsWith("Subprocess group ")) reject(error);
-      else resolve({ status, stdout, stderr, error });
+      else resolve({ status, stdout: Buffer.concat(stdoutChunks).toString("utf8"), stderr: Buffer.concat(stderrChunks).toString("utf8"), error });
     };
-    const stop = (reason: StopReason | "output-overflow") => {
+    const stop = (reason: StopReason | "local-timeout" | "output-overflow") => {
       if (stopped || settled) return;
       stopped = reason;
-      if (reason === "deadline-exceeded") {
-        if (operation) operation.stop("deadline-exceeded");
-        else error = Object.assign(new Error(`Subprocess timed out after ${budget}ms`), { code: "ETIMEDOUT" });
+      if (reason === "local-timeout") {
+        error = Object.assign(new Error(`Subprocess timed out after ${budget}ms`), { code: "ETIMEDOUT" });
       }
       signalGroup("SIGTERM");
       grace = setTimeout(() => {
@@ -170,12 +170,15 @@ export async function runChild(command: string, args: readonly string[], options
     const aborted = () => stop(operation?.stopReason() ?? "cancelled");
     operation?.signal.addEventListener("abort", aborted, { once: true });
     if (operation?.signal.aborted) aborted();
-    if (budget !== undefined) timeout = setTimeout(() => stop(operation?.stopReason() ?? "deadline-exceeded"), budget);
+    if (budget !== undefined) timeout = setTimeout(() => {
+      // The request owns its deadline; a shorter child budget is recoverable.
+      stop(operation?.stopReason() ?? "local-timeout");
+    }, budget);
     const append = (which: "stdout" | "stderr", chunk: Buffer) => {
       if (stopped) return;
       size += chunk.length;
       if (size > maxBuffer) { error = new Error(`Subprocess output exceeded ${maxBuffer} bytes`); stop("output-overflow"); return; }
-      if (which === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
+      (which === "stdout" ? stdoutChunks : stderrChunks).push(chunk);
     };
     child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
