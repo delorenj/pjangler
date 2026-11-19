@@ -51,6 +51,12 @@ try {
   const ajv = new Ajv({ strict: false });
   const advertised = new Map(listed.tools.map((tool) => [tool.name, tool]));
   const validated = new Set();
+  function rejectMalformed(name, payload, mutate, label) {
+    const malformed = structuredClone(payload);
+    mutate(malformed);
+    const validate = ajv.compile(advertised.get(name).outputSchema);
+    assert.equal(validate(malformed), false, `${name}: ${label} must violate advertised schema`);
+  }
   async function callContract(name, args, { error = false, formatted = false } = {}) {
     const result = await client.callTool({ name, arguments: args });
     assert.equal(result.isError === true, error, `${name} unexpected error state: ${JSON.stringify(result)}`);
@@ -298,13 +304,19 @@ try {
   // PJAN-68: exercise discovery and every success contract with isolated inputs.
   const catalog = await callContract("pjangler_list_capabilities", {});
   assert.ok(catalog.structuredContent.recipes.length);
+  rejectMalformed("pjangler_list_capabilities", catalog.structuredContent, (p) => { p.recipes[0] = {}; }, "empty recipe metadata");
+  rejectMalformed("pjangler_list_capabilities", catalog.structuredContent, (p) => { p.commands[0] = {}; }, "empty command metadata");
   await callContract("pjangler_list_parity_rules", {});
-  await callContract("pjangler_project_list", { registryPath: infoRegistry });
+  const registryContract = await callContract("pjangler_project_list", { registryPath: infoRegistry });
+  rejectMalformed("pjangler_project_list", registryContract.structuredContent, (p) => { p.projects["test-info"] = {}; }, "empty registry project");
   await callContract("pjangler_project_show", { slug: "test-info", registryPath: infoRegistry });
   await callContract("pjangler_info", { project_id: "TEST-INFO", registryPath: infoRegistry });
   await callContract("pjangler_describe_recipe", { recipe: "node" });
-  await callContract("pjangler_project_init", { name: "Contract Preview", targetDir: join(mcpTmp, "contract-preview"), registryPath: infoRegistry });
-  await callContract("pjangler_bootstrap_33god_project", { parentDir: mcpTmp, projectName: "Contract Boot", projectSlug: "contract-boot", dryRun: true, registryPath: infoRegistry });
+  const initPreview = await callContract("pjangler_project_init", { name: "Contract Preview", targetDir: join(mcpTmp, "contract-preview"), registryPath: infoRegistry });
+  rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.actions[0] = {}; }, "empty preview action");
+  rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.project = {}; }, "empty preview project");
+  const bootPreview = await callContract("pjangler_bootstrap_33god_project", { parentDir: mcpTmp, projectName: "Contract Boot", projectSlug: "contract-boot", dryRun: true, registryPath: infoRegistry });
+  rejectMalformed("pjangler_bootstrap_33god_project", bootPreview.structuredContent, (p) => { p.project = {}; }, "empty preview project");
   const recipePreviewDir = join(mcpTmp, "contract-recipe-preview");
   mkdirSync(recipePreviewDir);
   const previewRecipe = await callContract("pjangler_run_recipe", { recipe: "node", targetDir: recipePreviewDir });
@@ -314,6 +326,7 @@ try {
   mkdirSync(contractAuditDir);
   writeFileSync(join(contractAuditDir, "README.md"), "# Isolated contract fixture\n");
   const auditJson = await callContract("pjangler_audit_project", { targetDir: contractAuditDir });
+  rejectMalformed("pjangler_audit_project", auditJson.structuredContent, (p) => { p.rules[0] = {}; }, "empty audit finding");
   const auditText = await callContract("pjangler_audit_project", { targetDir: contractAuditDir, json: false }, { formatted: true });
   assert.deepEqual(auditText.structuredContent.rules, auditJson.structuredContent.rules);
   assert.ok(!auditText.content[0].text.startsWith("{"));
@@ -322,6 +335,7 @@ try {
   assert.deepEqual(describeText.structuredContent.identity, describeJson.structuredContent.identity);
   const migrationPreview = await callContract("pjangler_migrate_project", { targetDir: contractAuditDir, ruleId: "sot.agent-symlinks", dryRun: true }, { error: false });
   assert.equal(migrationPreview.structuredContent.dryRun, true);
+  rejectMalformed("pjangler_migrate_project", migrationPreview.structuredContent, (p) => { p.results[0] = {}; }, "empty migration result");
   const migrationApply = await callContract("pjangler_migrate_project", { targetDir: contractAuditDir, ruleId: "sot.agent-symlinks", dryRun: false });
   assert.equal(migrationApply.structuredContent.dryRun, false);
   const blockedMigrationDir = join(mcpTmp, "blocked-migration");

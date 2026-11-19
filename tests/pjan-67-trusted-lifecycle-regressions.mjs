@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import Ajv from "ajv";
 import {
   BMAD_INSTALLER_FIXTURE_VERSION,
   createBmadInstallerFixture,
@@ -182,6 +183,26 @@ const client = new Client({ name: "pjan-67-trusted-positive", version: "1.0.0" }
 
 try {
   await client.connect(transport);
+  const tools = new Map((await client.listTools()).tools.map((tool) => [tool.name, tool]));
+  const ajv = new Ajv({ strict: false });
+  function assertApplyContract(name, result) {
+    const text = result.content?.find((entry) => entry.type === "text")?.text;
+    assert.notEqual(result.isError, true, `${name}: ${text}`);
+    assert.ok(result.structuredContent, `${name}: missing structuredContent`);
+    assert.deepEqual(JSON.parse(text), result.structuredContent, `${name}: text/structured mismatch`);
+    const validate = ajv.compile(tools.get(name).outputSchema);
+    assert.ok(validate(result.structuredContent), `${name}: ${ajv.errorsText(validate.errors)}`);
+    assert.equal(result.structuredContent.ok, true, `${name}: successful apply`);
+    assert.equal(result.structuredContent.dryRun, false, `${name}: applied, not previewed`);
+    assert.ok(result.structuredContent.phases?.length, `${name}: real lifecycle phases`);
+    assert.ok(result.structuredContent.plan?.actions?.length, `${name}: nested plan actions`);
+    const badPhase = structuredClone(result.structuredContent);
+    badPhase.phases[0] = {};
+    assert.equal(validate(badPhase), false, `${name}: empty phase must fail discovery schema`);
+    const badPlan = structuredClone(result.structuredContent);
+    badPlan.plan = {};
+    assert.equal(validate(badPlan), false, `${name}: empty plan must fail discovery schema`);
+  }
   const target = join(temporary, "trusted-project");
   const createdResult = await client.callTool({
     name: "pjangler_bootstrap_33god_project",
@@ -195,8 +216,7 @@ try {
     },
   });
   const created = payload(createdResult);
-  assert.notEqual(createdResult.isError, true, JSON.stringify(created));
-  assert.equal(created.ok, true, JSON.stringify(created.errors));
+  assertApplyContract("pjangler_bootstrap_33god_project", createdResult);
   assert.equal(created.audit?.ok, true, JSON.stringify(created.audit?.rules?.filter((rule) => !["pass", "skip"].includes(rule.status))));
   assert.equal(existsSync(join(target, ".project.json")), true);
   assertEnclosingProjectUntouched("trusted project create");
@@ -214,8 +234,7 @@ try {
     },
   });
   const synced = payload(syncedResult);
-  assert.notEqual(syncedResult.isError, true, JSON.stringify(synced));
-  assert.equal(synced.ok, true, JSON.stringify(synced.errors));
+  assertApplyContract("pjangler_project_init", syncedResult);
   assert.equal(synced.mode, "sync");
   assert.equal(readFileSync(join(target, ".copier-answers.yml"), "utf8"), copierAnswersBefore, "existing sync must not rerun Copier");
   assertEnclosingProjectUntouched("trusted project sync");

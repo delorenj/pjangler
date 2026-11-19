@@ -137,41 +137,97 @@ function slugify(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
 }
 
-// Discovery schemas describe the stable envelope and retain the richer, evolving
-// lifecycle/registry fields rather than dropping diagnostics on the wire.
+// Stable keys are contracted at each nested boundary. Preserve additional
+// fields on evolving registry/plan/report objects without accepting empty
+// placeholders for the objects a client must actually interpret.
 const RECORD = z.record(z.string(), z.unknown());
 const RULES = z.array(z.string());
-const CAPABILITIES_OUTPUT = z.object({
-  recipes: z.array(RECORD), commands: z.array(RECORD), parityRules: RULES,
-  recommendedWorkflows: RECORD, skillSynergy: RECORD,
+const GUIDANCE = z.object({ skill: z.string(), guidance: z.string(), workflows: RULES }).passthrough();
+const RECIPE_META = z.object({ name: z.string(), description: z.string(), commands: RULES }).passthrough();
+const COMMAND_META = z.object({ name: z.string(), description: z.string(), group: z.string() }).passthrough();
+const TICKET = z.object({ type: z.string() }).passthrough();
+const MANIFEST = z.object({
+  project_name: z.string(), project_description: z.string(), project_id: z.string(),
+  repo_path: z.string(), ticket_provider: TICKET, agents: RECORD,
 }).passthrough();
-const PARITY_RULES_OUTPUT = z.object({ parityRules: RULES, guidance: RECORD }).passthrough();
-const AUDIT_OUTPUT = z.object({
-  repo: z.string(), ok: z.boolean(), auditedAt: z.string(), rules: z.array(RECORD),
-  summary: z.object({ counts: z.record(z.string(), z.number()), nextActions: RULES }),
-  guidance: RECORD,
+const PROJECT = z.object({
+  name: z.string(), slug: z.string(), repo_path: z.string(), description: z.string(),
+  status: z.string(), source_artifacts: z.array(z.object({ kind: z.string(), path: z.string() }).passthrough()),
+  template: z.object({ commonproject: z.object({ enabled: z.boolean(), primary_language: z.string() }).passthrough() }).passthrough(),
+  ticket_provider: TICKET, agents: RECORD, created_at: z.string(), updated_at: z.string(),
 }).passthrough();
-const MIGRATION_OUTPUT = z.object({
+const PROJECT_ACTION = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("registry.upsert"), registryPath: z.string(), slug: z.string(), project: PROJECT }).passthrough(),
+  z.object({ kind: z.literal("copier.copy.commonproject"), cwd: z.string(), command: RULES, targetDir: z.string(), data: z.record(z.string(), z.string()), overwrite: z.boolean() }).passthrough(),
+  z.object({ kind: z.literal("project.write-manifest"), path: z.string(), manifest: MANIFEST }).passthrough(),
+  z.object({ kind: z.literal("ticket-provider.create-or-link"), enabled: z.boolean(), live: z.boolean(), provider: z.string(), workspace: z.string(), identifier: z.string(), repoPath: z.string(), boardName: z.string(), description: z.string(), boardId: z.string(), state: z.string() }).passthrough(),
+]);
+const PLAN = z.object({
+  ok: z.literal(true), apply: z.boolean(), dryRun: z.boolean(), live: z.boolean(),
+  registryPath: z.string(), project: PROJECT, manifest: MANIFEST, actions: z.array(PROJECT_ACTION),
+  warnings: RULES.optional(),
+}).passthrough();
+const FINDING = z.object({
+  id: z.string(), title: z.string(), status: z.enum(["pass", "fail", "warn", "skip"]),
+  summary: z.string(), details: RULES, fixable: z.boolean(),
+}).passthrough();
+const AUDIT_REPORT = z.object({
+  repo: z.string(), ok: z.boolean(), auditedAt: z.string(), rules: z.array(FINDING),
+}).passthrough();
+const MIGRATION_RESULT = z.object({
+  id: z.string(), title: z.string(), status: z.enum(["applied", "noop", "blocked", "skipped", "partial"]),
+  summary: z.string(), changedFiles: RULES, details: RULES,
+}).passthrough();
+const MIGRATION_REPORT = z.object({
   repo: z.string(), ok: z.boolean(), dryRun: z.boolean(), selectedRules: RULES,
-  changedFiles: RULES, results: z.array(RECORD),
+  changedFiles: RULES, results: z.array(MIGRATION_RESULT),
+}).passthrough();
+const PHASE = z.object({
+  id: z.string(), status: z.enum(["changed", "unchanged", "planned", "skipped", "failed", "cancelled"]),
+  changedFiles: RULES, message: z.string().optional(),
+}).passthrough();
+const CAPABILITIES_OUTPUT = z.object({
+  recipes: z.array(RECIPE_META), commands: z.array(COMMAND_META), parityRules: RULES,
+  recommendedWorkflows: z.object({ unfamiliarRepo: RULES, existingProject: RULES, new33godProject: RULES }).passthrough(),
+  skillSynergy: GUIDANCE,
+}).passthrough();
+const PARITY_RULES_OUTPUT = z.object({ parityRules: RULES, guidance: GUIDANCE }).passthrough();
+const AUDIT_OUTPUT = AUDIT_REPORT.extend({
+  summary: z.object({ counts: z.record(z.string(), z.number()), nextActions: RULES }), guidance: GUIDANCE,
+}).passthrough();
+const MIGRATION_OUTPUT = MIGRATION_REPORT.extend({
   summary: z.object({ counts: z.record(z.string(), z.number()), changedFileCount: z.number() }),
 }).passthrough();
+// Preview exposes the plan at the top level; apply exposes a recipe result
+// with its nested plan. Require the common envelope and type both branch
+// payloads while preserving the advertised top-level JSON Schema object.
 const PROJECT_LIFECYCLE_OUTPUT = z.object({
-  ok: z.boolean(), plan: RECORD.optional(), actions: z.array(RECORD).optional(),
-  phases: z.array(RECORD).optional(), errors: RULES.optional(), warnings: RULES.optional(),
+  ok: z.boolean(), dryRun: z.boolean(),
+  apply: z.boolean().optional(), live: z.boolean().optional(), registryPath: z.string().optional(),
+  project: PROJECT.optional(), manifest: MANIFEST.optional(), actions: z.array(PROJECT_ACTION).optional(),
+  plan: PLAN.optional(), recipeId: z.string().optional(), mode: z.enum(["create", "sync"]).optional(),
+  changedFiles: RULES.optional(), logs: RULES.optional(), errors: RULES.optional(),
+  phases: z.array(PHASE).optional(), warnings: RULES.optional(),
+  selectedOperations: RULES.optional(), selectedParityRules: RULES.optional(),
+  audit: AUDIT_REPORT.optional(), migrationReport: MIGRATION_REPORT.optional(),
+  guidance: GUIDANCE.optional(),
 }).passthrough();
 const INFO_OUTPUT = z.object({
   ok: z.literal(true), project_id: z.string(), repo_path: z.string(),
-  manifest_path: z.string(), manifest: RECORD, registry: RECORD,
+  manifest_path: z.string(),
+  // Info reads an arbitrary existing manifest (not necessarily a normalized
+  // registry record); only its resolved identity is guaranteed.
+  manifest: z.object({ project_id: z.string() }).passthrough(),
+  registry: z.object({ location: z.string(), status: z.enum(["indexed", "not-indexed", "unavailable", "stale"]), message: z.string().optional() }).passthrough(),
 }).passthrough();
-const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: RECORD }).passthrough();
-const PROJECT_SHOW_OUTPUT = z.object({ slug: z.string(), repo_path: z.string() }).passthrough();
+const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: z.record(z.string(), PROJECT) }).passthrough();
+const PROJECT_SHOW_OUTPUT = PROJECT;
 const DESCRIBE_OUTPUT = z.object({
   repo: z.string(), describedAt: z.string(), git: RECORD, activity: RECORD,
   type: RECORD, identity: RECORD, subsystems: z.array(RECORD),
   configFiles: z.array(RECORD), nextSteps: z.array(RECORD), parity: RECORD,
 }).passthrough();
-const RECIPE_INFO_OUTPUT = z.object({ name: z.string(), description: z.string(), commands: RULES }).passthrough();
+const RECIPE_INFO_OUTPUT = RECIPE_META;
 const RECIPE_RUN_OUTPUT = z.object({
   success: z.boolean(), recipe: z.string(), targetDir: z.string(),
   apply: z.boolean(), dryRun: z.boolean(), logs: RULES, errors: RULES,
