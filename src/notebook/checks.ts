@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LifecycleAuditFinding, LifecycleContext, LifecycleMigrationResult, RecipeCheck } from "../recipes/types";
-import { loadEffectiveNotebookConfig } from "./config";
+import { loadEffectiveNotebookConfig, persistProjectNotebookBinding, resolveEffectiveNotebookConfig, resolveNotebookProject } from "./config";
 import { canonicalJson } from "./notes";
 import { normalizeNotebookError } from "./output";
 import { captureAdmissionSummary, currentRetentionPressure, listCaptureReceipts, notebookStateRoot, pruneNotebookState } from "./state";
@@ -130,7 +130,7 @@ function bindingAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   if (!config) return finding("notebook.binding", "Notebook binding", "fail", "Notebook binding could not be resolved");
   if (config.binding.state === "disabled") return finding("notebook.binding", "Notebook binding", "skip", "Project Notebook binding is disabled");
   if (config.binding.state === "linked" && (!config.binding.notebook_id || !config.binding.overview_note_id)) {
-    return finding("notebook.binding", "Notebook binding", "fail", "Linked binding is missing its notebook or Overview stable ID", [], true);
+    return finding("notebook.binding", "Notebook binding", "fail", "Linked binding is missing its notebook or Overview stable ID", ["Run pj notebook migrate --apply --live to reconcile the missing remote IDs; local projection cannot invent them"]);
   }
   const projected = ctx.notebookManifestBinding !== undefined
     ? bindingProjection(ctx.notebookManifestBinding)
@@ -156,7 +156,7 @@ function remoteAudit(ctx: LifecycleContext): LifecycleAuditFinding {
     catch { return []; }
   })();
   if (journals.length) {
-    return finding("notebook.remote-notebook", "Remote notebook", "warn", "Unresolved notebook-create journal requires marker reconciliation and durable Registry ownership", journalDetails(journals), true);
+    return finding("notebook.remote-notebook", "Remote notebook", "warn", "Unresolved notebook-create journal requires marker reconciliation and durable Registry ownership", [...journalDetails(journals), `Run pj notebook migrate ${ctx.repoRoot} --apply --live to reconcile marker ownership`], !ctx.notebookBulkMigration);
   }
   const observed = observation(ctx);
   if (!observed || observed.notebook_check.status === "skip") return finding("notebook.remote-notebook", "Remote notebook", "skip", "Remote notebook was not observed; no hidden network request was made");
@@ -166,8 +166,8 @@ function remoteAudit(ctx: LifecycleContext): LifecycleAuditFinding {
     "Remote notebook",
     "fail",
     observed.error?.message ?? "Remote notebook is missing, ambiguous, unavailable, or metadata-drifted",
-    observed.notebook_check.drift.map((item) => `${item.path}: ${item.reason}`),
-    true,
+    observed.notebook_check.drift.map((item) => `${item.path}: ${item.reason}`).concat(ctx.notebookBulkMigration ? [`Run pj notebook migrate ${ctx.repoRoot} --apply --live to reconcile remote ownership`] : []),
+    !ctx.notebookBulkMigration,
   );
 }
 
@@ -180,12 +180,12 @@ function overviewAudit(ctx: LifecycleContext): LifecycleAuditFinding {
     catch { return []; }
   })();
   if (journals.length) {
-    return finding("notebook.overview-note", "Overview note", "warn", "Unresolved Overview-create journal requires stable-ID reconciliation and durable binding ownership", journalDetails(journals), true);
+    return finding("notebook.overview-note", "Overview note", "warn", "Unresolved Overview-create journal requires stable-ID reconciliation and durable binding ownership", [...journalDetails(journals), `Run pj notebook migrate ${ctx.repoRoot} --apply --live to reconcile Overview ownership`], !ctx.notebookBulkMigration);
   }
   const observed = observation(ctx);
   if (!observed || observed.remote_check === "skip") return finding("notebook.overview-note", "Overview note", "skip", "Overview was not observed; no hidden network request was made");
   if (observed.overview?.present && observed.overview.member && observed.overview.envelope_owned && observed.overview.drift.length === 0) return finding("notebook.overview-note", "Overview note", "pass", "Bound Overview membership, project ownership, logical ID, and descriptor freshness were proved");
-  return finding("notebook.overview-note", "Overview note", "fail", "Overview is missing, foreign, or drifted", observed.overview?.drift.map((item) => `${item.path}: ${item.reason}`) ?? [], true);
+  return finding("notebook.overview-note", "Overview note", "fail", "Overview is missing, foreign, or drifted", [...(observed.overview?.drift.map((item) => `${item.path}: ${item.reason}`) ?? []), ...(ctx.notebookBulkMigration ? [`Run pj notebook migrate ${ctx.repoRoot} --apply --live to reconcile the Overview`] : [])], !ctx.notebookBulkMigration);
 }
 
 /**
@@ -207,6 +207,11 @@ function hostBlockFinding(id: string, title: string, block: NonNullable<Notebook
 function skillAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   if (!enabled(ctx)) return finding("notebook.skill-installed", "Project Notebook skill", "skip", "Project Notebook is not declared for this repository");
   const observed = observation(ctx);
+  const bulkHost = ctx.notebookBulkHostObservation;
+  if (bulkHost && !observed) {
+    if (bulkHost.blocked) return hostBlockFinding("notebook.skill-installed", "Project Notebook skill", bulkHost.blocked);
+    return finding("notebook.skill-installed", "Project Notebook skill", bulkHost.skill_installed ? "pass" : "fail", bulkHost.skill_installed ? "Digest-verified Project Notebook skill is installed" : "Project Notebook skill is missing or drifted on this machine", bulkHost.skill_installed ? [] : [...bulkHost.details, "Run pj notebook migrate --apply to repair shared host state"], !bulkHost.skill_installed);
+  }
   if (observed?.skill_installed === true) return finding("notebook.skill-installed", "Project Notebook skill", "pass", "Digest-verified Project Notebook skill is installed");
   if (observed?.skill_host_block) return hostBlockFinding("notebook.skill-installed", "Project Notebook skill", observed.skill_host_block);
   if (observed?.skill_installed === false) return finding("notebook.skill-installed", "Project Notebook skill", "fail", "Digest-verified Project Notebook skill is not installed", ["Run pj notebook migrate --apply"], true);
@@ -216,6 +221,11 @@ function skillAudit(ctx: LifecycleContext): LifecycleAuditFinding {
 function hooksAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   if (!enabled(ctx)) return finding("notebook.hooks-projected", "Project Notebook hooks", "skip", "Project Notebook is not declared for this repository");
   const observed = observation(ctx);
+  const bulkHost = ctx.notebookBulkHostObservation;
+  if (bulkHost && !observed) {
+    if (bulkHost.blocked) return hostBlockFinding("notebook.hooks-projected", "Project Notebook hooks", bulkHost.blocked);
+    return finding("notebook.hooks-projected", "Project Notebook hooks", bulkHost.hooks_projected ? "pass" : "fail", bulkHost.hooks_projected ? "True SessionStart and SessionEnd hook entries are projected once" : "Canonical true-boundary hooks are missing, duplicated, or drifted on this machine", bulkHost.hooks_projected ? [] : [...bulkHost.details, "Run pj notebook migrate --apply to repair shared host state"], !bulkHost.hooks_projected);
+  }
   if (observed?.hooks_projected === true) return finding("notebook.hooks-projected", "Project Notebook hooks", "pass", "True SessionStart and SessionEnd hook entries are projected once");
   if (observed?.skill_host_block) return hostBlockFinding("notebook.hooks-projected", "Project Notebook hooks", observed.skill_host_block);
   if (observed?.hooks_projected === false) return finding("notebook.hooks-projected", "Project Notebook hooks", "fail", "Canonical true-boundary hooks are missing, duplicated, or drifted", ["Run pj notebook migrate --apply"], true);
@@ -240,7 +250,7 @@ function captureAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   try {
     const config = resolvedConfig(ctx);
     const summary = captureAdmissionSummary(stateRoot(ctx), config.project_slug, config.limits);
-    if (summary.unmeasurable_entry_count) return finding("notebook.capture-receipts", "Capture receipts", "fail", "Capture state-integrity prevents exact admission proof", summary.integrity_entries.map((item) => `${item.entry_id}: ${item.reason}`), true);
+    if (summary.unmeasurable_entry_count) return finding("notebook.capture-receipts", "Capture receipts", "fail", "Capture state-integrity prevents exact admission proof", [...summary.integrity_entries.map((item) => `${item.entry_id}: ${item.reason}`), "Inspect and restore corrupt capture state from a trusted backup; do not prune unresolved journals or receipts"], false);
     const overviewLogicalId = `overview:v1:${config.project_slug}`;
     const actionJournals = summary.unresolvedJournals.filter((item) => item.kind === "note.create" && item.logical_marker !== overviewLogicalId);
     if (actionJournals.length) {
@@ -262,7 +272,7 @@ function captureAudit(ctx: LifecycleContext): LifecycleAuditFinding {
           ...journalDetails(actionJournals),
           ...(recoverable.length ? [`Run pj notebook migrate ${config.repo_path} --apply to finalize ${recoverable.length} receipt-proven journal(s) without remote work`] : []),
         ],
-        recoverable.length > 0,
+        recoverable.length > 0 && !ctx.notebookBulkMigration,
       );
     }
     const pressure = currentRetentionPressure(summary);
@@ -270,6 +280,17 @@ function captureAudit(ctx: LifecycleContext): LifecycleAuditFinding {
     return finding("notebook.capture-receipts", "Capture receipts", "pass", "Capture receipts are measurable; unresolved work is preserved and within admission caps", summary.active_refusals.map((item) => `capture-refused-history: ${item.session_key}`));
   } catch (error) {
     return finding("notebook.capture-receipts", "Capture receipts", "fail", normalizeNotebookError(error).message);
+  }
+}
+
+function bindingMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
+  if (ctx.dryRun) return result(current, "applied", "Would project the authoritative Registry binding into .project.json");
+  try {
+    const resolved = resolveNotebookProject(ctx.repoRoot, ctx.registryPath);
+    const files = persistProjectNotebookBinding(resolved, resolveEffectiveNotebookConfig(resolved).binding);
+    return result(current, files.length ? "applied" : "noop", files.length ? "Projected the authoritative Registry binding into .project.json" : "Registry and Manifest binding projection already match", files);
+  } catch (error) {
+    return result(current, "blocked", normalizeNotebookError(error).message);
   }
 }
 
@@ -293,7 +314,7 @@ function overviewMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding):
 export function createNotebookChecks(): readonly RecipeCheck[] {
   return [
     new NotebookCheck("notebook.configuration", "Notebook configuration", configurationAudit),
-    new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit),
+    new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit, bindingMigrate),
     new NotebookCheck("notebook.remote-notebook", "Remote notebook", remoteAudit),
     new NotebookCheck("notebook.overview-note", "Overview note", overviewAudit, overviewMigrate),
     // PJAN-84: host-scoped. These describe $HOME/.agents/skills and

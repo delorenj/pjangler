@@ -101,6 +101,7 @@ const SUITES = [
   "tests/pjan-145-waiver-regressions.mjs",
   "tests/pjan-147-env-materialization-opt-out-regressions.mjs",
   "tests/pjan-57-lifecycle-recipes-regressions.mjs",
+  "tests/pjan-113-notebook-bulk-regressions.mjs",
   "tests/pjan-167-g33-companion.mjs",
   "tests/pjan-188-hermetic-canary-regressions.mjs",
   "tests/pjan-193-env-allowlist-regressions.mjs",

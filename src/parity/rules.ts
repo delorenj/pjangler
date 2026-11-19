@@ -86,6 +86,7 @@ export interface AuditReport {
 export interface MigrationRuleResult {
   id: string;
   title: string;
+  scope?: "project" | "host";
   status: "applied" | "noop" | "blocked" | "skipped" | "partial";
   summary: string;
   changedFiles: string[];
@@ -5545,6 +5546,8 @@ export function formatMigrationReport(report: MigrationReport): string {
   const lines = [""];
   lines.push(`  ${overall}${report.dryRun ? `  ${dim(glyph.dot)}  ${yellow("dry run")}` : ""}`);
   lines.push(`  ${dim(report.repo)}`);
+  const hostTrouble = report.results.filter((result) => result.scope === "host");
+  if (hostTrouble.length) lines.push(`  ${yellow(glyph.warn)} ${bold("This machine needs attention")}  ${dim(glyph.dot)}  ${dim("not this project; use pj notebook migrate --apply")}`);
   if (report.selectedRules.length) lines.push(`  ${dim(`rules: ${report.selectedRules.join(", ")}`)}`);
   lines.push("");
   for (const result of report.results) {
