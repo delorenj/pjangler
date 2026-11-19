@@ -69,6 +69,55 @@ try {
   assert.equal(git(remoteParent, 'ls-files', '--stage', '--', 'remote').split(' ')[0], '160000');
   assert.equal(cli(remoteParent, remoteUpstream, '--name', 'remote').data.status, 'unchanged');
   passed('AC2 remote import and convergence using actual local bare remote', { origin: remoteUpstream });
+  // Exercise the remote CLONE path with a committed, already-bound board (not a
+  // fresh init): both bare-path and file:// inputs must retain the source's
+  // identity and memory in the manifest, CLI projection and real registry.
+  for (const [kind, asUrl] of [['bare-path', false], ['file-url', true]]) {
+    const id = `remote-board-${kind}`;
+    const provider = { type: 'plane', workspace: '33god', identifier: 'RB', board_id: `board-${kind}`, state: 'linked' };
+    const memory = { bank: `bank-${kind}`, scope: 'existing' };
+    const seed = repo(`${kind}-seed`, { project_id: id, project_name: `Existing ${kind}`, agents: {}, ticket_provider: provider, memory, extensions: { profile_name: `profile-${kind}` } });
+    const upstream = bare(seed, `${kind}-board-upstream`);
+    const input = asUrl ? `file://${upstream}` : upstream;
+    const parent = repo(`${kind}-board-parent`);
+    const target = join(parent, `import-${kind}`);
+    const original = JSON.parse(readFileSync(join(seed, '.project.json'), 'utf8'));
+    const imported = cli(parent, input, '--name', `import-${kind}`);
+    assert.equal(imported.status, 0, JSON.stringify(imported.data));
+    assert.equal(imported.data.status, 'imported');
+    assert.equal(imported.data.plan.projectId, id);
+    assert.equal(git(target, 'remote', 'get-url', 'origin'), input);
+    assert.equal(git(parent, 'ls-files', '--stage', '--', `import-${kind}`), `160000 ${git(target, 'rev-parse', 'HEAD')} 0\timport-${kind}`);
+    const manifest = JSON.parse(readFileSync(join(target, '.project.json'), 'utf8'));
+    assert.deepEqual(manifest, { ...original, repo_path: target }, 'only canonical repo_path changes on remote import');
+    const infoRun = run(process.execPath, [join(root, 'dist/index.js'), 'info', id, '--registry', url, '--json'], parent);
+    assert.equal(infoRun.status, 0, infoRun.stderr);
+    const info = JSON.parse(infoRun.stdout);
+    assert.equal(info.registry.status, 'indexed');
+    assert.equal(info.project_id, id);
+    assert.equal(info.repo_path, target);
+    assert.equal(info.manifest_path, join(target, '.project.json'));
+    assert.deepEqual(info.manifest, manifest);
+    const index = await request('/v1/index');
+    const projected = index.projects[id];
+    assert.ok(projected, `registry must project ${id}`);
+    assert.equal(index.__registry_status[id].manifest_path, join(target, '.project.json'));
+    assert.equal(projected.repo_path, target);
+    assert.equal(projected.project_id, id);
+    assert.equal(projected.name, original.project_name);
+    assert.deepEqual(projected.ticket_provider, provider);
+    assert.deepEqual(projected.memory, memory);
+    assert.deepEqual(projected.extensions, original.extensions);
+    const beforeRepeat = { files: tree(temp), rows: (await db.query('SELECT * FROM pjangler_index.projects ORDER BY project_id')).rows, index };
+    const repeated = cli(parent, input, '--name', `import-${kind}`);
+    assert.equal(repeated.status, 0, JSON.stringify(repeated.data));
+    assert.equal(repeated.data.status, 'unchanged');
+    assert.deepEqual(repeated.data.plan.changes, []);
+    assert.deepEqual(tree(temp), beforeRepeat.files, 'remote rerun must not mutate fixture files');
+    assert.deepEqual((await db.query('SELECT * FROM pjangler_index.projects ORDER BY project_id')).rows, beforeRepeat.rows, 'remote rerun must not mutate registry rows');
+    assert.deepEqual(await request('/v1/index'), beforeRepeat.index, 'remote rerun must not change registry projection');
+    passed(`AC2/AC3 ${kind} remote existing-board identity, memory, registry projection and unchanged rerun`);
+  }
   const shorthand = cli(repo('shorthand-parent'), 'github.com/owner/repo', '--dry-run'); assert.equal(shorthand.status, 0); assert.equal(shorthand.data.plan.url, 'https://github.com/owner/repo.git');
   passed('AC2 GitHub shorthand parsing only; no GitHub network execution claimed');
   const failParent = repo('failure-parent'); const failSource = repo('failure-source'); git(failSource, 'remote', 'add', 'origin', upstream);
