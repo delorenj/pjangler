@@ -19,6 +19,7 @@ export interface OperationContext {
   /** Monotonic performance.now() epoch in milliseconds. */
   readonly deadlineMs: number;
   readonly stopReason: () => StopReason | undefined;
+  readonly stop: (reason: StopReason) => void;
   readonly close: () => void;
 }
 const activeOperation = new AsyncLocalStorage<OperationContext>();
@@ -41,6 +42,7 @@ export function createOperation(requestSignal: AbortSignal, timeoutMs = MCP_OPER
   return {
     signal: controller.signal, deadlineMs,
     stopReason: () => { if (!reason && performance.now() >= deadlineMs) stop("deadline-exceeded"); return reason; },
+    stop,
     close: () => { clearTimeout(timer); requestSignal.removeEventListener("abort", cancelled); },
   };
 }
@@ -98,11 +100,13 @@ export async function runChild(command: string, args: readonly string[], options
       child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy();
       const reason = operation?.stopReason() ?? (stopped === "output-overflow" ? undefined : stopped);
       if (reason) reject(new OperationStopped(reason, error ? { cause: error } : undefined));
+      else if (error?.message.startsWith("Subprocess group ")) reject(error);
       else resolve({ status, stdout, stderr, error });
     };
     const stop = (reason: StopReason | "output-overflow") => {
       if (stopped || settled) return;
       stopped = reason;
+      if (reason === "deadline-exceeded") operation?.stop("deadline-exceeded");
       signalGroup("SIGTERM");
       grace = setTimeout(() => {
         signalGroup("SIGKILL");

@@ -1,3 +1,4 @@
+import { runChild, assertOperationActive } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { extname, join, parse, relative, resolve, sep } from "node:path";
@@ -29,6 +30,11 @@ export interface GitEvidenceSelectionV1 {
   end_status_digest: string | null;
 }
 
+async function gitAsync(repo: string, args: string[], maxBuffer = 4 * 1024 * 1024, timeout = 5_000): Promise<{ ok: boolean; stdout: string }> {
+  const result = await runChild("git", args, { cwd: repo, maxBuffer, timeoutMs: timeout });
+  return { ok: result.status === 0, stdout: result.stdout };
+}
+
 function git(repo: string, args: string[], maxBuffer = 4 * 1024 * 1024, timeout = 5_000): { ok: boolean; stdout: string } {
   const result = spawnSync("git", args, { cwd: repo, encoding: "utf8", maxBuffer, timeout, shell: false });
   return { ok: result.status === 0, stdout: result.stdout ?? "" };
@@ -49,6 +55,45 @@ function statusPaths(value: string): string[] {
     }
   }
   return paths;
+}
+
+export async function captureGitSnapshotAsync(repoPath: string, config?: EffectiveNotebookConfigV1, deadlineMonotonicMs?: number): Promise<GitSnapshotV1> {
+  const configuredTimeout = config?.limits.overall_timeout_ms ?? 5_000;
+  const remaining = (): number => deadlineMonotonicMs === undefined ? configuredTimeout
+    : Math.max(0, Math.min(configuredTimeout, Math.floor(deadlineMonotonicMs - performance.now())));
+  const boundedGit = async (args: string[]) => {
+    const timeout = remaining();
+    return timeout > 0 ? gitAsync(repoPath, args, 4 * 1024 * 1024, timeout) : { ok: false, stdout: "" };
+  };
+  const headResult = await boundedGit(["rev-parse", "--verify", "HEAD"]);
+  const statusResult = await boundedGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const reasons: string[] = [];
+  if (deadlineMonotonicMs !== undefined && remaining() === 0) reasons.push("hook-deadline-exhausted");
+  if (!headResult.ok) reasons.push("missing-committed-head");
+  if (!statusResult.ok) reasons.push("git-status-failed");
+  const trackedPathDigests: Record<string, string> = {};
+  if (config) {
+    const trackedResult = await boundedGit(["ls-files", "-z"]);
+    if (!trackedResult.ok) reasons.push("git-tracked-files-failed");
+    else {
+      const candidates = trackedResult.stdout.split("\0").filter(Boolean)
+        .filter((path) => config.policy.documentation_globs.some((glob) => matchesSimpleGlob(path, glob)))
+        .filter((path) => !config.policy.excluded_globs?.some((glob) => matchesSimpleGlob(path, glob)))
+        .sort((a, b) => a.localeCompare(b, "en"));
+      if (candidates.length > config.limits.list_max_items) reasons.push("tracked-document-limit");
+      for (const path of candidates.slice(0, config.limits.list_max_items)) {
+        assertOperationActive();
+        if (deadlineMonotonicMs !== undefined && remaining() === 0) { reasons.push("hook-deadline-exhausted"); break; }
+        if (looksGenerated(path)) continue;
+        const file = readSafeEvidenceText(repoPath, path, config.limits.source_file_max_bytes);
+        if (file.status === "present") trackedPathDigests[path] = file.content_sha256;
+      }
+    }
+  }
+  return { head: headResult.ok ? headResult.stdout.trim() : null,
+    status_digest: statusResult.ok ? sha256Hex(statusResult.stdout) : null,
+    dirty_paths: statusResult.ok ? [...new Set(statusPaths(statusResult.stdout))].sort() : [],
+    tracked_path_digests: trackedPathDigests, complete: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
 export function captureGitSnapshot(repoPath: string, config?: EffectiveNotebookConfigV1, deadlineMonotonicMs?: number): GitSnapshotV1 {
@@ -93,6 +138,11 @@ export function captureGitSnapshot(repoPath: string, config?: EffectiveNotebookC
     complete: reasons.length === 0,
     reasons: [...new Set(reasons)],
   };
+}
+
+export async function validateCommittedGitRefAsync(repoPath: string, gitRef: string): Promise<boolean> {
+  if (!gitRef || gitRef.length > 256 || gitRef.startsWith("-")) return false;
+  return (await gitAsync(repoPath, ["rev-parse", "--verify", `${gitRef}^{commit}`], 64 * 1024)).ok;
 }
 
 export function validateCommittedGitRef(repoPath: string, gitRef: string): boolean {
@@ -182,6 +232,46 @@ export function matchesSimpleGlob(path: string, glob: string): boolean {
 
 function addExclusion(record: Record<string, number>, reason: string): void {
   record[reason] = (record[reason] ?? 0) + 1;
+}
+
+export async function selectEligibleDocumentsAsync(config: EffectiveNotebookConfigV1, baseline: SessionBaselineV1, manualBaselineRef?: string): Promise<GitEvidenceSelectionV1> {
+  const repo = config.repo_path;
+  const startRef = manualBaselineRef ?? baseline.git_head;
+  if (!startRef || !await validateCommittedGitRefAsync(repo, startRef)) throw new NotebookError("INVALID_INPUT", "Capture baseline is not a committed Git reference");
+  const end = await captureGitSnapshotAsync(repo);
+  if (!end.head) throw new NotebookError("CONFLICT", "Repository has no committed end revision");
+  const [committed, working, staged, trackedResult] = await Promise.all([
+    gitAsync(repo, ["diff", "--name-only", "-z", `${startRef}..${end.head}`], 4 * 1024 * 1024, config.limits.overall_timeout_ms),
+    gitAsync(repo, ["diff", "--name-only", "-z", "HEAD"], 4 * 1024 * 1024, config.limits.overall_timeout_ms),
+    gitAsync(repo, ["diff", "--cached", "--name-only", "-z"], 4 * 1024 * 1024, config.limits.overall_timeout_ms),
+    gitAsync(repo, ["ls-files", "-z"], 4 * 1024 * 1024, config.limits.overall_timeout_ms),
+  ]);
+  if (!committed.ok || !working.ok || !staged.ok) throw new NotebookError("INTERNAL_ERROR", "Git evidence selection failed");
+  if (!trackedResult.ok) throw new NotebookError("INTERNAL_ERROR", "Git tracked-file enumeration failed");
+  const uncommitted = new Set([...working.stdout.split("\0"), ...staged.stdout.split("\0")].filter(Boolean));
+  const allChanged = [...new Set([...committed.stdout.split("\0"), ...uncommitted].filter(Boolean))].sort();
+  const changed = allChanged.slice(0, config.limits.list_max_items);
+  const tracked = new Set(trackedResult.stdout.split("\0").filter(Boolean));
+  const preDirty = new Set(baseline.pre_dirty_paths);
+  const exclusions: Record<string, number> = {};
+  const documents: EligibleDocumentV1[] = [];
+  if (allChanged.length > changed.length) addExclusion(exclusions, "changed-path-limit");
+  for (const path of changed) {
+    assertOperationActive();
+    if (manualBaselineRef && uncommitted.has(path)) { addExclusion(exclusions, "manual-baseline-uncommitted"); continue; }
+    if (!tracked.has(path)) { addExclusion(exclusions, "untracked"); continue; }
+    if (!config.policy.documentation_globs.some((glob) => matchesSimpleGlob(path, glob))) { addExclusion(exclusions, "policy"); continue; }
+    if (config.policy.excluded_globs?.some((glob) => matchesSimpleGlob(path, glob))) { addExclusion(exclusions, "excluded"); continue; }
+    if (looksGenerated(path)) { addExclusion(exclusions, "generated"); continue; }
+    const file = readSafeEvidenceText(repo, path, config.limits.source_file_max_bytes);
+    if (file.status !== "present") { addExclusion(exclusions, file.reason); continue; }
+    const startDigest = baseline.tracked_path_digests[path];
+    if (preDirty.has(path) && (!startDigest || startDigest === file.content_sha256)) {
+      addExclusion(exclusions, startDigest ? "pre-existing-dirty-unchanged" : "pre-existing-dirty-unknown"); continue;
+    }
+    documents.push({ path, source_revision: end.head, content_sha256: file.content_sha256, ...(startDigest ? { start_content_sha256: startDigest } : {}), content: file.content });
+  }
+  return { documents, changed_paths: changed, exclusions, end_revision: end.head, end_status_digest: end.status_digest };
 }
 
 export function selectEligibleDocuments(config: EffectiveNotebookConfigV1, baseline: SessionBaselineV1, manualBaselineRef?: string): GitEvidenceSelectionV1 {

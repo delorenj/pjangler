@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { currentOperation, runChild } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import { parseNoteEnvelope, withNoteEnvelope } from "./notes";
 import { looksGenerated, matchesSimpleGlob, readSafeEvidenceText, type EligibleDocumentV1 } from "./git-evidence";
@@ -20,6 +21,25 @@ export interface EntropyReconciliationResultV1 {
   sessionCapturesCompacted: number;
   sourcesCreated: string[];
   sourcesPruned: string[];
+}
+
+export async function listAllTrackedDocumentsAsync(config: EffectiveNotebookConfigV1): Promise<EligibleDocumentV1[]> {
+  const repo = config.repo_path;
+  const timeoutMs = config.limits.overall_timeout_ms;
+  const trackedResult = await runChild("git", ["ls-files", "-z"], { cwd: repo, maxBuffer: 4 * 1024 * 1024, timeoutMs });
+  if (trackedResult.status !== 0) return [];
+  const tracked = trackedResult.stdout.split("\0").filter(Boolean);
+  const headRev = (await runChild("git", ["rev-parse", "HEAD"], { cwd: repo, timeoutMs })).stdout.trim() || "HEAD";
+  const documents: EligibleDocumentV1[] = [];
+  for (const path of tracked) {
+    if (!config.policy.documentation_globs.some((glob) => matchesSimpleGlob(path, glob))) continue;
+    if (config.policy.excluded_globs?.some((glob) => matchesSimpleGlob(path, glob))) continue;
+    if (looksGenerated(path)) continue;
+    const file = readSafeEvidenceText(repo, path, config.limits.source_file_max_bytes);
+    if (file.status !== "present") continue;
+    documents.push({ path, source_revision: headRev, content_sha256: file.content_sha256, content: file.content });
+  }
+  return documents;
 }
 
 export function listAllTrackedDocuments(config: EffectiveNotebookConfigV1): EligibleDocumentV1[] {
@@ -172,7 +192,7 @@ export async function syncSources(input: {
   if (typeof input.client.listSources !== "function") {
     return { created: [], pruned: [] };
   }
-  const tracked = listAllTrackedDocuments(input.config);
+  const tracked = currentOperation() ? await listAllTrackedDocumentsAsync(input.config) : listAllTrackedDocuments(input.config);
   const existingSources = await input.client.listSources(input.notebookId);
   const byTitle = new Map(existingSources.map((s) => [s.title, s]));
   const created: string[] = [];

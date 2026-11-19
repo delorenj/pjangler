@@ -310,6 +310,21 @@ const OPERATION_INPUT = {
     .describe("Whole-request deadline in milliseconds (default 120000, maximum 600000); nested work shares the original deadline."),
 };
 
+function readHandler<T>(handler: (input: T) => Promise<any>) {
+  return async (input: T, extra: { signal: AbortSignal }) => {
+    const operation = createOperation(extra.signal);
+    try {
+      return await withOperation(operation, () => withRegistrySnapshots(async () => {
+        assertOperationActive();
+        const result = await handler(input);
+        assertOperationActive();
+        return result;
+      }));
+    } catch (error) { return boundedError(error); }
+    finally { operation.close(); }
+  };
+}
+
 /** Keep stop mapping outside the handler's normal result envelope. */
 function mutationHandler<T extends Record<string, unknown>>(
   handler: (input: T) => Promise<any>,
@@ -642,9 +657,10 @@ server.registerTool(
     outputSchema: AUDIT_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ targetDir, json, limit, cursor }) => {
+  readHandler(async ({ targetDir, json, limit, cursor }) => {
     try {
       const resolvedTarget = resolveTargetDir(targetDir);
+      await primeRegistrySnapshot(projectRegistryPath());
       const report = await runAudit(resolvedTarget);
       const sorted = report.rules.map((rule, index) => ({ rule, index }))
         .sort((a, b) => a.rule.id < b.rule.id ? -1 : a.rule.id > b.rule.id ? 1 : a.index - b.index);
@@ -657,7 +673,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(
@@ -682,6 +698,7 @@ server.registerTool(
       if (!runAll && !ruleId) throw new Error("Either ruleId or all=true is required");
       if (runAll && ruleId) throw new Error("Pass either ruleId or all=true, not both");
       const resolvedTarget = resolveTargetDir(targetDir);
+      await primeRegistrySnapshot(projectRegistryPath());
       const report = await runMigration(ruleId, resolvedTarget, dryRun ?? true, runAll, acceptRegistryMatches ?? false);
       return {
         isError: !report.ok,
@@ -921,10 +938,12 @@ server.registerTool(
     outputSchema: INFO_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ project_id, targetDir, registryPath }) => {
-    try { return asResult(readProjectInfo({ projectId: project_id, cwd: targetDir ?? process.cwd(), registryPath })); }
-    catch (err) { return boundedError(err); }
-  }
+  readHandler(async ({ project_id, targetDir, registryPath }) => {
+    try {
+      await primeRegistrySnapshot(registryPath ?? projectRegistryPath());
+      return asResult(readProjectInfo({ projectId: project_id, cwd: targetDir ?? process.cwd(), registryPath }));
+    } catch (err) { return boundedError(err); }
+  })
 );
 
 server.registerTool(
@@ -939,8 +958,9 @@ server.registerTool(
     outputSchema: PROJECT_LIST_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ registryPath, limit, cursor }) => {
+  readHandler(async ({ registryPath, limit, cursor }) => {
     try {
+      await primeRegistrySnapshot(registryPath ?? projectRegistryPath());
       const registry = loadProjectRegistry(registryPath ?? projectRegistryPath());
       const entries = Object.entries(registry.projects).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
       const result = paginate(entries, ([slug, record]) => JSON.stringify([slug, record]), limit, cursor,
@@ -950,7 +970,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(
@@ -965,13 +985,14 @@ server.registerTool(
     outputSchema: PROJECT_SHOW_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ slug, registryPath }) => {
+  readHandler(async ({ slug, registryPath }) => {
     try {
+      await primeRegistrySnapshot(registryPath ?? projectRegistryPath());
       return asResult(getProject(loadProjectRegistry(registryPath ?? projectRegistryPath()), slug));
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(
@@ -988,8 +1009,9 @@ server.registerTool(
     outputSchema: DESCRIBE_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ targetDir, registryPath, json }) => {
+  readHandler(async ({ targetDir, registryPath, json }) => {
     try {
+      await primeRegistrySnapshot(registryPath ?? projectRegistryPath());
       const description = await describeProject({
         repoArg: resolveTargetDir(targetDir),
         registryPath: registryPath ?? projectRegistryPath(),
@@ -998,7 +1020,7 @@ server.registerTool(
     } catch (err) {
       return boundedError(err);
     }
-  }
+  })
 );
 
 server.registerTool(

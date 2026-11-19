@@ -1,5 +1,6 @@
 import { encodeNoteEnvelope, sha256Hex } from "./notes";
-import { selectEligibleDocuments } from "./git-evidence";
+import { currentOperation } from "../lifecycle/operation";
+import { selectEligibleDocuments, selectEligibleDocumentsAsync } from "./git-evidence";
 import { reconcileNotebookEntropy } from "./entropy";
 import type { NotebookModule } from "./module";
 import { reconcileManagedNote } from "./reconcile";
@@ -157,7 +158,7 @@ async function processClaimed(module: NotebookModule, receipt: CaptureReceiptV1,
     });
     leaseUpdated(active);
   };
-  const evidence = selectEligibleDocuments(linked.config, baseline, active.manual_baseline_ref);
+  const evidence = currentOperation() ? await selectEligibleDocumentsAsync(linked.config, baseline, active.manual_baseline_ref) : selectEligibleDocuments(linked.config, baseline, active.manual_baseline_ref);
   const logicalIds: string[] = [];
   const remoteIds: string[] = [];
   const journals: RemoteMutationJournalV1[] = [];
