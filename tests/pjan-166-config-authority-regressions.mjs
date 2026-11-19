@@ -398,7 +398,7 @@ test("a missing install record names a cause only when the tree shows it", () =>
   assert.equal(bare.details.some((line) => /also-remove|git-ignored|restore it with|Restore it with/.test(line)), false);
 });
 
-test("project_name is unchanged: a wrong [core] project_name is reported, previewed, and restored by migrate", () => {
+test("project_name: a wrong [core] value is reported, previewed, and restored by migrate", () => {
   const target = freshInstall("name-drift");
   const expected = JSON.parse(readFileSync(join(target, ".project.json"), "utf8")).project_name;
   const toml = bmad(target, "config.toml");
@@ -407,7 +407,7 @@ test("project_name is unchanged: a wrong [core] project_name is reported, previe
   writeFileSync(toml, original.replace(/^project_name\s*=.*$/m, 'project_name = "Somebody Else"'));
   const audit = scaffoldAudit(target);
   assert.equal(audit.status, "fail", JSON.stringify(audit));
-  assert.deepEqual(audit.details, [`_bmad/config.toml project_name must be ${JSON.stringify(expected)}`]);
+  assert.deepEqual(audit.details, [`_bmad/config.toml [core].project_name must be ${JSON.stringify(expected)}`]);
   const drifted = snapshot(bmad(target));
   const preview = scaffoldMigrate(target, ["--dry-run"]).result;
   assert.equal(preview.status, "applied", JSON.stringify(preview));
@@ -418,6 +418,29 @@ test("project_name is unchanged: a wrong [core] project_name is reported, previe
   assert.equal(result.status, "applied", JSON.stringify(result));
   assert.ok(result.changedFiles.includes(toml), JSON.stringify(result.changedFiles));
   assert.equal(readFileSync(toml, "utf8"), original, "the installer rewrote config.toml with the project's own name");
+  assert.equal(scaffoldAudit(target).status, "pass");
+});
+
+test("runtime TOML: malformed native config and foreign project_name cannot fool CLI audit", () => {
+  const target = freshInstall("runtime-toml");
+  const toml = bmad(target, "config.toml");
+  const resolver = join(root, "_bmad", "scripts", "resolve_config.py");
+  const original = readFileSync(toml, "utf8");
+  const expected = JSON.parse(readFileSync(join(target, ".project.json"), "utf8")).project_name;
+  const resolveName = () => spawnSync("python3", [resolver, "--project-root", target, "--key", "core.project_name"], { cwd: target, env: envFor(), encoding: "utf8" });
+  assert.equal(JSON.parse(resolveName().stdout)["core.project_name"], expected);
+  try {
+    writeFileSync(toml, `${original}\n[broken`);
+    assert.deepEqual(scaffoldAudit(target).details, ["_bmad/config.toml is not valid TOML (the installed resolver cannot read it)"]);
+    const invalid = resolveName();
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, /failed to parse/);
+    writeFileSync(toml, original.replace(/^project_name\s*=.*\n/m, "") + `\n[agents.pjan166_probe]\nproject_name = ${JSON.stringify(expected)}\n`);
+    assert.deepEqual(scaffoldAudit(target).details, [`_bmad/config.toml [core].project_name must be ${JSON.stringify(expected)}`]);
+    assert.equal(JSON.parse(resolveName().stdout)["core.project_name"], undefined);
+  } finally {
+    writeFileSync(toml, original);
+  }
   assert.equal(scaffoldAudit(target).status, "pass");
 });
 

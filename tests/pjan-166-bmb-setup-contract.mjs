@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
-import { createBmadInstallerFixture } from "./helpers/pack-fixture.mjs";
+import { createBmadInstallerFixture, createSkillPackFixture, createSkillexMiseFixture } from "./helpers/pack-fixture.mjs";
 import { FIXTURE_COMPARABLE_PATHS, applyBmbSetupModel, bmadTreeShape } from "./helpers/bmb-setup-model.mjs";
 
 // PJAN-166 / Contract A, against the REAL thing. Network/cache-backed release contract: it
@@ -37,6 +38,7 @@ const cli = join(root, "dist", "index.js");
 const scratch = hermeticScratch("pjan-166-bmb-contract-");
 const home = join(scratch, "home");
 const target = join(scratch, "target");
+const freshTarget = join(scratch, "fresh-project");
 const projectName = "PJAN 166 Config Authority";
 const MANIFEST_LINE = /^_bmad\/_config\/manifest\.yaml/;
 
@@ -63,6 +65,8 @@ const scriptEnv = hermeticEnv(base, { pass: SUITE_GRANTS.filter((name) => name !
 // What the real install resolved, appended to every failure: bmb and cis come from GitHub stable
 // tags at install time, so a failure here can be an upstream release under an unchanged pin.
 let resolvedModules = "not resolved yet (the real install had not completed)";
+let originalHelp;
+let protectedBefore;
 function withResolvedModules(error) {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(`${message}\nResolved at install time: ${resolvedModules}`, { cause: error });
@@ -100,6 +104,26 @@ const migrate = (purpose, flags = []) => {
 const bmad = (...segments) => join(target, "_bmad", ...segments);
 const sha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const hashes = (paths) => Object.fromEntries(paths.map((path) => [path, existsSync(bmad(path)) ? sha(bmad(path)) : null]));
+
+const resolver = (...keys) => JSON.parse(runRequired("python3", [bmad("scripts", "resolve_config.py"), "--project-root", target, ...keys.flatMap((key) => ["--key", key])], "reading the actual installed TOML resolver").stdout);
+function assertCoreHelp(label) {
+  const path = bmad("_config", "bmad-help.csv");
+  const helpSkill = readFileSync(join(target, ".agents", "skills", "bmad-help", "SKILL.md"), "utf8");
+  assert.match(helpSkill, /_config\/bmad-help\.csv/, `${label}: help skill must name its catalog`);
+  const csv = readFileSync(path, "utf8");
+  const lines = csv.trim().split(/\r?\n/);
+  assert.ok(lines.length > 5, `${label}: empty help catalog`);
+  assert.ok(lines.some((line) => line.startsWith("Core,bmad-help,")), `${label}: Core help entry absent`);
+  return { bytes: Buffer.byteLength(csv), digest: sha(path), coreEntries: lines.filter((line) => line.startsWith("Core,")).length };
+}
+function assertRuntimeLayers(label, team, personal) {
+  const values = resolver("core.project_name", "core.user_name", "core.output_folder", "modules.bmb.bmad_builder_output_folder");
+  assert.equal(values["core.project_name"], projectName, label);
+  assert.equal(values["core.user_name"], personal, label);
+  assert.equal(values["core.output_folder"], team, label);
+  assert.equal(values["modules.bmb.bmad_builder_output_folder"], "team-bmb-166", label);
+  return values;
+}
 
 /** The `uv run ./scripts/...` lines of the installed skill's own SKILL.md, with its placeholders resolved. */
 function bmbSetupCommands(skillDir, answersPath) {
@@ -179,6 +203,9 @@ function assertRepaired(label) {
   assert.ok(result.changedFiles.includes(bmad("_config", "manifest.yaml")), `${label}: ${JSON.stringify(result.changedFiles)}`);
   const finding = audit(`${label} (re-audit)`);
   assert.equal(finding.status, "pass", `${label}: ${JSON.stringify(finding)}`);
+  assert.deepEqual(assertCoreHelp(label), originalHelp, `${label}: installer must restore the identical Core help catalog`);
+  assertRuntimeLayers(label, "team-166", "personal-custom-166");
+  for (const [path, digest] of Object.entries(protectedBefore)) assert.equal(sha(path), digest, `${label}: operator bytes changed: ${path}`);
 }
 
 const RUNTIME_SCRIPTS = ["resolve_config.py", "config_utils.py"];
@@ -195,6 +222,58 @@ try {
   assert.ok(existsSync(cli), "build first: npm run build (the contract drives dist/index.js)");
   mkdirSync(target, { recursive: true });
   writeFileSync(join(target, ".project.json"), `${JSON.stringify({ project_id: "pjan-166-contract", project_name: projectName, bmad: { companion: { enabled: false } } })}\n`);
+  const foreign = join(target, "notes-operator-dirty.txt");
+  writeFileSync(foreign, "operator's uncommitted work\n");
+  mkdirSync(bmad("custom"), { recursive: true });
+  writeFileSync(bmad("config.user.toml"), '[core]\nuser_name = "personal-166"\n');
+  writeFileSync(bmad("custom", "config.toml"), '[core]\noutput_folder = "team-166"\n[modules.bmb]\nbmad_builder_output_folder = "team-bmb-166"\n');
+  writeFileSync(bmad("custom", "config.user.toml"), '[core]\nuser_name = "personal-custom-166"\n');
+  writeFileSync(join(target, ".gitignore"), "_bmad/config.user.toml\n_bmad/custom/config.user.toml\n");
+  const gitInit = spawnSync("git", ["init", "-q"], { cwd: target, env: pjEnv, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, `private existing-project git init: ${diagnostics(gitInit)}`);
+  const ignored = spawnSync("git", ["check-ignore", "-q", "--", "_bmad/config.user.toml"], { cwd: target, env: pjEnv, encoding: "utf8" });
+  const ignoredCustom = spawnSync("git", ["check-ignore", "-q", "--", "_bmad/custom/config.user.toml"], { cwd: target, env: pjEnv, encoding: "utf8" });
+  assert.equal(ignored.status, 0, "the root personal TOML layer must remain git-ignored");
+  assert.equal(ignoredCustom.status, 0, "the custom personal TOML layer must remain git-ignored");
+  const protectedPaths = [foreign, join(target, ".gitignore"), bmad("config.user.toml"), bmad("custom", "config.toml"), bmad("custom", "config.user.toml")];
+  protectedBefore = Object.fromEntries(protectedPaths.map((path) => [path, sha(path)]));
+
+  // Independent full-init path: no fixture installer, no live board or shared registry.
+  // An empty scratch directory is deliberately separate from the existing-project migration below.
+  const initRegistry = join(scratch, "fresh-registry.yaml");
+  const catalog = join(scratch, "catalog");
+  createSkillPackFixture(catalog);
+  const skillexBin = createSkillexMiseFixture(scratch);
+  const initEnv = { ...pjEnv, PATH: `${skillexBin}:${pjEnv.PATH}`, PJ_SKILLS_REGISTRY_ROOT: catalog, PJ_PROJECT_REGISTRY: initRegistry };
+  mkdirSync(join(home, ".agents"), { recursive: true });
+  writeFileSync(join(home, ".agents", "skills.json"), '{"inherit_global":false,"skills":[]}\n');
+  const init = spawnSync(process.execPath, [cli, "project", "init", projectName, "--yes", "--apply", "--skip-board", "--registry", initRegistry, "--target-dir", freshTarget, "--json"], {
+    cwd: scratch, env: initEnv, encoding: "utf8", maxBuffer: 50 * 1024 * 1024, timeout: 900_000,
+  });
+  assert.equal(init.status, 0, `real fresh project init: ${diagnostics(init)}`);
+  const freshManifest = YAML.parse(readFileSync(join(freshTarget, "_bmad", "_config", "manifest.yaml"), "utf8"));
+  assert.equal(freshManifest.installation?.version, "6.12.1", "fresh init must use the actual pinned installer");
+  for (const cliRoot of [".claude", ".codex", ".gemini", ".copilot", ".opencode", ".kimi-code", ".zcode"]) {
+    assert.ok(existsSync(join(freshTarget, cliRoot, "skills", "bmad-help", "SKILL.md")), `fresh init missing ${cliRoot} BMAD help projection`);
+  }
+  const freshHelp = readFileSync(join(freshTarget, "_bmad", "_config", "bmad-help.csv"), "utf8");
+  assert.ok(freshHelp.includes("Core,bmad-help,"), `fresh init Core help catalog missing: ${freshHelp.slice(0, 1800)}`);
+  const freshConfig = parseToml(readFileSync(join(freshTarget, "_bmad", "config.toml"), "utf8"));
+  assert.equal(freshConfig.core.project_name, projectName);
+  const freshResolver = join(freshTarget, "_bmad", "scripts", "resolve_config.py");
+  const freshRuntime = JSON.parse(runRequired("python3", [freshResolver, "--project-root", freshTarget, "--key", "core.project_name"], "fresh init installed resolver").stdout);
+  assert.equal(freshRuntime["core.project_name"], projectName);
+  const freshPersonal = ["_bmad/config.user.yaml", "_bmad/config.user.toml", "_bmad/custom/config.user.toml"].filter((p) => existsSync(join(freshTarget, p)) && !spawnSync("git", ["ls-files", "--", p], { cwd: freshTarget, env: initEnv, encoding: "utf8" }).stdout.trim());
+  for (const personal of freshPersonal) {
+    const one = spawnSync("git", ["check-ignore", "-q", "--", personal], { cwd: freshTarget, env: initEnv, encoding: "utf8" });
+    assert.equal(one.status, 0, `fresh init's personal layer ${personal} must be ignored by its repo policy`);
+    const base = personal.replace(/\.user\./, ".");
+    if (base !== personal && existsSync(join(freshTarget, base))) {
+      const team = spawnSync("git", ["check-ignore", "-q", "--", base], { cwd: freshTarget, env: initEnv, encoding: "utf8" });
+      assert.notEqual(team.status, 0, `fresh init must NOT ignore the team layer ${base}`);
+    }
+  }
+  console.log(`PJAN-166 real fresh init: ${freshManifest.installation.version}; seven harness help projections; Core help catalog`);
 
   // ---- 1. a real install, through pjangler's own path ------------------------------------------
   const installed = migrate("fresh install");
@@ -202,10 +281,17 @@ try {
   assert.equal(installed.result.status, "applied", JSON.stringify(installed.result));
   const fresh = audit("fresh install");
   assert.equal(fresh.status, "pass", `row 1 (fresh install): ${JSON.stringify(fresh)}`);
+  originalHelp = assertCoreHelp("existing-project migration");
   const manifest = YAML.parse(readFileSync(bmad("_config", "manifest.yaml"), "utf8"));
   const modules = (manifest.modules ?? []).map((entry) => entry.name);
   resolvedModules = `bmad-method ${manifest.installation?.version ?? "?"}; ${(manifest.modules ?? []).filter((entry) => ["bmb", "cis"].includes(entry.name)).map((entry) => `${entry.name} ${entry.version ?? "(no version recorded)"}`).join(", ") || "no bmb/cis recorded"}`;
   for (const name of ["core", "bmm", "bmb", "cis"]) assert.ok(modules.includes(name), `the real install must select ${name}: ${modules}`);
+
+  // The existing project's protected TOML and unrelated dirty file were already
+  // present before the first real installer invocation, not introduced afterward.
+  for (const [path, digest] of Object.entries(protectedBefore)) assert.equal(sha(path), digest, `first migration changed operator bytes: ${path}`);
+  assertRuntimeLayers("pre-BMB runtime", "team-166", "personal-custom-166");
+  console.log(`PJAN-166 existing migration: ${resolvedModules}; Core help ${originalHelp.bytes} bytes / ${originalHelp.coreEntries} entries`);
 
   // The hermetic suites' installer fixture must look like this install, where the audit is concerned.
   const fixtureTarget = join(scratch, "fixture-target");
