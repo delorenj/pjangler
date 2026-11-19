@@ -9,12 +9,11 @@ export const MCP_CHILD_MAX_BYTES = 16 * 1024 * 1024;
 
 export type StopReason = "cancelled" | "deadline-exceeded";
 export class OperationStopped extends Error {
-  constructor(readonly reason: StopReason) {
-    super(`MCP operation ${reason}`);
+  constructor(readonly reason: StopReason, options?: ErrorOptions) {
+    super(`MCP operation ${reason}${options?.cause instanceof Error ? `: ${options.cause.message}` : ""}`, options);
     this.name = "OperationStopped";
   }
 }
-
 export interface OperationContext {
   readonly signal: AbortSignal;
   /** Monotonic performance.now() epoch in milliseconds. */
@@ -27,124 +26,104 @@ export const currentOperation = () => activeOperation.getStore();
 export const withOperation = <T>(operation: OperationContext, work: () => Promise<T>): Promise<T> => activeOperation.run(operation, work);
 
 export function createOperation(requestSignal: AbortSignal, timeoutMs = MCP_OPERATION_TIMEOUT_MS): OperationContext {
-  const timeout = timeoutMs ?? MCP_OPERATION_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 600_000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
     throw new RangeError("timeoutMs must be an integer from 1 to 600000 milliseconds");
   }
-  const deadlineMs = performance.now() + timeout;
+  const deadlineMs = performance.now() + timeoutMs;
   const controller = new AbortController();
   let reason: StopReason | undefined;
   const stop = (why: StopReason) => { if (!reason) { reason = why; controller.abort(new OperationStopped(why)); } };
   const cancelled = () => stop("cancelled");
   requestSignal.addEventListener("abort", cancelled, { once: true });
   if (requestSignal.aborted) cancelled();
-  const timer = setTimeout(() => stop("deadline-exceeded"), timeout);
+  const timer = setTimeout(() => stop("deadline-exceeded"), timeoutMs);
   timer.unref();
   return {
     signal: controller.signal, deadlineMs,
-    stopReason: () => reason ?? (performance.now() >= deadlineMs ? "deadline-exceeded" : undefined),
+    stopReason: () => { if (!reason && performance.now() >= deadlineMs) stop("deadline-exceeded"); return reason; },
     close: () => { clearTimeout(timer); requestSignal.removeEventListener("abort", cancelled); },
   };
 }
-
 export function assertOperationActive(operation = currentOperation()): void {
-  if (!operation) return;
-  const reason = operation.stopReason();
+  const reason = operation?.stopReason();
   if (reason) throw new OperationStopped(reason);
 }
-
-export interface ChildOutcome {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  error?: Error;
+/** Call at catch boundaries before interpreting an error as optional/fallback work. */
+export function rethrowOperationStopped(error: unknown): void {
+  if (error instanceof OperationStopped) throw error;
+  assertOperationActive();
 }
-export interface ChildOptions extends Omit<SpawnOptionsWithoutStdio, "timeout" | "signal" | "detached"> {
+export async function runProcess(command: string, args: readonly string[], options: ChildOptions & { timeout?: number; encoding?: string } = {}): Promise<ChildOutcome> {
+  const { timeout, encoding: _encoding, ...rest } = options;
+  return runChild(command, args, { ...rest, timeoutMs: rest.timeoutMs ?? timeout });
+}
+
+export interface ChildOutcome { status: number | null; stdout: string; stderr: string; error?: Error }
+export interface ChildOptions extends Omit<SpawnOptionsWithoutStdio, "timeout" | "signal" | "detached" | "stdio"> {
   input?: string;
   maxBuffer?: number;
-  /** Optional bound for CLI paths; an MCP child always inherits the earlier operation deadline. */
   timeoutMs?: number;
   operation?: OperationContext;
 }
 
-/**
- * A new POSIX process group lets escalation reach descendants even when the
- * direct child exits first. Do not settle cancellation until group cleanup has
- * completed; a child's `close` alone does not prove grandchildren exited.
- */
+/** POSIX group cleanup is timed from stop, independent of exit/close/stdio. */
 export async function runChild(command: string, args: readonly string[], options: ChildOptions = {}): Promise<ChildOutcome> {
   const operation = options.operation ?? currentOperation();
   assertOperationActive(operation);
   const { input, maxBuffer = MCP_CHILD_MAX_BYTES, timeoutMs, operation: _operation, ...spawnOptions } = options;
   const remaining = operation ? Math.max(1, Math.ceil(operation.deadlineMs - performance.now())) : undefined;
   const budget = timeoutMs === undefined ? remaining : Math.min(timeoutMs, remaining ?? timeoutMs);
-  let child;
-  try {
-    child = spawn(command, [...args], { ...spawnOptions, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"], shell: false });
-  } catch (error) {
-    if (operation?.stopReason()) throw new OperationStopped(operation.stopReason()!);
-    return { status: null, stdout: "", stderr: "", error: error as Error };
-  }
-  const pid = child.pid;
-  let stdout = "";
-  let stderr = "";
-  let size = 0;
-  let error: Error | undefined;
-  let stopped: StopReason | undefined;
-  let settled = false;
-  let grace: NodeJS.Timeout | undefined;
-  let forceWait: NodeJS.Timeout | undefined;
-  let timeout: NodeJS.Timeout | undefined;
-  let groupGone = false;
-  const signalGroup = (signal: NodeJS.Signals) => {
-    if (!pid) return;
-    try { process.kill(process.platform === "win32" ? pid : -pid, signal); }
-    catch (err) { if ((err as NodeJS.ErrnoException).code === "ESRCH") groupGone = true; }
-  };
-  const groupAlive = () => {
-    if (!pid || process.platform === "win32") return false;
-    try { process.kill(-pid, 0); return true; }
-    catch { return false; }
-  };
-  const stop = (reason: StopReason) => {
-    if (stopped || settled) return;
-    stopped = reason;
-    signalGroup("SIGTERM");
-    grace = setTimeout(() => signalGroup("SIGKILL"), MCP_CLEANUP_GRACE_MS);
-  };
-  const aborted = () => stop(operation?.stopReason() ?? "cancelled");
-  operation?.signal.addEventListener("abort", aborted, { once: true });
-  if (operation?.signal.aborted) aborted();
-  if (budget !== undefined) timeout = setTimeout(() => stop(operation?.stopReason() ?? "deadline-exceeded"), budget);
-  const append = (which: "stdout" | "stderr", chunk: Buffer) => {
-    size += chunk.length;
-    if (size > maxBuffer) { error = new Error(`Subprocess output exceeded ${maxBuffer} bytes`); stop("cancelled"); return; }
-    if (which === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
-  };
-  child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
-  child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
-  child.on("error", (err) => { error = err; });
-  if (input !== undefined) child.stdin?.end(input); else child.stdin?.end();
   return await new Promise<ChildOutcome>((resolve, reject) => {
-    child.once("close", (status) => {
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        if (timeout) clearTimeout(timeout);
-        if (grace) clearTimeout(grace);
-        if (forceWait) clearTimeout(forceWait);
-        operation?.signal.removeEventListener("abort", aborted);
-        if (stopped || operation?.stopReason()) reject(new OperationStopped(operation?.stopReason() ?? stopped!));
-        else resolve({ status, stdout, stderr, error });
-      };
-      // The leader may exit on TERM while a descendant ignores it. Keep the
-      // escalation timer alive and inspect the process group after the grace.
-      if (!stopped || groupGone || !groupAlive()) { finish(); return; }
-      const delay = Math.max(0, MCP_CLEANUP_GRACE_MS - 1);
-      forceWait = setTimeout(() => {
+    const child = spawn(command, [...args], { ...spawnOptions, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"], shell: false });
+    let stdout = "", stderr = "", size = 0;
+    let error: Error | undefined;
+    let stopped: StopReason | "output-overflow" | undefined;
+    let settled = false;
+    let status: number | null = null;
+    let grace: NodeJS.Timeout | undefined, forceWait: NodeJS.Timeout | undefined, timeout: NodeJS.Timeout | undefined;
+    const signalGroup = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try { process.kill(process.platform === "win32" ? child.pid : -child.pid, signal); }
+      catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+          error = new Error(`Subprocess group ${signal} failed: ${(err as Error).message}`, { cause: err });
+        }
+      }
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout); clearTimeout(grace); clearTimeout(forceWait);
+      operation?.signal.removeEventListener("abort", aborted);
+      child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy();
+      const reason = operation?.stopReason() ?? (stopped === "output-overflow" ? undefined : stopped);
+      if (reason) reject(new OperationStopped(reason, error ? { cause: error } : undefined));
+      else resolve({ status, stdout, stderr, error });
+    };
+    const stop = (reason: StopReason | "output-overflow") => {
+      if (stopped || settled) return;
+      stopped = reason;
+      signalGroup("SIGTERM");
+      grace = setTimeout(() => {
         signalGroup("SIGKILL");
         forceWait = setTimeout(finish, MCP_FORCE_WAIT_MS);
-      }, delay);
-    });
+      }, MCP_CLEANUP_GRACE_MS);
+    };
+    const aborted = () => stop(operation?.stopReason() ?? "cancelled");
+    operation?.signal.addEventListener("abort", aborted, { once: true });
+    if (operation?.signal.aborted) aborted();
+    if (budget !== undefined) timeout = setTimeout(() => stop(operation?.stopReason() ?? "deadline-exceeded"), budget);
+    const append = (which: "stdout" | "stderr", chunk: Buffer) => {
+      if (stopped) return;
+      size += chunk.length;
+      if (size > maxBuffer) { error = new Error(`Subprocess output exceeded ${maxBuffer} bytes`); stop("output-overflow"); return; }
+      if (which === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
+    };
+    child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
+    child.on("error", (err) => { error = err; if (!child.pid) finish(); });
+    child.stdin.on("error", (err: NodeJS.ErrnoException) => { if (err.code !== "EPIPE") error = err; });
+    child.once("close", (code) => { status = code; if (!stopped) finish(); });
+    if (input !== undefined) child.stdin.end(input); else child.stdin.end();
   });
 }

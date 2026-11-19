@@ -779,7 +779,7 @@ export interface BmadUpdateOptions {
   hadManifestG33: boolean;
   hadTomlG33: boolean;
   beforeInstall?: () => Promise<{ changedFiles?: string[]; details?: string[] }> | { changedFiles?: string[]; details?: string[] };
-  runInstaller: () => { ok: boolean; error?: string; stdout?: string };
+  runInstaller: () => { ok: boolean; error?: string; stdout?: string } | Promise<{ ok: boolean; error?: string; stdout?: string }>;
   /** PJAN-180: the derived rollback scope. Absent or `whole-tree` keeps the whole-tree rollback. */
   scope?: BmadUpdateScope;
 }
@@ -817,7 +817,7 @@ async function runWholeTreeBmadUpdate(root: string, options: BmadUpdateOptions, 
       const pre = await options.beforeInstall();
       preDetails = pre.details ?? [];
     }
-    const install = options.runInstaller();
+    const install = await options.runInstaller();
     if (!install.ok) {
       const rollback = rollbackTree(root, state.backup, beforeSnapshot);
       return {
@@ -943,7 +943,7 @@ async function runDeclaredBmadUpdate(root: string, options: BmadUpdateOptions, s
         preDetails = pre.details ?? [];
         preChanged = pre.changedFiles ?? [];
       }
-      const install = options.runInstaller();
+      const install = await options.runInstaller();
       installerStdout = install.stdout;
       if (!install.ok) {
         const undone = rollback("none");

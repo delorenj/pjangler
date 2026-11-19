@@ -457,7 +457,7 @@ export async function auditProjectSkills(ctx: Context): Promise<ProjectSkillsAud
   const pendingChanges = (result.data?.changes ?? []).length;
   // status stops at the first conflict, so the CLI skills roots are planned
   // independently: every alias, every block, whatever skillex happened to hit.
-  const plan = planSkillRoots(ctx.repoRoot);
+  const plan = await planSkillRoots(ctx.repoRoot);
   const rootLines = skillRootsSummary(plan);
   details.push(...rootLines);
   findings += rootLines.length;

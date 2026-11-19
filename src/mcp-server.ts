@@ -16,6 +16,7 @@ import {
   loadProjectRegistry,
   normalizeAgentRole,
   planProjectInit,
+  planProjectInitAsync,
   PROJECT_TYPES,
   projectRegistryPath,
   proposeProjectIdentifier,
@@ -27,6 +28,7 @@ import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectR
 import type { LifecycleContext } from "./recipes/types";
 import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
 import { createOperation, withOperation, assertOperationActive, OperationStopped, currentOperation } from "./lifecycle/operation";
+import { primeRegistrySnapshot, withRegistrySnapshots } from "./project/registryClient";
 import { BoundedCapture, boundedPayload, MCP_CAPTURE_BYTES, MCP_OUTPUT_BYTES, MCP_PAGE_SIZE, MCP_MAX_PAGE_SIZE, paginate } from "./mcp-bounds";
 
 const server = new McpServer({
@@ -315,12 +317,12 @@ function mutationHandler<T extends Record<string, unknown>>(
   return async (input: T, extra: { signal: AbortSignal }): Promise<any> => {
     const operation = createOperation(extra.signal, typeof input.timeoutMs === "number" ? input.timeoutMs : undefined);
     try {
-      return await withOperation(operation, async () => {
+      return await withOperation(operation, () => withRegistrySnapshots(async () => {
         assertOperationActive();
         const result = await handler(input);
         assertOperationActive();
         return result;
-      });
+      }));
     } catch (error) {
       return boundedError(error);
     } finally {
@@ -758,7 +760,7 @@ server.registerTool(
       }
       if (!dryRun && existsSync(targetDir) && !overwrite) throw new Error(`Target already exists: ${targetDir} (set force/overwrite=true to re-render)`);
 
-      const plan = planProjectInit({
+      const plan = await planProjectInitAsync({
         name: input.projectName,
         description: input.projectDescription,
         targetDir,
@@ -856,7 +858,7 @@ server.registerTool(
   mutationHandler(async (input) => {
     try {
       const externalEffects = validateExternalEffectConsent(input, { requireNonLocal: false });
-      const plan = planProjectInit({
+      const plan = await planProjectInitAsync({
         name: input.name,
         description: input.description,
         targetDir: input.targetDir,

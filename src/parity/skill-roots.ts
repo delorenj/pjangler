@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runProcess } from "../lifecycle/operation";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -216,8 +216,8 @@ function within(path: string, root: string): boolean {
 }
 
 /** Physical git toplevel for a directory, or undefined outside any work tree. */
-export function gitToplevel(directory: string): string | undefined {
-  const result = spawnSync("git", ["-C", directory, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+export async function gitToplevel(directory: string): Promise<string | undefined> {
+  const result = await runProcess("git", ["-C", directory, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (result.status !== 0) return undefined;
   const top = result.stdout.trim();
   return top ? realpathOrUndefined(top) ?? top : undefined;
@@ -230,7 +230,7 @@ export function gitToplevel(directory: string): string | undefined {
  * nested repository or submodule (33GOD's component checkouts) belongs to that
  * other repository, not this one.
  */
-export function repoOwnsPath(repoRoot: string, path: string): boolean {
+export async function repoOwnsPath(repoRoot: string, path: string): Promise<boolean> {
   const repoReal = realpathOrUndefined(repoRoot) ?? resolve(repoRoot);
   const real = realpathOrUndefined(path);
   if (!real || !within(real, repoReal)) return false;
@@ -240,7 +240,7 @@ export function repoOwnsPath(repoRoot: string, path: string): boolean {
   } catch {
     directory = dirname(real);
   }
-  return gitToplevel(directory) === gitToplevel(repoReal);
+  return await gitToplevel(directory) === await gitToplevel(repoReal);
 }
 
 // ---------------------------------------------------------------------------
@@ -604,10 +604,10 @@ function describeQuarantine(quarantine: string, label: (path: string) => string)
 
 interface TrackedRow { mode: string; path: string }
 
-function indexRows(repoReal: string, rel: string): { rows: TrackedRow[]; error?: string; worktree: boolean } {
-  const probe = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: repoReal, encoding: "utf8" });
+async function indexRows(repoReal: string, rel: string): Promise<{ rows: TrackedRow[]; error?: string; worktree: boolean }> {
+  const probe = await runProcess("git", ["rev-parse", "--is-inside-work-tree"], { cwd: repoReal, encoding: "utf8" });
   if (probe.status !== 0 || probe.stdout.trim() !== "true") return { rows: [], worktree: false };
-  const listed = spawnSync("git", ["ls-files", "-s", "-z", "--", rel], { cwd: repoReal, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const listed = await runProcess("git", ["ls-files", "-s", "-z", "--", rel], { cwd: repoReal, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (listed.status !== 0) return { rows: [], worktree: true, error: `git ls-files failed for ${rel}: ${listed.stderr.trim()}` };
   const rows = listed.stdout.split("\0").filter(Boolean).map((line) => {
     const [meta, path] = line.split("\t");
@@ -641,7 +641,7 @@ function entryHazard(path: string, label: string): string | undefined {
   return walk(path, "");
 }
 
-export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}): SkillRootsPlan {
+export async function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}): Promise<SkillRootsPlan> {
   const selected = options.aliases ?? SUPPORTED_SKILLS_ALIASES;
   const lexicalRoot = join(repoRoot, ".agents", "skills");
   const repoReal = realpathOrUndefined(repoRoot);
@@ -673,7 +673,7 @@ export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}
   const rootReal = rootState === "absent" ? undefined : realpathOrUndefined(R);
   const deviceOf = (path: string): number | undefined => { try { return statSync(path).dev; } catch { return undefined; } };
   const rootDevice = deviceOf(agentsStat ? agents : repoReal);
-  const repoTop = gitToplevel(repoReal);
+  const repoTop = await gitToplevel(repoReal);
   let inventory: ReturnType<typeof bmadCliProjectionInventory> | undefined;
   const inventoryOf = () => (inventory ??= bmadCliProjectionInventory(repoReal));
 
@@ -685,7 +685,7 @@ export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}
   });
 
   // ----- Per-alias classification (static: independent of every other alias)
-  const infos: AliasInfo[] = selected.map((alias) => {
+  const infos: AliasInfo[] = await Promise.all(selected.map(async (alias) => {
     const real = join(repoReal, alias);
     const cliRoot = dirname(real);
     const cliName = rel(cliRoot);
@@ -695,7 +695,7 @@ export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}
     info.cliRootExists = Boolean(cliStat);
     if (cliStat && (cliStat.isSymbolicLink() || !cliStat.isDirectory())) { info.blocks.push(`${cliName} is not a real configuration directory`); return info; }
     if (cliStat) {
-      const top = gitToplevel(cliRoot);
+      const top = await gitToplevel(cliRoot);
       if (top !== repoTop) { info.blocks.push(`${cliName} is inside another git work tree (${top}); refusing to change it`); return info; }
     }
     const stat = cliStat ? lstatOrUndefined(real) : undefined;
@@ -719,9 +719,9 @@ export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}
     info.state = "real-directory";
     if (rootState === "symlink") { info.blocks.push(`${alias} is a real directory but .agents/skills is a symlink (pack activation); refusing to relocate its entries`); return info; }
     if (rootDevice !== undefined && stat.dev !== rootDevice) { info.blocks.push(`${alias} is on a different filesystem than .agents; refusing a copying move`); return info; }
-    const aliasTop = gitToplevel(real);
+    const aliasTop = await gitToplevel(real);
     if (aliasTop !== repoTop) { info.blocks.push(`${alias} is inside another git work tree (${aliasTop}): its own git repository or a submodule; refusing to relocate it`); return info; }
-    const index = indexRows(repoReal, cliName);
+    const index = await indexRows(repoReal, cliName);
     if (index.error) { info.blocks.push(index.error); return info; }
     const aliasRel = rel(real).split(sep).join("/");
     if (index.rows.some((row) => row.mode === "160000" && (row.path === aliasRel || row.path === cliName.split(sep).join("/")))) {
@@ -769,7 +769,7 @@ export function planSkillRoots(repoRoot: string, options: SkillRootsOptions = {}
     }
     info.blocks.push(...info.candidates.flatMap((candidate) => candidate.staticBlock ? [candidate.staticBlock] : []));
     return info;
-  });
+  }));
 
   // Everything a conversion could change the view of.
   const affected = (real: string): boolean => within(real, R) || realAliasDirs.some((dir) => within(real, dir));
@@ -1237,8 +1237,8 @@ function translator(steps: Step[], done: number): (path: string) => string {
  * clean is converted, blocked aliases are untouched and reported. A dry run
  * writes nothing and reports the plan, which is exactly what apply does.
  */
-export function applySkillRoots(repoRoot: string, options: SkillRootsApplyOptions): SkillRootsResult {
-  const plan = planSkillRoots(repoRoot, options);
+export async function applySkillRoots(repoRoot: string, options: SkillRootsApplyOptions): Promise<SkillRootsResult> {
+  const plan = await planSkillRoots(repoRoot, options);
   const changedFiles = [...new Set(plan.operations.flatMap(changedPaths))].sort();
   if (options.dryRun) {
     return {
@@ -1341,7 +1341,7 @@ export function applySkillRoots(repoRoot: string, options: SkillRootsApplyOption
   // Only now: generated output leaves the index.
   const tracked = plan.operations.flatMap((operation) => operation.kind === "untrack" ? operation.tracked ?? [] : []);
   if (tracked.length) {
-    const removed = spawnSync("git", ["rm", "-r", "--cached", "--quiet", "--pathspec-from-file=-", "--pathspec-file-nul"],
+    const removed = await runProcess("git", ["rm", "-r", "--cached", "--quiet", "--pathspec-from-file=-", "--pathspec-file-nul"],
       { cwd: facts.repoReal, encoding: "utf8", input: `${tracked.join("\0")}\0` });
     if (removed.status !== 0) return rollback(`git rm --cached failed: ${removed.stderr.trim()}`);
   }

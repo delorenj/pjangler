@@ -16,7 +16,7 @@ import {
   type TrustedCopierIdentity,
 } from "../lifecycle/preflight";
 import { dotenvValue, workspaceEnvKey } from "./boardQuery";
-import { isRegistryServiceLocation, resolveRegistryLocation, registryRequest, normalizeProjectId } from "./registryClient";
+import { isRegistryServiceLocation, resolveRegistryLocation, registryRequest, registryRequestAsync, primeRegistrySnapshot, normalizeProjectId } from "./registryClient";
 export { isRegistryServiceLocation, resolveRegistryLocation, registryRequest, normalizeProjectId };
 
 export const PROJECT_REGISTRY_ENV = "PJ_PROJECT_REGISTRY";
@@ -306,6 +306,8 @@ export interface ProjectInitInput {
   agentHooksLayer?: boolean;
   force?: boolean;
   overwrite?: boolean;
+  /** Pre-resolved by async callers; CLI planning resolves locally. */
+  pluginAuthor?: string;
   now?: Date;
 }
 
@@ -953,10 +955,10 @@ export function providerBoardName(provider: string, name: string): string {
  * without creds must still get a working init, exactly as 42-ticket-provider.sh
  * behaves.
  */
-export function provisionTicketProviderBoard(
+export async function provisionTicketProviderBoard(
   action: Extract<ProjectInitAction, { kind: "ticket-provider.create-or-link" }>,
   env: NodeJS.ProcessEnv = process.env
-): TicketProviderBoardResult {
+): Promise<TicketProviderBoardResult> {
   const provider = action.provider;
   if (provider !== "plane" && provider !== "trello") {
     return { ok: false, skipped: false, logs: [], error: `Unsupported ticket provider: ${provider}. Supported providers: plane, trello` };
@@ -1044,9 +1046,8 @@ export function provisionTicketProviderBoard(
     const childEnv: NodeJS.ProcessEnv = { ...env, ...values, TICKET_PROVIDER: provider };
     if (provider === "plane" && action.workspace) childEnv.PLANE_WORKSPACE = action.workspace;
 
-    const result = spawnSync("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
+    const result = await runChild("sh", [staged, "create_board", action.boardName, action.identifier, action.description], {
       cwd: existsSync(action.repoPath) ? action.repoPath : staging,
-      encoding: "utf8",
       env: childEnv,
     });
 
@@ -1337,6 +1338,14 @@ export function normalizeLegacyManifest(manifest: Record<string, unknown>): Mani
   return notes.length ? { manifest: { ...manifest, source_artifacts: normalized }, notes } : { manifest, notes };
 }
 
+export async function planProjectInitAsync(input: ProjectInitInput): Promise<ProjectInitPlan> {
+  await primeRegistrySnapshot(input.registryPath ?? projectRegistryPath());
+  const result = input.projectType === "obsidian-plugin"
+    ? await runChild("git", ["config", "--get", "user.name"], { cwd: input.cwd, timeoutMs: 5_000 }) : undefined;
+  assertOperationActive();
+  return planProjectInit({ ...input, pluginAuthor: result?.status === 0 ? result.stdout.trim() : "" });
+}
+
 export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (!input.name.trim()) throw new Error("Project name is required");
   const targetDir = resolve(input.targetDir ?? defaultProjectTargetDir(input.name, input.cwd));
@@ -1576,7 +1585,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       projectIdentifier: identifier,
       primaryLanguage: project.template.commonproject.primary_language,
       projectType,
-      ...(projectType === "obsidian-plugin" ? { pluginAuthor: operatorDisplayName(input.cwd ?? process.cwd()) } : {}),
+      ...(projectType === "obsidian-plugin" ? { pluginAuthor: input.pluginAuthor ?? operatorDisplayName(input.cwd ?? process.cwd()) } : {}),
       agentHooksLayer: resolveAgentHooksLayer(input.agentHooksLayer),
       overwrite,
     }));
@@ -1807,7 +1816,8 @@ export async function executeProjectInitPlan(
       } else if (action.boardId) {
         logs.push(`ticket-provider: ${action.provider} board already linked (${action.identifier} → ${action.boardId}); nothing to create`);
       } else {
-        const outcome = provisionTicketProviderBoard(action);
+        const outcome = await provisionTicketProviderBoard(action);
+        assertOperationActive();
         logs.push(...outcome.logs);
         if (!outcome.ok) {
           errors.push(outcome.error ?? `ticket-provider: ${action.provider} board provisioning failed`);
@@ -1828,7 +1838,9 @@ export async function executeProjectInitPlan(
   if (pendingRegistryAction && errors.length === 0) {
     if (!projectRecordEquivalent(getOwnRecordValue(registry.projects, pendingRegistryAction.slug), pendingRegistryAction.project)) {
       registry.projects[pendingRegistryAction.slug] = pendingRegistryAction.project;
-      saveProjectRegistry(registry, pendingRegistryAction.registryPath);
+      if (currentOperation() && isRegistryServiceLocation(pendingRegistryAction.registryPath)) {
+        await registryRequestAsync(pendingRegistryAction.registryPath, "PUT", "/v1/registry", registry);
+      } else saveProjectRegistry(registry, pendingRegistryAction.registryPath);
       if (!isRegistryServiceLocation(pendingRegistryAction.registryPath)) changedFiles.push(pendingRegistryAction.registryPath);
       logs.push("registry: manifest indexed");
     }

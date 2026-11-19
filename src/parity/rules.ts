@@ -1893,8 +1893,8 @@ const installerClause = (withheld: string | undefined): string =>
  * is, and outside a work tree or without git nothing is, so an audit line says
  * "git-ignored" only when git itself confirms it.
  */
-function gitIgnoresPath(repoRoot: string, rel: string): boolean {
-  return spawnSync("git", ["check-ignore", "-q", "--", rel], { cwd: repoRoot, encoding: "utf8", timeout: 5_000 }).status === 0;
+async function gitIgnoresPath(repoRoot: string, rel: string): Promise<boolean> {
+  return (await runChild("git", ["check-ignore", "-q", "--", rel], { cwd: repoRoot, timeoutMs: 5_000 })).status === 0;
 }
 
 /**
@@ -1909,7 +1909,7 @@ function gitIgnoresPath(repoRoot: string, rel: string): boolean {
  * is different: a fresh clone or a new worktree of a repo that does not track
  * it never has it, and git says so.
  */
-function bmadManifestGapDetail(repoRoot: string, withheld: string | undefined): string {
+async function bmadManifestGapDetail(repoRoot: string, withheld: string | undefined): Promise<string> {
   const path = "_bmad/_config/manifest.yaml";
   const bmad = join(repoRoot, "_bmad");
   // With no `_bmad/` at all nothing was installed: the bare path, no claim about a cause.
@@ -1924,7 +1924,7 @@ function bmadManifestGapDetail(repoRoot: string, withheld: string | undefined): 
   if (!present("_config") && !present("core") && existsSync(join(bmad, "config.yaml"))) {
     return `${record}. BMB setup's \`--also-remove _config\` cleanup is the likely cause: it deletes all of _bmad/_config. ${remedy}`;
   }
-  if (gitIgnoresPath(repoRoot, path)) return `${record} is git-ignored in this checkout, so a fresh clone or worktree lacks it. ${remedy}`;
+  if (await gitIgnoresPath(repoRoot, path)) return `${record} is git-ignored in this checkout, so a fresh clone or worktree lacks it. ${remedy}`;
   return `${record} is missing. ${remedy}`;
 }
 
@@ -1961,7 +1961,7 @@ function scaffoldScriptsAttested(repoRoot: string, missing: readonly string[]): 
  * withholds it here: the install record always needs it, the scripts only when
  * the targeted restore cannot attest them.
  */
-function bmadSentinelGaps(repoRoot: string, selection: Extract<ScaffoldModuleSelection, { status: "ok" }>): BmadSentinelGap[] {
+async function bmadSentinelGaps(repoRoot: string, selection: Extract<ScaffoldModuleSelection, { status: "ok" }>): Promise<BmadSentinelGap[]> {
   const bmad = join(repoRoot, "_bmad");
   const gaps: BmadSentinelGap[] = [];
   const absent = (...segments: string[]): boolean => !existsSync(join(bmad, ...segments));
@@ -1976,12 +1976,12 @@ function bmadSentinelGaps(repoRoot: string, selection: Extract<ScaffoldModuleSel
     const remedy = `restore it with: ${BMAD_SCAFFOLD_REMEDY}${installerClause(scriptsWithheld)}`;
     // Like the manifest: a never-installed tree gets the bare path; an installed one, the cause git confirms and the repair.
     const detail = !installed ? rel
-      : gitIgnoresPath(repoRoot, rel) ? `${rel} (git-ignored in this checkout, so a fresh clone or worktree lacks it; ${remedy})`
+      : await gitIgnoresPath(repoRoot, rel) ? `${rel} (git-ignored in this checkout, so a fresh clone or worktree lacks it; ${remedy})`
         : `${rel} (${remedy})`;
     gaps.push({ path: join("scripts", script), detail });
   }
   if (manifestMissing) {
-    gaps.push({ path: join("_config", "manifest.yaml"), detail: bmadManifestGapDetail(repoRoot, withheld) });
+    gaps.push({ path: join("_config", "manifest.yaml"), detail: await bmadManifestGapDetail(repoRoot, withheld) });
   }
   let consolidated: ConsolidatedBmadConfig | undefined;
   for (const module of selection.modules) {
@@ -1997,12 +1997,12 @@ function bmadSentinelGaps(repoRoot: string, selection: Extract<ScaffoldModuleSel
 }
 
 
-function bmadScaffoldIssues(repoRoot: string, selection: Extract<ScaffoldModuleSelection, { status: "ok" }>): {
+async function bmadScaffoldIssues(repoRoot: string, selection: Extract<ScaffoldModuleSelection, { status: "ok" }>): Promise<{
   gaps: BmadSentinelGap[];
   nameIssues: ReturnType<typeof bmadProjectNameIssues>;
   details: string[];
-} {
-  const gaps = bmadSentinelGaps(repoRoot, selection);
+}> {
+  const gaps = await bmadSentinelGaps(repoRoot, selection);
   const nameIssues = bmadProjectNameIssues(repoRoot);
   return { gaps, nameIssues, details: [...gaps.map((gap) => gap.detail), ...nameIssues.details] };
 }
@@ -2168,7 +2168,7 @@ export const BMAD_RESOLVE_DEFAULT_TIMEOUT_MS = 180_000;
  * not a real bmad-method package (a fake test installer) resolves no root, and
  * the update keeps the whole-tree rollback with the reason.
  */
-export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION, options: { timeoutMs?: number } = {}): BmadInstallerPackage {
+export async function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION, options: { timeoutMs?: number } = {}): Promise<BmadInstallerPackage> {
   const timeoutMs = options.timeoutMs ?? BMAD_RESOLVE_DEFAULT_TIMEOUT_MS;
   type PackageRead = { found: string } | { other: true } | { unreadable: string };
   const readPackage = (dir: string): PackageRead => {
@@ -2199,11 +2199,11 @@ export function resolveBmadInstallerPackage(version = BMAD_INSTALLER_VERSION, op
   // revalidating it against the registry only costs a round trip (about 300ms warm
   // against several seconds). A dist-tag moves, so it is never read from a stale cache.
   const exactVersion = EXACT_VERSION.test(version);
-  const probe = spawnSync("npx", [
+  const probe = await runChild("npx", [
     "-y", "-p", `${BMAD_NPM_PACKAGE}@${version}`, "-c",
     `node -e "process.stdout.write(require('fs').realpathSync(process.argv[1]))" "$(command -v ${BMAD_NPM_PACKAGE})"`,
   ], {
-    encoding: "utf8", timeout: timeoutMs,
+    timeoutMs,
     env: { ...process.env, npm_config_update_notifier: "false", npm_config_fund: "false", ...(exactVersion ? { npm_config_prefer_offline: "true" } : {}) },
   });
   const entry = probe.stdout?.trim().split("\n").pop()?.trim();
@@ -2342,7 +2342,7 @@ const declinedNote = (repoRoot: string, declined: readonly DeclinedScript[]): st
  * failure is a hazard in the project's own tree: a symlink or directory where a
  * script or `_config` should be, a malformed manifest.
  */
-function bmadSetupScriptsState(repoRoot: string, options: { timeoutMs?: number } = {}): BmadSetupScriptsState {
+async function bmadSetupScriptsState(repoRoot: string, options: { timeoutMs?: number } = {}): Promise<BmadSetupScriptsState> {
   const inspection = inspectBmadSetupScripts(repoRoot, BMAD_INSTALLER_VERSION);
   const decline = (why: string, missing: string[], remedy: string): BmadSetupScriptsState => ({
     kind: "decline",
@@ -2355,7 +2355,7 @@ function bmadSetupScriptsState(repoRoot: string, options: { timeoutMs?: number }
     case "missing": break;
   }
   const override = Boolean(process.env.PJ_BMAD_INSTALLER?.trim());
-  const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION, options);
+  const pkg = await resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION, options);
   if (!pkg.root) return decline(pkg.reason ?? "installer is not a bmad-method package", inspection.missing, packageRemedy(pkg.failure ?? "unresolved", override));
   const plan = planBmadSetupScripts(repoRoot, pkg, BMAD_INSTALLER_VERSION);
   if (plan.error) {
@@ -2472,17 +2472,17 @@ export async function preflightBmadLifecycle(_ctx: Context): Promise<BmadLifecyc
 
 
 /** Exported for the PJAN-180 real-installer oracle, which must run pjangler's exact invocation. */
-export function invokeBmadInstallerProcess(
+export async function invokeBmadInstallerProcess(
   repoRoot: string,
   modules = selectedBmadModules(repoRoot),
   version = BMAD_INSTALLER_VERSION,
   extraArgs: string[] = [],
   pkg?: BmadInstallerPackage,
-): { ok: boolean; error?: string; stdout: string } {
+): Promise<{ ok: boolean; error?: string; stdout: string }> {
   // PJAN-180: a resolved package runs its fingerprinted entry directly.
   const invocation = pkg?.entry ? { command: process.execPath, prefixArgs: [pkg.entry] } : bmadInstallerInvocation(version);
-  const result = spawnSync(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules, extraArgs)], {
-    encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  const result = await runChild(invocation.command, [...invocation.prefixArgs, ...bmadInstallerArgs(repoRoot, modules, extraArgs)], {
+    maxBuffer: 64 * 1024 * 1024,
     env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
   });
   const stdout = result.stdout ?? "";
@@ -2508,7 +2508,7 @@ async function runBmadInstall(
   const installedSelection = manifestBmadModules(repoRoot);
   const preservation = g33BmadUpdateBoundary(repoRoot, (installedSelection.status === "valid" && installedSelection.hasG33) || configuredBmadModuleSelection(repoRoot)?.hasG33);
   if (preservation) return { ok: false, error: preservation.summary, companion: preservation };
-  const invoked = invokeBmadInstallerProcess(repoRoot, modules, version, extraArgs);
+  const invoked = await invokeBmadInstallerProcess(repoRoot, modules, version, extraArgs);
   if (!invoked.ok) return invoked;
   return { ok: true, companion: await runG33Companion(repoRoot, false, "bmad-install") };
 }
@@ -2570,11 +2570,8 @@ function readBmadDistTagsCache(homeDir: string): BmadDistTagsCache | undefined {
 }
 
 
-function fetchBmadDistTags(): Record<string, string> | undefined {
-  const result = spawnSync("npm", ["view", BMAD_NPM_PACKAGE, "dist-tags", "--json"], {
-    encoding: "utf8",
-    timeout: 8000,
-  });
+async function fetchBmadDistTags(): Promise<Record<string, string> | undefined> {
+  const result = await runChild("npm", ["view", BMAD_NPM_PACKAGE, "dist-tags", "--json"], { timeoutMs: 8000 });
   if (result.status !== 0 || !result.stdout.trim()) return undefined;
   try {
     const parsed = JSON.parse(result.stdout) as unknown;
@@ -2599,13 +2596,13 @@ function fetchBmadDistTags(): Record<string, string> | undefined {
  * npm is unreachable it falls back to a stale cache (flagged), else `undefined`
  * so the caller degrades to a `skip` finding rather than failing the audit.
  */
-function resolveBmadDistTags(homeDir: string): { distTags: Record<string, string>; stale: boolean } | undefined {
+async function resolveBmadDistTags(homeDir: string): Promise<{ distTags: Record<string, string>; stale: boolean } | undefined> {
   const cached = readBmadDistTagsCache(homeDir);
   if (cached && Date.now() - cached.fetchedAt < BMAD_DIST_TAGS_TTL_MS) {
     return { distTags: cached.distTags, stale: false };
   }
 
-  const fetched = fetchBmadDistTags();
+  const fetched = await fetchBmadDistTags();
   if (fetched) {
     try {
       const path = bmadCachePath(homeDir);
@@ -3304,7 +3301,7 @@ return [
   {
     id: "mise.config-root",
     title: "mise config_root + AGENTS link hooks",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const misePath = join(ctx.repoRoot, "mise.toml");
       if (!existsSync(misePath)) {
         return { id: "mise.config-root", title: "mise config_root + AGENTS link hooks", status: "fail", summary: "mise.toml missing", details: [], fixable: true };
@@ -3429,7 +3426,7 @@ return [
   {
     id: "mise.versioning",
     title: "managed mise versioning block",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const hub = mobileDeployHubContract(ctx.repoRoot);
       if (hub) return { id: "mise.versioning", title: "managed mise versioning block", status: "skip", summary: hub.summary, details: [], fixable: false };
       const details: string[] = [];
@@ -3724,7 +3721,7 @@ return [
       if (registryField.blocked) details.push(`blocked: ${registryField.blocked}`);
       // (4) Lossless CLI skills-root conversion. A blocked root stays untouched
       // and makes the sync below refuse at that alias, which is reported.
-      const roots = applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
+      const roots = await applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
       changedFiles.push(...roots.changedFiles);
       details.push(...roots.details);
       details.push(...roots.blocks.map((reason) => `blocked: ${reason}`).filter((line) => !details.includes(line)));
@@ -3747,7 +3744,7 @@ return [
   {
     id: "sot.agent-symlinks",
     title: "AGENTS/CLAUDE/GEMINI symlink contract",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const agentsPath = join(ctx.repoRoot, "AGENTS.md");
       if (!existsSync(agentsPath)) {
         const fallbackSources = ["CLAUDE.md", "GEMINI.md", "README.md"].filter((file) => existsSync(join(ctx.repoRoot, file)));
@@ -3886,7 +3883,7 @@ return [
   {
     id: "secrets.env-op",
     title: ".env.op + gitignore secrets contract",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const details: string[] = [];
       let envOpNeedsHands = false;
       const optedOut = envMaterializationOptedOut(ctx);
@@ -4131,7 +4128,7 @@ return [
   {
     id: "provenance.copier",
     title: ".copier-answers.yml provenance + drift report",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const providerProblem = projectProviderProblem(ctx);
       if (providerProblem) return { id: "provenance.copier", title: ".copier-answers.yml provenance + drift report", status: "fail", summary: providerProblem, details: [], fixable: false };
       const details: string[] = [];
@@ -4350,14 +4347,14 @@ function ensureSupportedCliGitignore(ctx: Context): string[] {
  * real directory (the BMAD installer recreates one for claude-code whenever the
  * alias is missing, and this rule runs after it). Blocked roots stay untouched.
  */
-function ensureSupportedCliProjections(ctx: Context): { changedFiles: string[]; blockers: string[]; details: string[] } {
+async function ensureSupportedCliProjections(ctx: Context): Promise<{ changedFiles: string[]; blockers: string[]; details: string[] }> {
   // The shared planner checks every component: `.agents` and `.agents/skills`
   // must both be real directories (lstat of the leaf alone follows a symlinked
   // `.agents`).
-  if (planSkillRoots(ctx.repoRoot, { aliases: [] }).rootState !== "directory") {
+  if ((await planSkillRoots(ctx.repoRoot, { aliases: [] })).rootState !== "directory") {
     return { changedFiles: [], details: [], blockers: [".agents/skills must be a real BMAD-generated directory (with a real .agents parent) before CLI projections can be created"] };
   }
-  const applied = applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
+  const applied = await applySkillRoots(ctx.repoRoot, { dryRun: ctx.dryRun });
   return { changedFiles: applied.changedFiles, blockers: applied.blocks, details: applied.details };
 }
 
@@ -4431,7 +4428,7 @@ function withScaffoldScriptRestore(check: RecipeOwnedCheck): RecipeOwnedCheck {
   return {
     ...check,
     migrate: async (ctx, finding) => {
-      const restore = restoreScaffoldScripts(ctx, finding);
+      const restore = await restoreScaffoldScripts(ctx, finding);
       if (restore.kind === "result") return restore.result;
       if (restore.kind === "restored" && !restore.rest) return restoredScriptsResult(ctx, finding, restore);
       const viaInstaller = await check.migrate(ctx, finding);
@@ -4488,11 +4485,11 @@ function setupScriptsDeclineReason(repoRoot: string, summary: string): string {
   return (remedy ? summary.slice(0, -(remedy.length + 2)) : summary).replace(/^Setup script recovery unavailable: /, "");
 }
 
-function restoreScaffoldScripts(ctx: Context, finding: AuditFinding): ScaffoldScriptRestore {
+async function restoreScaffoldScripts(ctx: Context, finding: AuditFinding): Promise<ScaffoldScriptRestore> {
   const selection = scaffoldModuleSelection(ctx.repoRoot);
   // A never-installed tree is a fresh install's to write; an invalid install record blocks in the base migrate.
   if (selection.status === "invalid" || !isInstalledBmadProject(ctx.repoRoot, selection.hadManifestG33 || selection.hadTomlG33)) return { kind: "none" };
-  const issues = bmadScaffoldIssues(ctx.repoRoot, selection);
+  const issues = await bmadScaffoldIssues(ctx.repoRoot, selection);
   const missing = issues.gaps.filter((gap) => isScaffoldScriptGap(gap.path)).map((gap) => join(ctx.repoRoot, "_bmad", gap.path));
   if (!missing.length) return { kind: "none" };
   const rest = issues.nameIssues.details.length > 0 || issues.gaps.some((gap) => !isScaffoldScriptGap(gap.path));
@@ -4502,7 +4499,7 @@ function restoreScaffoldScripts(ctx: Context, finding: AuditFinding): ScaffoldSc
       details: [error, "No installer was run: it writes _bmad/scripts through the same path"],
     } }
     : { kind: "declined", reason: error };
-  const state = bmadSetupScriptsState(ctx.repoRoot);
+  const state = await bmadSetupScriptsState(ctx.repoRoot);
   // Present is a race (something restored them since the audit); the installer path re-reads the tree.
   if (state.kind === "present") return { kind: "none" };
   if (state.kind === "refuse") return refused(state.error);
@@ -4553,7 +4550,7 @@ return ([
   {
     id: "bmad.scaffold",
     title: "BMAD modules/docs scaffold",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const selection = scaffoldModuleSelection(ctx.repoRoot);
       if (selection.status === "invalid") {
         return {
@@ -4565,7 +4562,7 @@ return ([
           fixable: false,
         };
       }
-      const { details } = bmadScaffoldIssues(ctx.repoRoot, selection);
+      const { details } = await bmadScaffoldIssues(ctx.repoRoot, selection);
       return {
         id: "bmad.scaffold",
         title: "BMAD modules/docs scaffold",
@@ -4598,7 +4595,7 @@ return ([
         changedFiles: [], details: companionDetails(preservation), bmadCompanion: preservation,
       };
       if (ctx.dryRun) {
-        const issues = bmadScaffoldIssues(ctx.repoRoot, selection);
+        const issues = await bmadScaffoldIssues(ctx.repoRoot, selection);
         // An installed project's real run goes through the preservation preflight, so the preview mirrors it.
         const companion = installedBmad ? await runG33PreUpdateCompanion(ctx.repoRoot) : await runG33Companion(ctx.repoRoot, true, "bmad-install");
         if (installedBmad && ["unavailable", "conflict", "error"].includes(companion.status)) {
@@ -4632,13 +4629,13 @@ return ([
       }
 
       if (installedBmad && g33CompanionEnabled(ctx.repoRoot)) {
-        const before = bmadScaffoldIssues(ctx.repoRoot, selection);
+        const before = await bmadScaffoldIssues(ctx.repoRoot, selection);
         const expectedChangedPaths = [
           ...before.gaps.map((gap) => join(ctx.repoRoot, "_bmad", gap.path)),
           ...before.nameIssues.paths,
         ];
         // PJAN-180: the rollback covers only the verified installer surface, or the whole tree with the reason.
-        const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+        const pkg = await resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
         const scope = deriveBmadUpdateScope(ctx.repoRoot, { tools: BMAD_INSTALL_TOOLS, installer: pkg, companionSurfaces: G33_OWNED_SURFACES });
         const update = await runBmadUpdateWithCompanionPreservation(ctx.repoRoot, {
           hadManifestG33,
@@ -4679,7 +4676,7 @@ return ([
         };
       }
 
-      const before = bmadScaffoldIssues(ctx.repoRoot, selection);
+      const before = await bmadScaffoldIssues(ctx.repoRoot, selection);
       const expectedChangedPaths = [
         ...before.gaps.map((gap) => join(ctx.repoRoot, "_bmad", gap.path)),
         ...before.nameIssues.paths,
@@ -4724,11 +4721,11 @@ return ([
   {
     id: "bmad.setup-scripts",
     title: "BMAD ignored installer setup scripts",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const id = "bmad.setup-scripts", title = "BMAD ignored installer setup scripts";
       if (!isInstalledBmadProject(ctx.repoRoot)) return { id, title, status: "skip", summary: NO_INSTALLED_BMAD, details: [], fixable: false };
       // The audit never waits long on the network; the migrate below does.
-      const state = bmadSetupScriptsState(ctx.repoRoot, { timeoutMs: BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS });
+      const state = await bmadSetupScriptsState(ctx.repoRoot, { timeoutMs: BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS });
       switch (state.kind) {
         case "present": return { id, title, status: "pass", summary: "BMAD installer scripts are present", details: [], fixable: false };
         case "decline": return { id, title, status: "skip", summary: state.summary, details: [], fixable: false };
@@ -4746,10 +4743,10 @@ return ([
     // A passed finding is never trusted, whatever its status: the disk is read again
     // and the pinned package resolved with no audit cap, since a migrate is an explicit
     // request to repair (an audit that gave up on a slow npx is retried here).
-    migrate: (ctx, _finding) => {
+    migrate: async (ctx, _finding) => {
       const id = "bmad.setup-scripts", title = "BMAD ignored installer setup scripts";
       if (!isInstalledBmadProject(ctx.repoRoot)) return { id, title, status: "skipped", summary: NO_INSTALLED_BMAD, details: [], changedFiles: [] };
-      const state = bmadSetupScriptsState(ctx.repoRoot);
+      const state = await bmadSetupScriptsState(ctx.repoRoot);
       if (state.kind === "decline") return { id, title, status: "skipped", summary: state.summary, details: [], changedFiles: [] };
       if (state.kind === "refuse") return { id, title, status: "blocked", summary: state.error, details: [state.error], changedFiles: [] };
       if (state.kind === "present") return { id, title, status: "noop", summary: "BMAD installer scripts already present", details: [], changedFiles: [] };
@@ -4771,7 +4768,7 @@ return ([
   {
     id: "bmad.version",
     title: "BMAD version currency",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const installed = readInstalledBmadVersion(ctx.repoRoot);
       if (!installed) {
         // Absence / unreadable manifest is bmad.scaffold's concern, not ours.
@@ -4788,7 +4785,7 @@ return ([
       }
 
       const pinned = ctx.bmadVersionPin?.trim();
-      const resolved = pinned ? undefined : resolveBmadDistTags(ctx.homeDir);
+      const resolved = pinned ? undefined : (await resolveBmadDistTags(ctx.homeDir));
       const channelTarget = pinned ? undefined : bmadChannelTarget(resolved?.distTags);
       const available = pinned ?? channelTarget?.version;
       const channel = channelTarget?.channel ?? BMAD_TARGET_CHANNEL;
@@ -4919,14 +4916,14 @@ return ([
       }
       {
         const current = readInstalledBmadVersion(ctx.repoRoot);
-        const target = ctx.bmadVersionPin?.trim() ?? bmadChannelTarget(resolveBmadDistTags(ctx.homeDir)?.distTags)?.version;
+        const target = ctx.bmadVersionPin?.trim() ?? bmadChannelTarget((await resolveBmadDistTags(ctx.homeDir))?.distTags)?.version;
         if (!current || !target || compareBmadVersions(current, target) === 0) {
           return { id: finding.id, title: finding.title, status: "noop", summary: "BMAD already current", changedFiles: [], details: [] };
         }
       }
 
       const installed = readInstalledBmadVersion(ctx.repoRoot);
-      const available = ctx.bmadVersionPin?.trim() ?? bmadChannelTarget(resolveBmadDistTags(ctx.homeDir)?.distTags)?.version;
+      const available = ctx.bmadVersionPin?.trim() ?? bmadChannelTarget((await resolveBmadDistTags(ctx.homeDir))?.distTags)?.version;
       const manifestPath = join(ctx.repoRoot, "_bmad", "_config", "manifest.yaml");
       const manifestSelection = manifestBmadModules(ctx.repoRoot);
       if (manifestSelection.status === "invalid") {
@@ -4983,7 +4980,7 @@ return ([
 
       if (g33CompanionEnabled(ctx.repoRoot)) {
         // PJAN-180: the rollback covers only the verified installer surface, or the whole tree with the reason.
-        const pkg = resolveBmadInstallerPackage(available ?? BMAD_TARGET_CHANNEL);
+        const pkg = await resolveBmadInstallerPackage(available ?? BMAD_TARGET_CHANNEL);
         const scope = deriveBmadUpdateScope(ctx.repoRoot, { tools: BMAD_INSTALL_TOOLS, installer: pkg, companionSurfaces: G33_OWNED_SURFACES });
         const update = await runBmadUpdateWithCompanionPreservation(ctx.repoRoot, {
           hadManifestG33,
@@ -5077,11 +5074,11 @@ return ([
   {
     id: "bmad.cli-roots",
     title: "Supported BMAD CLI projection roots",
-    audit: (ctx) => {
+    audit: async (ctx) => {
       const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS) as (keyof typeof UNSUPPORTED_BMAD_ROOTS)[];
       const present = unsupportedNames.filter((name) => existsSync(join(ctx.repoRoot, name)));
       const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
-      const plan = planSkillRoots(ctx.repoRoot);
+      const plan = await planSkillRoots(ctx.repoRoot);
       const supportedIssues = supportedCliProjectionIssues(ctx.repoRoot, plan);
       const gitignoreIssues = supportedCliGitignoreIssues(ctx.repoRoot);
       const details = [
@@ -5101,7 +5098,7 @@ return ([
         fixable: attestations.every((entry) => entry.safe) && (!supportedIssues.length || plan.clean),
       };
     },
-    migrate: (ctx, finding) => {
+    migrate: async (ctx, finding) => {
       const unsupportedNames = Object.keys(UNSUPPORTED_BMAD_ROOTS) as (keyof typeof UNSUPPORTED_BMAD_ROOTS)[];
       const present = unsupportedNames.filter((name) => existsSync(join(ctx.repoRoot, name)));
       const attestations = present.map((name) => ({ name, ...unsupportedRootAttestation(ctx.repoRoot, name) }));
@@ -5116,7 +5113,7 @@ return ([
           details: blocked.map((entry) => `${entry.name}: ${entry.reason}`),
         };
       }
-      const projectionResult = ensureSupportedCliProjections(ctx);
+      const projectionResult = await ensureSupportedCliProjections(ctx);
       if (projectionResult.blockers.length) {
         // Clean roots were still converted; say so instead of claiming nothing changed.
         return {

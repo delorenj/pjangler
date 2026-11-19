@@ -1,4 +1,28 @@
 import { spawnSync } from "node:child_process";
+import { currentOperation, runChild, assertOperationActive } from "../lifecycle/operation";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+// Synchronous configuration readers consume one request-local snapshot. MCP
+// primes it asynchronously before entering legacy filesystem-only readers.
+const snapshots = new AsyncLocalStorage<Map<string, unknown>>();
+export const withRegistrySnapshots = <T>(work: () => Promise<T>): Promise<T> => snapshots.run(new Map(), work);
+export async function primeRegistrySnapshot(location: string): Promise<void> {
+  const endpoint = resolveRegistryLocation(location);
+  if (!isRegistryServiceLocation(endpoint) || snapshots.getStore()?.has(endpoint)) return;
+  const registry = await registryRequestAsync(endpoint, "GET", "/v1/registry");
+  assertOperationActive();
+  snapshots.getStore()?.set(endpoint, registry);
+}
+export async function registryRequestAsync<T>(location: string, method: string, path: string, body?: unknown): Promise<T> {
+  const endpoint = resolveRegistryLocation(location);
+  const result = await runChild(process.execPath, ["--input-type=module", "-e", REQUEST], {
+    input: JSON.stringify({ url: `${endpoint}${path}`, method, body, timeout: 15_000 }), timeoutMs: 17_000,
+  });
+  assertOperationActive();
+  if (result.error || result.status !== 0) throw new Error(`Project registry request failed (${endpoint}): ${result.stderr.trim() || result.error?.message || "request failed"}`);
+  try { return JSON.parse(result.stdout) as T; }
+  catch { throw new Error(`Project registry returned invalid JSON (${endpoint})`); }
+}
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -38,6 +62,12 @@ try {
 
 export function registryRequest<T>(location: string, method: string, path: string, body?: unknown): T {
   const endpoint = resolveRegistryLocation(location);
+  assertOperationActive();
+  if (currentOperation()) {
+    const cached = snapshots.getStore()?.get(endpoint);
+    if (method === "GET" && path === "/v1/registry" && cached !== undefined) return structuredClone(cached) as T;
+    throw new Error(`MCP registry call requires async request: ${method} ${path}`);
+  }
   if (!isRegistryServiceLocation(endpoint)) throw new Error("This operation requires the project registry service");
   const timeout = 15_000;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", REQUEST], {
