@@ -45,11 +45,11 @@ function launcher(platform = process.platform): string {
  * process must not hold the terminal, and a launcher that writes to stderr
  * must not corrupt structured output.
  */
-export function openUrl(
+export async function openUrl(
   url: string,
   env: NodeJS.ProcessEnv = process.env,
   platform = process.platform,
-): OpenOutcome {
+): Promise<OpenOutcome> {
   if (isHeadless(env, platform)) {
     return {
       opened: false,
@@ -57,14 +57,22 @@ export function openUrl(
       reason: "no display; printed a link instead",
     };
   }
+  const command = launcher(platform);
   try {
-    spawn(launcher(platform), [url], { detached: true, stdio: "ignore" }).unref();
+    const child = spawn(command, [url], { detached: true, stdio: "ignore" });
+    // ENOENT is emitted asynchronously on ChildProcess, not thrown by spawn.
+    // Wait for spawn before claiming even a launcher handoff succeeded.
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("spawn", resolve);
+    });
+    child.unref();
     return { opened: true, display: osc8(url) };
   } catch (err) {
     return {
       opened: false,
       display: osc8(url),
-      reason: `could not launch ${launcher(platform)}: ${(err as Error).message}`,
+      reason: `could not launch ${command}: ${(err as Error).message}`,
     };
   }
 }
