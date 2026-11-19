@@ -83,7 +83,7 @@ process.on("exit", cleanup);
  * `sot.project-json` fixable for an unrelated repo_path write, ensuring the
  * declaration is preserved while the rule actually writes the manifest.
  */
-function unprovisionedRoleRepo(name, { emptyRoleYaml = false, fixableDrift = false } = {}) {
+function unprovisionedRoleRepo(name, { emptyRoleYaml = false, roleYaml, fixableDrift = false } = {}) {
   const repo = join(workspace, name);
   const home = join(repo, "home");
   mkdirSync(join(repo, "repo", "agents", "hermes", "pm", ".scripts"), { recursive: true });
@@ -97,7 +97,7 @@ function unprovisionedRoleRepo(name, { emptyRoleYaml = false, fixableDrift = fal
   );
 
   const repoRoot = join(repo, "repo");
-  if (emptyRoleYaml) writeFileSync(join(repoRoot, "agents", "hermes", "pm", "role.yaml"), "", "utf8");
+  if (roleYaml !== undefined || emptyRoleYaml) writeFileSync(join(repoRoot, "agents", "hermes", "pm", "role.yaml"), roleYaml ?? "", "utf8");
   writeFileSync(
     join(repoRoot, ".project.json"),
     `${JSON.stringify(
@@ -303,6 +303,65 @@ for (const emptyRoleYaml of [false, true]) {
     assert.ok(findings(afterAudit, "sot.project-json").details.some((detail) => /provision or restore/.test(detail)));
   });
 }
+
+// YAML nulls and comment-only scalars are not identities, even though the
+// legacy line reader returned nonempty strings for them.
+for (const [label, roleYaml] of [
+  ["null agent ID", "role: pm\nagent_id: null\n"],
+  ["tilde agent ID", "role: pm\nagent_id: ~\n"],
+  ["comment-only agent ID", "role: pm\nagent_id: # pending\n"],
+  ["empty folded agent ID", "role: pm\nagent_id: >\n"],
+  ["null role", "role: null\nagent_id: heyma-operator-pm\n"],
+  ["tilde role", "role: ~\nagent_id: heyma-operator-pm\n"],
+  ["comment-only role", "role: # pending\nagent_id: heyma-operator-pm\n"],
+]) {
+  check(`selected migration rejects ${label} without losing declaration`, () => {
+    const { repoRoot, home } = unprovisionedRoleRepo(`invalid-identity-${label.replaceAll(" ", "-")}`, { roleYaml, fixableDrift: true });
+    const manifest = join(repoRoot, ".project.json");
+    const before = JSON.parse(readFileSync(manifest, "utf8"));
+    const migration = json(["migrate", "sot.project-json", repoRoot], { home, expectOk: false });
+    const result = outcome(migration, "sot.project-json");
+    const afterText = readFileSync(manifest, "utf8");
+    const after = JSON.parse(afterText);
+    assert.deepEqual(after.agents, before.agents, "invalid YAML identity replaced declared ID or extras");
+    assert.equal(after.repo_path, repoRoot, "unrelated permitted fix was not written");
+    assert.ok(result.changedFiles.includes(manifest));
+    assert.ok(["partial", "blocked"].includes(result.status));
+    assert.ok(result.details.some((detail) => detail.includes("heyma-operator-pm") && /provision or restore/.test(detail)));
+    const again = json(["migrate", "sot.project-json", repoRoot], { home, expectOk: false });
+    assert.equal(readFileSync(manifest, "utf8"), afterText, "repeat migration rewrote manifest");
+    assert.ok(!outcome(again, "sot.project-json").changedFiles.includes(manifest));
+    const audit = json(["audit", repoRoot], { home });
+    assert.equal(findings(audit, "sot.project-json").status, "fail");
+  });
+}
+
+check("valid YAML identities with inline comments remain usable", () => {
+  const { repoRoot, home } = unprovisionedRoleRepo("valid-inline-identities", {
+    roleYaml: "role: pm # operator role\nagent_id: heyma-operator-pm # provisioned agent\n",
+    fixableDrift: true,
+  });
+  const manifest = join(repoRoot, ".project.json");
+  const before = JSON.parse(readFileSync(manifest, "utf8"));
+  const migration = json(["migrate", "sot.project-json", repoRoot], { home, expectOk: true });
+  const after = JSON.parse(readFileSync(manifest, "utf8"));
+  assert.equal(outcome(migration, "sot.project-json").status, "applied");
+  assert.equal(after.repo_path, repoRoot);
+  assert.deepEqual(after.agents, before.agents);
+  assert.equal(findings(json(["audit", repoRoot], { home }), "sot.project-json").status, "pass");
+});
+
+check("quoted YAML null text is a literal identity, not a missing value", () => {
+  const { repoRoot, home } = unprovisionedRoleRepo("quoted-null-identity", {
+    roleYaml: "role: pm\nagent_id: 'null' # literal string\n",
+    fixableDrift: true,
+  });
+  const audit = json(["audit", repoRoot], { home });
+  const details = findings(audit, "sot.project-json").details;
+  assert.ok(!details.some((detail) => /provision or restore/.test(detail)));
+  assert.ok(details.some((detail) => /agent_id null/.test(detail)), "quoted null must be interpreted as a literal string");
+  assert.ok(JSON.parse(readFileSync(join(repoRoot, ".project.json"), "utf8")).agents["heyma-operator-pm"]);
+});
 
 check("dry-run without mise.toml reports a plan without writing project files", () => {
   const { repoRoot, home } = unprovisionedRoleRepo("dry-run", { emptyRoleYaml: true, fixableDrift: true });

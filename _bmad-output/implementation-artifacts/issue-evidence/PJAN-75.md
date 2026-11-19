@@ -9,11 +9,22 @@
 ## Verification
 
 - Red before fix: the newly added selected empty-`role.yaml` regression failed against the original source (missing actionable preserved-agent detail); the missing-file variant passed.
-- `node tests/pjan-75-regressions.mjs` — passed (source bundle, nine checks).
+- `node tests/pjan-75-regressions.mjs` — passed (source bundle, nine original checks).
 - `npm run typecheck` — passed.
 - `npm run build` — passed; `dist/` is generated/untracked by policy, not committed.
-- `PJAN75_CLI_BUILT="$PWD/dist/index.js" node tests/pjan-75-regressions.mjs` — passed (rebuilt CLI, nine checks).
+- `PJAN75_CLI_BUILT="$PWD/dist/index.js" node tests/pjan-75-regressions.mjs` — passed (rebuilt CLI, nine original checks).
 - `node tests/project-json-home-repo-path-regressions.mjs`, `node tests/pjan-17-canonical-binding-regressions.mjs`, `node tests/pjan-17-provider-parity-regressions.mjs`, `node tests/pjan-36-regressions.mjs`, `node tests/pjan-65-regressions.mjs`, `node tests/momo-lifecycle-plane-regressions.mjs` — passed.
 - `git diff --check` — passed.
 
-Independent SPEC and QUALITY reviews are pending; no main integration or board changes in this delivery.
+## Independent gates and quality repair
+
+- Independent SPEC gate passed all nine original source and rebuilt-CLI checks on `a247f0202c33b64cb0a7732bbd85074f74bbc27f`.
+- Independent QUALITY gate failed on that commit: the raw `yamlGet` regex considered `agent_id: null`, `agent_id: ~`, and `agent_id: # pending` usable identities, allowing a selected migration to delete the last declared agent and exit successfully. Equivalent invalid `role` scalars had the same flaw.
+- New regressions reproduced the destructive successful migration for all six null/tilde/comment-only role/ID variants and proved inline-commented valid identities were mangled before the repair. An empty folded ID and quoted literal null are also covered.
+- The repair parses only the two identity scalars with the already-installed `yaml` dependency. Discovery and declared-role validation both reject absent, non-string, or whitespace-only values; valid inline-comment values retain their identity. Unrelated `yamlGet` callers were not rewritten.
+- `node tests/pjan-75-regressions.mjs` — passed (source bundle, 18 checks).
+- `PJAN75_CLI_BUILT="$PWD/dist/index.js" node tests/pjan-75-regressions.mjs` — passed (rebuilt CLI, 18 checks).
+- `npm run typecheck && npm run build` — passed.
+- The six affected suites listed above — passed.
+
+Independent QUALITY re-review remains pending; no main integration or board changes in this delivery.

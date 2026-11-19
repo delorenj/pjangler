@@ -420,7 +420,7 @@ function bootstrapAgentsFile(repoRoot: string, dryRun: boolean): { changedFiles:
 }
 
 
-function yamlGet(text: string, keyPath: string): string {
+function yamlGet(text: string, keyPath: string, identityScalar = false): string {
   const parts = keyPath.split(".");
   const lines = text.split("\n");
   let start = 0;
@@ -440,6 +440,14 @@ function yamlGet(text: string, keyPath: string): string {
       if (currentIndent !== indent || currentKey !== key) continue;
       found = true;
       if (idx === parts.length - 1) {
+        if (identityScalar) {
+          try {
+            const value: unknown = YAML.parse(rest);
+            return typeof value === "string" ? value.trim() : "";
+          } catch {
+            return "";
+          }
+        }
         return rest.replace(/^['"]|['"]$/g, "").trim();
       }
       start = i + 1;
@@ -462,18 +470,20 @@ function discoverRoles(repoRoot: string): RoleMeta[] {
       const roleYamlPath = join(roleDir, "role.yaml");
       if (!existsSync(roleYamlPath)) return null;
       const text = readText(roleYamlPath);
+      const role = yamlGet(text, "role", true);
+      const agentId = yamlGet(text, "agent_id", true);
       // A present but empty/incomplete YAML file cannot authorize a guessed
       // `${project_id}-${role}` identity. Keep the manifest declaration until
       // role.yaml actually supplies both identity fields.
-      if (!yamlGet(text, "role") || !yamlGet(text, "agent_id")) return null;
+      if (!role || !agentId) return null;
       const runtimeRepoRaw = yamlGet(text, "runtime.github_repo");
       return {
-        role: yamlGet(text, "role") || entry.name,
+        role,
         roleDir,
         roleYamlPath,
         repo: yamlGet(text, "repo"),
-        agentId: yamlGet(text, "agent_id"),
-        profileName: yamlGet(text, "profile") || yamlGet(text, "agent_id"),
+        agentId,
+        profileName: yamlGet(text, "profile") || agentId,
         displayName: yamlGet(text, "display_name"),
         purpose: yamlGet(text, "purpose"),
         botHandle: yamlGet(text, "telegram.bot_username"),
@@ -1408,8 +1418,8 @@ function readRoleYamlAt(roleDir: string): { role: string; agentId: string; provi
   if (!existsSync(roleYamlPath)) return null;
   const text = readText(roleYamlPath);
   return {
-    role: yamlGet(text, "role"),
-    agentId: yamlGet(text, "agent_id"),
+    role: yamlGet(text, "role", true),
+    agentId: yamlGet(text, "agent_id", true),
     providerName: yamlGet(text, "ticket_provider.name"),
     text,
   };
