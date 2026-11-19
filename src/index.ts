@@ -1491,13 +1491,18 @@ program
       const acceptRegistryMatches = options.acceptRegistryMatches ?? false;
       const registryOverride = options.registry as string | undefined;
       const knownRules = getParityRuleIds();
-      const selectedRules = String(options.rules ?? "").split(",").map((id: string) => id.trim()).filter(Boolean);
+      const hasRulesOption = options.rules !== undefined;
+      const selectedRules = hasRulesOption ? String(options.rules).split(",").map((id: string) => id.trim()) : [];
 
+      if (hasRulesOption && selectedRules.some((id: string) => !id)) {
+        console.error(`${xmark} --rules requires a non-empty comma-separated list of rule ids`);
+        process.exit(1);
+      }
       if (ruleId && repo && knownRules.includes(repo)) {
         console.error(`${xmark} unexpected positional: ${repo}; did you mean --rules ${ruleId},${repo}?`);
         process.exit(1);
       }
-      if (selectedRules.length && (all || repo || (ruleId && knownRules.includes(ruleId)))) {
+      if (hasRulesOption && (all || repo || (ruleId && knownRules.includes(ruleId)))) {
         console.error(`${xmark} --rules accepts only one optional repo path and cannot be combined with --all or a positional rule id`);
         process.exit(1);
       }

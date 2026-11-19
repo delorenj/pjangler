@@ -54,6 +54,18 @@ try {
   // An ordinary existing target still works, even if it is not initialized yet.
   const existing = join(scratch, "existing-project");
   mkdirSync(existing);
+  for (const malformed of ["", "   ", ",,,", "skills.project-manifest,", ",skills.project-manifest", "skills.project-manifest,,bmad.cli-roots", "skills.project-manifest,  ,bmad.cli-roots"]) {
+    refuses(["--rules", malformed, existing, "--json"], /--rules requires a non-empty comma-separated list of rule ids/, existing);
+    assert.deepEqual(readdirSync(existing), [], `malformed --rules ${JSON.stringify(malformed)} must not scaffold the target`);
+    assert.deepEqual(readdirSync(home), [], "refusal must not write to HOME");
+  }
+  refuses(["--rules", "", "--all", "--json"], /--rules requires a non-empty comma-separated list of rule ids/, existing);
+  refuses(["--rules", "", "mise.config-root", existing, "--json"], /--rules requires a non-empty comma-separated list of rule ids/, existing);
+  refuses(["--rules", "skills.project-manifest", "--all", "--json"], /cannot be combined with --all or a positional rule id/, existing);
+  refuses(["--rules", "skills.project-manifest", "bmad.cli-roots", "--json"], /cannot be combined with --all or a positional rule id/, existing);
+  assert.deepEqual(readdirSync(existing), [], "refused combinations must not write to the target or cwd");
+  assert.deepEqual(readdirSync(home), [], "refused combinations must not write to HOME");
+  assert.deepEqual(readdirSync(scratch).sort(), ["bmad.cli-roots", "existing-project", "home"], "refusals must not write sibling paths");
   const single = run(["bmad.cli-roots", existing, "--dry-run", "--json"]);
   const singleReport = JSON.parse(single.stdout);
   assert.equal(single.status, singleReport.ok ? 0 : 1, single.stderr + single.stdout);
