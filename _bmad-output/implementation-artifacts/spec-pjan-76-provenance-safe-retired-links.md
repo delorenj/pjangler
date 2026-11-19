@@ -25,11 +25,8 @@ context: []
 | Preview | mixed links | no mutation; same classifications | report conflicts before installer |
 </frozen-after-approval>
 ## Code Map
-- `src/parity/rules.ts:2072-2134` -- current activation check and unsafe pack eviction; `:4575-4718` scaffold migrate preview/install; `:4980-5060` version migrate uses same cleanup.
-- `src/recipes/supported-clis.ts` -- seven canonical CLI roots; do not change.
-- `src/parity/skills.ts:368-389` -- Skillex receipt and selected catalog targets, reuse protection.
-- `tests/pjan-76-regressions.mjs` -- real CLI init with fixture installer and isolated registry/HOME, extend for scaffold migrate.
-- `tests/helpers/pack-fixture.mjs` -- installer creates skill dirs; it follows symlinks, making preflight refusal necessary.
+- `src/parity/rules.ts` -- classify literal retired-pack paths only when every existing source parent is a physical directory; a symlinked intermediate registry component is unknown provenance. Treat current selected/receipt-owned `bmad-*` links as installer collisions and refuse before writes; use the same plan for scaffold and version migrations.
+- `tests/pjan-76-regressions.mjs` -- exercise both refusals through the real CLI in apply and preview, preserving links and catalog/personal target bytes. `tests/pjan-135-skill-roots-safety-regressions.mjs` -- update the selected-activation contract to require preflight refusal and no sibling eviction.
 ## Tasks & Acceptance
 **Execution:**
 - [x] `src/parity/rules.ts` -- classify literal symlink text against retired pack path, reject unknown conflicts and unsafe root aliases prior to any edits, dry-run parity; reuse for version migration.
@@ -41,5 +38,6 @@ context: []
 - Given a clean second migration, when it runs, then it reports no retired-link cleanup.
 - Given cold-cache init, when it runs, then BMAD comes from installer, no implicit pack selection, only seven supported CLI roots and ignored projections.
 ## Spec Change Log
+- Independent SPEC and QUALITY review repros found that preserving a selected activation without blocking the installer overwrote its catalog bytes, and that a symlinked intermediate `packs/bmad` component spoofed retired provenance. The repair blocks both before installer or eviction. Keep legitimate absolute, relative, and dangling retired projections, seven CLI roots, and cold-cache init behavior.
 ## Verification
-**Commands:** `npm run build`, `npm run typecheck`, `node tests/pjan-76-regressions.mjs`, `node tests/parity-migrate-regressions.mjs`, `node tests/pjan-135-skill-roots-safety-regressions.mjs` -- all pass.
+**Passed:** `npm run build`, `npm run typecheck`, `node tests/pjan-76-regressions.mjs`, `node tests/parity-migrate-regressions.mjs`, `node tests/pjan-135-skill-roots-safety-regressions.mjs` (28/28), `node tests/pjan-176-bmad-installer-skills-regressions.mjs` (10/10), and `node tests/bmad-version-surface-regressions.mjs`. Both independent scratch repro scripts now report blocked preview/apply, unchanged links and unchanged selected/personal target bytes. External reviewer approval remains pending.

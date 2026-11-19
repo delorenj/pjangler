@@ -16,7 +16,7 @@ import { changedTreePaths, snapshotTree } from "../utils/tree-diff";
 import { deriveBmadUpdateScope, type BmadInstallerPackage } from "../bmad/update-scope";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, chmodSync, copyFileSync, rmSync } from "node:fs";
 import { planBmadSetupScripts, applyBmadSetupScripts, describeDeclined, inspectBmadSetupScripts, REQUIRED_BMAD_SETUP_SCRIPTS, type DeclinedScript } from "../bmad/setup-scripts";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { evictReservedModuleEntries, isLegacyReservedModuleEntry } from "../bmad/reserved-modules";
@@ -2088,12 +2088,28 @@ async function skillActivations(ctx: Context): Promise<SkillActivations> {
 }
 
 
+// The link text identifies a retired pack only if its existing parent components
+// are physical directories. A lexical packs/bmad path through a symlink can
+// resolve into someone's unrelated skill tree; a missing suffix is legitimate
+// for a dangling retired projection, but cannot conceal an existing alias.
+function hasPhysicalLinkTargetParents(target: string): boolean {
+  let current = parse(target).root;
+  for (const component of relative(current, dirname(target)).split(sep).filter(Boolean)) {
+    current = join(current, component);
+    const stat = lstatIfPresent(current);
+    if (!stat) return true;
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+  }
+  return true;
+}
+
 // Only the literal link text can attest a retired pack projection. realpathSync
 // loses that evidence (and fails for a dangling link), while a name alone says
 // nothing about ownership. Do not infer ownership from a selected catalog target.
 function retiredBmadPackLink(path: string, name: string, ctx: Context): boolean {
   const text = readlinkSync(path);
   const target = resolve(dirname(path), text);
+  if (!hasPhysicalLinkTargetParents(target)) return false;
   const registryRoots = [
     process.env.PJ_SKILLS_REGISTRY_ROOT,
     join(ctx.homeDir, ".agents", ".cache", "registries"),
@@ -2146,7 +2162,10 @@ function planRetiredBmadLinks(ctx: Context, activations: SkillActivations): Reti
       if (!name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
       const path = join(dir, name);
       if (!lstatIfPresent(path)?.isSymbolicLink()) continue;
-      if (isCurrentActivation(path, activations)) continue;
+      if (isCurrentActivation(path, activations)) {
+        conflicts.push(`${relative(ctx.repoRoot, path)} is a current skill activation; refusing installer collision`);
+        continue;
+      }
       if (retiredBmadPackLink(path, name, ctx)) paths.push(path);
       else conflicts.push(`${relative(ctx.repoRoot, path)} has unknown BMAD skill link provenance`);
     }

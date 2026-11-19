@@ -201,13 +201,63 @@ check("an init on a cold cache installs BMAD and emits only supported CLI roots"
   // Retired link provenance is verified against the real CLI entrypoint on the
   // freshly initialized project, with this suite's isolated HOME/cache/registry.
   const cli = join(root, "dist", "index.js");
-  const migrate = (dryRun = false) => {
-    const result = spawnSync(process.execPath, [cli, "migrate", "bmad.scaffold", target, "--json", ...(dryRun ? ["--dry-run"] : [])], {
-      cwd: workspace, encoding: "utf8", env: isolatedEnv, timeout: 120_000,
+  const migrate = (dryRun = false, project = target, env = isolatedEnv) => {
+    const result = spawnSync(process.execPath, [cli, "migrate", "bmad.scaffold", project, "--json", ...(dryRun ? ["--dry-run"] : [])], {
+      cwd: workspace, encoding: "utf8", env, timeout: 120_000,
     });
     const report = JSON.parse(result.stdout);
     return { result, rule: report.results.find((entry) => entry.id === "bmad.scaffold") };
   };
+  // The installer follows an existing selected catalog link even though the
+  // eviction planner must preserve it. Refuse the collision before invocation.
+  const selectedProject = join(workspace, "selected-project");
+  const selectedCatalog = join(workspace, "selected-catalog");
+  const selectedSkill = join(selectedCatalog, "all-skills", "bmad-help");
+  const selectedLink = join(selectedProject, ".agents", "skills", "bmad-help");
+  mkdirSync(selectedSkill, { recursive: true });
+  mkdirSync(join(selectedProject, ".agents", "skills"), { recursive: true });
+  writeFileSync(join(selectedSkill, "SKILL.md"), "CUSTOM SELECTED CATALOG BYTES\n");
+  writeFileSync(join(selectedProject, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, skills: ["bmad-help"] }));
+  writeFileSync(join(selectedProject, ".project.json"), JSON.stringify({ name: "selected-project", version: "1.0.0" }));
+  symlinkSync(selectedSkill, selectedLink);
+  const selectedEnv = { ...isolatedEnv, PJ_SKILLS_REGISTRY_ROOT: selectedCatalog };
+  for (const dryRun of [true, false]) {
+    const blocked = migrate(dryRun, selectedProject, selectedEnv);
+    assert.notEqual(blocked.result.status, 0);
+    assert.equal(blocked.rule.status, "blocked", JSON.stringify(blocked.rule));
+    assert.match(JSON.stringify(blocked.rule), /\.agents\/skills\/bmad-help/);
+    assert.deepEqual(blocked.rule.changedFiles, []);
+    assert.equal(readlinkSync(selectedLink), selectedSkill);
+    assert.equal(readFileSync(join(selectedSkill, "SKILL.md"), "utf8"), "CUSTOM SELECTED CATALOG BYTES\n");
+  }
+
+  // A lexical retired-pack path can pass through a symlinked registry parent
+  // into a personal tree. Neither preview nor apply may claim its deletion.
+  const aliasProject = join(workspace, "alias-project");
+  const aliasCatalog = join(workspace, "alias-catalog");
+  const personalTree = join(workspace, "personal-tree");
+  const aliasParent = join(aliasCatalog, "packs", "bmad");
+  const aliasSource = join(personalTree, "6.0.0", "skills", "bmad-personal");
+  const aliasLink = join(aliasProject, ".agents", "skills", "bmad-personal");
+  mkdirSync(join(aliasProject, ".agents", "skills"), { recursive: true });
+  mkdirSync(join(aliasCatalog, "packs"), { recursive: true });
+  mkdirSync(aliasSource, { recursive: true });
+  writeFileSync(join(aliasSource, "SKILL.md"), "UNRELATED USER BYTES\n");
+  writeFileSync(join(aliasProject, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, skills: [] }));
+  writeFileSync(join(aliasProject, ".project.json"), JSON.stringify({ name: "alias-project", version: "1.0.0" }));
+  symlinkSync(personalTree, aliasParent);
+  symlinkSync(join(aliasParent, "6.0.0", "skills", "bmad-personal"), aliasLink);
+  const aliasEnv = { ...isolatedEnv, PJ_SKILLS_REGISTRY_ROOT: aliasCatalog };
+  for (const dryRun of [true, false]) {
+    const blocked = migrate(dryRun, aliasProject, aliasEnv);
+    assert.notEqual(blocked.result.status, 0);
+    assert.equal(blocked.rule.status, "blocked", JSON.stringify(blocked.rule));
+    assert.match(JSON.stringify(blocked.rule), /\.agents\/skills\/bmad-personal/);
+    assert.doesNotMatch(JSON.stringify(blocked.rule), /retired BMAD pack symlink/);
+    assert.deepEqual(blocked.rule.changedFiles, []);
+    assert.equal(readlinkSync(aliasLink), join(aliasParent, "6.0.0", "skills", "bmad-personal"));
+    assert.equal(readFileSync(join(aliasSource, "SKILL.md"), "utf8"), "UNRELATED USER BYTES\n");
+  }
   const canonical = join(target, ".agents", "skills");
   const custom = join(workspace, "personal-skill");
   mkdirSync(custom);
