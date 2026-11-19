@@ -1,3 +1,4 @@
+import { rethrowOperationStopped } from "../lifecycle/operation";
 import { parseNoteEnvelope } from "./notes";
 import { compileOverviewDescriptor, overviewDescriptorDrift } from "./overview";
 import type { NotebookModule } from "./module";
@@ -132,7 +133,7 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
     let overview: NotebookObservationV1["overview"] = null;
     if (overviewId) {
       const parsed = overviewNote ? parseNoteEnvelope(overviewNote.content) : null;
-      const current = compileOverviewDescriptor({ config: local.config, projectName: local.resolved.project.name, purpose: local.resolved.project.description });
+      const current = await compileOverviewDescriptor({ config: local.config, projectName: local.resolved.project.name, purpose: local.resolved.project.description });
       overview = {
         present: Boolean(overviewNote),
         member: Boolean(overviewNote),
@@ -161,6 +162,7 @@ export async function prepareNotebookObservationResolved(module: NotebookModule,
       error: null,
     };
   } catch (error) {
+    rethrowOperationStopped(error);
     const normalized = normalizeNotebookError(error);
     return {
       ...base,

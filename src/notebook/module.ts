@@ -276,7 +276,7 @@ export class NotebookModule {
       description: resolved.project.description,
       client,
     });
-    const compiledOverview = compileOverviewArtifact({ config, projectName: resolved.project.name, purpose: resolved.project.description });
+    const compiledOverview = await compileOverviewArtifact({ config, projectName: resolved.project.name, purpose: resolved.project.description });
     const overviewContent = renderOverviewContent({ config, descriptor: compiledOverview.descriptor, referenceContents: compiledOverview.reference_contents });
     const overview = await reconcileManagedNote({
       stateRoot: this.stateRoot,
@@ -490,7 +490,7 @@ export class NotebookModule {
     if (!parsed || parsed.envelope.kind !== "overview") throw new NotebookError("DRIFT_DETECTED", "Bound Overview note has no valid Overview envelope");
     if (parsed.envelope.project_slug !== ctx.config.project_slug) throw new NotebookError("CROSS_PROJECT", "Bound Overview envelope belongs to a different project");
     if (parsed.envelope.logical_id !== `overview:v1:${ctx.config.project_slug}`) throw new NotebookError("DRIFT_DETECTED", "Bound Overview logical identity does not match this project");
-    const descriptor = compileOverviewDescriptor({ config: ctx.config, projectName: ctx.resolved.project.name, purpose: ctx.resolved.project.description });
+    const descriptor = await compileOverviewDescriptor({ config: ctx.config, projectName: ctx.resolved.project.name, purpose: ctx.resolved.project.description });
     const drift = overviewDescriptorDrift(parsed.envelope.overview_descriptor, descriptor);
     if (setText === undefined) return { config: ctx.config, data: { note: noteDetail(current, ctx.config.limits.note_max_bytes), updated: false, drift } };
     ensureText(setText, "Overview text", ctx.config.limits.note_max_bytes);
@@ -512,7 +512,7 @@ export class NotebookModule {
     const parsed = parseNoteEnvelope(current.content);
     if (!parsed || parsed.envelope.kind !== "overview") throw new NotebookError("DRIFT_DETECTED", "Bound Overview note has no valid Overview envelope");
     if (parsed.envelope.project_slug !== ctx.config.project_slug) throw new NotebookError("CROSS_PROJECT", "Bound Overview envelope belongs to a different project");
-    const compiledOverview = compileOverviewArtifact({ config: ctx.config, projectName: ctx.resolved.project.name, purpose: ctx.resolved.project.description });
+    const compiledOverview = await compileOverviewArtifact({ config: ctx.config, projectName: ctx.resolved.project.name, purpose: ctx.resolved.project.description });
     const content = renderOverviewContent({ config: ctx.config, descriptor: compiledOverview.descriptor, referenceContents: compiledOverview.reference_contents });
     if (content === current.content) {
       return { config: ctx.config, data: { note: noteDetail(current, ctx.config.limits.note_max_bytes), updated: false } };

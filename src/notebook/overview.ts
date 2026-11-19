@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runChild } from "../lifecycle/operation";
 import { realpathSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { encodeNoteEnvelope, overviewLogicalId, sha256Hex } from "./notes";
@@ -15,9 +15,9 @@ import {
 
 const DEFAULT_OVERVIEW_REFERENCES = [".project.json", "README.md", "AGENTS.md", "CLAUDE.md", "docs/architecture.md"];
 
-function git(repo: string, args: string[], timeout: number): { ok: boolean; stdout: string } {
-  const result = spawnSync("git", args, { cwd: repo, encoding: "utf8", maxBuffer: 1024 * 1024, timeout, shell: false });
-  return { ok: result.status === 0, stdout: result.stdout?.trim() ?? "" };
+async function git(repo: string, args: string[], timeout: number): Promise<{ ok: boolean; stdout: string }> {
+  const result = await runChild("git", args, { cwd: repo, maxBuffer: 1024 * 1024, timeoutMs: timeout });
+  return { ok: result.status === 0, stdout: result.stdout.trim() };
 }
 
 function normalizedReference(repo: string, value: string): string {
@@ -29,12 +29,12 @@ function normalizedReference(repo: string, value: string): string {
   return rel.normalize("NFC");
 }
 
-function compileReference(config: EffectiveNotebookConfigV1, path: string): { reference: OverviewReferenceV1; content?: string } {
-  const tracked = git(config.repo_path, ["ls-files", "--error-unmatch", "--", path], config.limits.overall_timeout_ms);
+async function compileReference(config: EffectiveNotebookConfigV1, path: string): Promise<{ reference: OverviewReferenceV1; content?: string }> {
+  const tracked = await git(config.repo_path, ["ls-files", "--error-unmatch", "--", path], config.limits.overall_timeout_ms);
   if (!tracked.ok) return { reference: { path, status: "missing", reason: "not-tracked" } };
   const evidence = readSafeEvidenceText(config.repo_path, path, config.limits.source_file_max_bytes);
   if (evidence.status !== "present") return { reference: { path, status: "missing", reason: evidence.reason } };
-  const revision = git(config.repo_path, ["rev-parse", `HEAD:${path}`], config.limits.overall_timeout_ms);
+  const revision = await git(config.repo_path, ["rev-parse", `HEAD:${path}`], config.limits.overall_timeout_ms);
   return {
     reference: {
       path,
@@ -51,15 +51,15 @@ export interface CompiledOverviewArtifactV1 {
   reference_contents: Readonly<Record<string, string>>;
 }
 
-export function compileOverviewArtifact(input: {
+export async function compileOverviewArtifact(input: {
   config: EffectiveNotebookConfigV1;
   projectName: string;
   purpose?: string;
-}): CompiledOverviewArtifactV1 {
+}): Promise<CompiledOverviewArtifactV1> {
   const configured = input.config.policy.overview_references;
   const candidates = configured ?? DEFAULT_OVERVIEW_REFERENCES;
   const normalized = [...new Set(candidates.map((path) => normalizedReference(input.config.repo_path, path)))];
-  const compiled = normalized.map((path) => compileReference(input.config, path));
+  const compiled = await Promise.all(normalized.map((path) => compileReference(input.config, path)));
   const selected = configured ? compiled : compiled.filter((item) => item.reference.status === "present");
   return {
     descriptor: {
@@ -74,12 +74,12 @@ export function compileOverviewArtifact(input: {
   };
 }
 
-export function compileOverviewDescriptor(input: {
+export async function compileOverviewDescriptor(input: {
   config: EffectiveNotebookConfigV1;
   projectName: string;
   purpose?: string;
-}): OverviewDescriptorV1 {
-  return compileOverviewArtifact(input).descriptor;
+}): Promise<OverviewDescriptorV1> {
+  return (await compileOverviewArtifact(input)).descriptor;
 }
 
 export function overviewDescriptorDrift(stored: OverviewDescriptorV1 | undefined, current: OverviewDescriptorV1): Array<{ path: string; reason: string }> {
