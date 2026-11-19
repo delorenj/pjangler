@@ -118,6 +118,7 @@ const SUITES = [
   "tests/pjan-57-dogfood-regressions.mjs",
   "tests/generated-project-lifecycle-regressions.mjs",
   "tests/pjan-23-regressions.mjs",
+  "tests/pjan-103-state-map-regressions.mjs",
   "tests/pjan-24-regressions.mjs",
   "tests/pjan-30-regressions.mjs",
   "tests/pjan-31a-regressions.mjs",
