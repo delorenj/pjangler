@@ -229,7 +229,7 @@ const INFO_OUTPUT = z.object({
   manifest: z.object({ project_id: z.string() }).passthrough(),
   registry: z.object({ location: z.string(), status: z.enum(["indexed", "not-indexed", "unavailable", "stale"]), message: z.string().optional() }).passthrough(),
 }).passthrough();
-const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: z.record(z.string(), PROJECT), page: PAGE_META }).passthrough();
+const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), slugs: RULES, projects: z.record(z.string(), PROJECT), page: PAGE_META }).passthrough();
 const PROJECT_SHOW_OUTPUT = PROJECT;
 const CAPTURE_ADMISSION = z.object({
   unresolved_count: z.number().nullable(), unresolved_count_lower_bound: z.number(),
@@ -301,6 +301,39 @@ const LOCAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint:
 const EXTERNAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 const LOCAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } as const;
 const EXTERNAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
+
+function boundedError(err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  const marker = "… [truncated to MCP 256 KiB]";
+  const capture = new BoundedCapture(MCP_OUTPUT_BYTES - Buffer.byteLength(marker, "utf8"));
+  capture.append(message);
+  return { isError: true, content: [{ type: "text" as const, text: capture.omittedCount ? `${capture.entries.join("")}${marker}` : message }] };
+}
+
+function recipePayload(recipe: string, targetDir: string, apply: boolean, success: boolean, logs: BoundedCapture, errors: BoundedCapture) {
+  return {
+    success, recipe, targetDir, apply, dryRun: !apply,
+    logs: logs.entries, errors: errors.entries,
+    capture: {
+      logs: { retainedBytes: logs.bytes, omittedCount: logs.omittedCount },
+      errors: { retainedBytes: errors.bytes, omittedCount: errors.omittedCount },
+    },
+  };
+}
+
+function recipeCaptureBudget(recipe: string, targetDir: string, apply: boolean) {
+  const empty = new BoundedCapture();
+  const envelope = recipePayload(recipe, targetDir, apply, true, empty, empty);
+  envelope.capture.logs.retainedBytes = MCP_CAPTURE_BYTES;
+  envelope.capture.errors.retainedBytes = MCP_CAPTURE_BYTES;
+  envelope.capture.logs.omittedCount = Number.MAX_SAFE_INTEGER;
+  envelope.capture.errors.omittedCount = Number.MAX_SAFE_INTEGER;
+  const baseline = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+  if (baseline > MCP_OUTPUT_BYTES) throw new Error("MCP recipe metadata exceeds the 256 KiB structured output budget");
+  // Each collector charges the serialized string and its array comma; the
+  // baseline already includes the two empty arrays. Leave room for counters.
+  return { serializedBytes: 0, maxSerializedBytes: MCP_OUTPUT_BYTES - baseline - 16 };
+}
 
 function asResult<T extends object>(payload: T, text?: string) {
   boundedPayload(payload);
@@ -491,8 +524,7 @@ function parityGuidance() {
   };
 }
 
-async function runRecipeWithCapture(recipeName: string, context: CommandContext) {
-  const shared = { serializedBytes: 0, maxSerializedBytes: MCP_OUTPUT_BYTES - 4096 };
+async function runRecipeWithCapture(recipeName: string, context: CommandContext, shared: { serializedBytes: number; maxSerializedBytes: number }) {
   const logs = new BoundedCapture(MCP_CAPTURE_BYTES, shared);
   const errors = new BoundedCapture(MCP_CAPTURE_BYTES, shared);
   if (!recipeRegistry.get(recipeName)) {
@@ -581,7 +613,7 @@ server.registerTool(
       const payload = result.payload as Awaited<ReturnType<typeof runAudit>> & { page: typeof result.meta; summary: ReturnType<typeof auditSummary>; guidance: ReturnType<typeof parityGuidance> };
       return asResult(payload, json === false ? formatAuditReport({ ...report, rules: payload.rules }) : JSON.stringify(payload, null, 2));
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -621,7 +653,7 @@ server.registerTool(
         }),
       };
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -748,7 +780,7 @@ server.registerTool(
         plan,
       ));
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -830,7 +862,7 @@ server.registerTool(
         )),
       };
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -846,7 +878,7 @@ server.registerTool(
   },
   async ({ project_id, targetDir, registryPath }) => {
     try { return asResult(readProjectInfo({ projectId: project_id, cwd: targetDir ?? process.cwd(), registryPath })); }
-    catch (err) { return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] }; }
+    catch (err) { return boundedError(err); }
   }
 );
 
@@ -867,11 +899,11 @@ server.registerTool(
       const registry = loadProjectRegistry(registryPath ?? projectRegistryPath());
       const entries = Object.entries(registry.projects).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
       const result = paginate(entries, ([slug, record]) => JSON.stringify([slug, record]), limit, cursor,
-        (items, page) => ({ schema_version: registry.schema_version, projects: Object.fromEntries(items), page }),
+        (items, page) => ({ schema_version: registry.schema_version, slugs: items.map(([slug]) => slug), projects: Object.fromEntries(items), page }),
         (payload) => JSON.stringify(payload, null, 2));
       return asResult(result.payload, JSON.stringify(result.payload, null, 2));
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -892,7 +924,7 @@ server.registerTool(
     try {
       return asResult(getProject(loadProjectRegistry(registryPath ?? projectRegistryPath()), slug));
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -919,7 +951,7 @@ server.registerTool(
       });
       return asResult(description, json === false ? formatProjectDescription(description) : undefined);
     } catch (err) {
-      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+      return boundedError(err);
     }
   }
 );
@@ -938,10 +970,7 @@ server.registerTool(
   async ({ recipe }) => {
     const info = getRecipeInfo(recipe);
     if (!info) {
-      return {
-        isError: true,
-        content: [{ type: "text" as const, text: `Recipe not found: ${recipe}` }],
-      };
+      return boundedError(new Error(`Recipe not found: ${recipe}`));
     }
 
     return asResult({
@@ -977,28 +1006,14 @@ server.registerTool(
         quiet: true,
       };
 
-      const result = await runRecipeWithCapture(recipe, context);
+      const budget = recipeCaptureBudget(recipe, resolvedTarget, shouldApply);
+      const result = await runRecipeWithCapture(recipe, context, budget);
       return {
         isError: !result.success,
-        ...asResult({
-          success: result.success,
-          recipe,
-          targetDir: resolvedTarget,
-          apply: shouldApply,
-          dryRun: !shouldApply,
-          logs: result.logs.entries,
-          errors: result.errors.entries,
-          capture: {
-            logs: { retainedBytes: result.logs.bytes, omittedCount: result.logs.omittedCount },
-            errors: { retainedBytes: result.errors.bytes, omittedCount: result.errors.omittedCount },
-          },
-        }),
+        ...asResult(recipePayload(recipe, resolvedTarget, shouldApply, result.success, result.logs, result.errors)),
       };
     } catch (err) {
-      return {
-        isError: true,
-        content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-      };
+      return boundedError(err);
     }
   }
 );

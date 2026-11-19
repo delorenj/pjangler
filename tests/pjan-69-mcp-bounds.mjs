@@ -1,6 +1,6 @@
 import "./helpers/hermetic-suite.mjs";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -12,6 +12,24 @@ import { buildSync } from "esbuild";
 import { BoundedCapture, paginate } from "../src/mcp-bounds.ts";
 
 const root = resolve(import.meta.dirname, "..");
+const verboseFixture = mkdtempSync(join(tmpdir(), "pjan69-client-verbose-"));
+const verboseServer = join(root, "dist/pjan69-verbose-test.mjs");
+try {
+  const entry = join(verboseFixture, "entry.ts");
+  writeFileSync(entry, `import { Command } from ${JSON.stringify(join(root, "src/commands/Command.ts"))};
+import { recipeRegistry } from ${JSON.stringify(join(root, "src/recipes/catalog.ts"))};
+class Loud extends Command {
+  async invoke() {
+    const kind = process.env.PJAN69_LOUD_KIND;
+    const message = (kind === "nul" ? "\\0" : kind === "unicode" ? "😀" : "x").repeat(Number(process.env.PJAN69_LOUD_LENGTH));
+    return { success: process.env.PJAN69_LOUD_FAIL !== "1", message };
+  }
+}
+recipeRegistry.get("node")!.addIngredient(Loud);
+await import(${JSON.stringify(join(root, "src/mcp-server.ts"))});
+`);
+  buildSync({ entryPoints: [entry], outfile: verboseServer, bundle: true, packages: "external", platform: "node", format: "esm" });
+} catch (err) { rmSync(verboseFixture, { recursive: true, force: true }); throw err; }
 const fixtureRoot = mkdtempSync(join(tmpdir(), "pjan69-verbose-fixture-"));
 try {
   const source = join(fixtureRoot, "verbose-entry.ts");
@@ -129,8 +147,27 @@ try {
   writeFileSync(emptyRegistry, YAML.stringify({ schema_version: 1, projects: {} }));
   const empty = (await call(name, { registryPath: emptyRegistry })).structuredContent;
   assert.deepEqual(empty.projects, {});
+  assert.deepEqual(empty.slugs, []);
   assert.deepEqual(empty.page, { limit: 100, truncated: false, omittedCount: 0 });
   assert.equal(validate.get(name)({ ...empty, page: {} }), false, "metadata is required by the advertised schema");
+  assert.equal(validate.get(name)({ ...empty, slugs: undefined }), false, "ordered slugs are required by the advertised schema");
+  const mixedSlugs = ["2", "10", "1a", "01", "z", "0", "11"];
+  writeFileSync(registryPath, YAML.stringify({ schema_version: 1, projects: Object.fromEntries(mixedSlugs.map((slug) => [slug, record(slug)])) }));
+  const orderedSlugs = [...mixedSlugs].sort();
+  for (const limit of [1, 2, 500]) {
+    const seen = [];
+    let next;
+    do {
+      const page = (await call(name, { registryPath, limit, ...(next ? { cursor: next } : {}) })).structuredContent;
+      assert.deepEqual([...page.slugs].sort(), [...page.slugs]);
+      assert.deepEqual(new Set(page.slugs), new Set(Object.keys(page.projects)));
+      for (const slug of page.slugs) assert.equal(page.projects[slug].slug, slug);
+      seen.push(...page.slugs);
+      next = page.page.nextCursor;
+    } while (next);
+    assert.deepEqual(seen, orderedSlugs, `limit=${limit} must preserve code-point traversal`);
+  }
+  writeFileSync(registryPath, YAML.stringify({ schema_version: 1, projects: records }));
   const first = (await call(name, { registryPath })).structuredContent;
   assert.equal(Object.keys(first.projects).length, 100);
   assert.equal(first.page.omittedCount, 410);
@@ -238,8 +275,71 @@ try {
       assert.ok(payload.capture[field].retainedBytes <= 64 * 1024);
     }
   }
+  const longTarget = join(temp, ...Array.from({ length: 16 }, (_, i) => `${String(i).padStart(2, "0")}${"x".repeat(243)}`));
+  mkdirSync(longTarget, { recursive: true });
+  const escapedTarget = join(temp, ...Array.from({ length: 15 }, (_, i) => `${String(i).padStart(2, "0")}${"\n".repeat(110)}`));
+  mkdirSync(escapedTarget, { recursive: true });
+  assert.ok(Buffer.byteLength(JSON.stringify(escapedTarget)) > Buffer.byteLength(escapedTarget));
+  assert.ok(Buffer.byteLength(longTarget) > 3900);
+  const nearCapTarget = join(temp, "near-cap");
+  mkdirSync(nearCapTarget);
+  for (const [kind, length, destination, apply, fail] of [
+    ["ascii", 65451, nearCapTarget, false, false],
+    ["ascii", 65452, nearCapTarget, true, false],
+    ["ascii", 65536, nearCapTarget, false, true],
+    ["unicode", 20000, nearCapTarget, false, true],
+    ["nul", 65536, longTarget, false, false],
+    ["nul", 65536, longTarget, true, false],
+    ["nul", 65536, escapedTarget, false, true],
+    ["nul", 65536, escapedTarget, true, true],
+  ]) {
+    const verboseClient = new Client({ name: "pjan69-verbose-client", version: "1" });
+    const verboseTransport = new StdioClientTransport({ command: "node", args: [verboseServer], cwd: root, env: hermeticEnv({
+      PJAN69_LOUD_KIND: kind, PJAN69_LOUD_LENGTH: String(length), PJAN69_LOUD_FAIL: fail ? "1" : "0",
+    }) });
+    await verboseClient.connect(verboseTransport);
+    try {
+      const response = await verboseClient.callTool({ name: recipeName, arguments: { recipe: "node", targetDir: destination, apply } });
+      assert.equal(response.isError === true, fail, `${kind}/${length}/${apply}: ${response.content[0]?.text?.slice(0, 100)}`);
+      const payload = response.structuredContent;
+      assert.ok(payload && validate.get(recipeName)(payload), `${kind}/${length}/${apply}: ${ajv.errorsText(validate.get(recipeName).errors)}`);
+      assert.equal(payload.success, !fail);
+      assert.equal(payload.apply, apply);
+      assert.equal(payload.targetDir, destination);
+      assert.ok(Buffer.byteLength(JSON.stringify(payload)) <= 256 * 1024);
+      assert.ok(Buffer.byteLength(response.content[0].text) <= 256 * 1024);
+      for (const field of ["logs", "errors"]) {
+        assert.equal(payload.capture[field].retainedBytes, Buffer.byteLength(payload[field].join("")));
+        assert.ok(payload.capture[field].retainedBytes <= 64 * 1024);
+      }
+      if (kind === "nul") assert.ok(payload.capture.logs.omittedCount + payload.capture.errors.omittedCount > 0, `${kind}/${length}/${apply}/${fail} retained all output`);
+      if (apply && !fail) assert.ok(existsSync(join(destination, "package.json")));
+    } finally { await verboseClient.close(); }
+  }
+  const errorCases = [
+    ["pjangler_describe_recipe", { recipe: "😀".repeat(80000) }],
+    ["pjangler_audit_project", { targetDir: "/" + "é".repeat(150000) }],
+    ["pjangler_migrate_project", { targetDir: "/" + "é".repeat(150000), all: true }],
+    ["pjangler_bootstrap_33god_project", { projectName: "x", parentDir: "/" + "é".repeat(150000) }],
+    ["pjangler_project_init", { name: "x", targetDir: "/" + "é".repeat(150000) }],
+    ["pjangler_info", { targetDir: "/" + "é".repeat(150000) }],
+    ["pjangler_project_list", { registryPath: emptyRegistry, cursor: "garbage" }],
+    ["pjangler_project_show", { slug: "x".repeat(300000), registryPath: emptyRegistry }],
+    ["pjangler_describe_project", { targetDir: "/" + "é".repeat(150000) }],
+    ["pjangler_run_recipe", { recipe: "node", targetDir: "/" + "é".repeat(150000) }],
+  ];
+  for (const [tool, args] of errorCases) {
+    const response = await call(tool, args, true);
+    const text = response.content[0].text;
+    assert.ok(Buffer.byteLength(text) <= 256 * 1024, `${tool} emitted ${Buffer.byteLength(text)} error bytes`);
+    assert.ok(text.length > 0);
+    if (["pjangler_describe_recipe", "pjangler_audit_project", "pjangler_migrate_project", "pjangler_bootstrap_33god_project", "pjangler_project_show", "pjangler_describe_project", "pjangler_run_recipe"].includes(tool)) assert.match(text, /truncated to MCP 256 KiB/, tool);
+    assert.ok(!text.includes("\ufffd"), `${tool} split a multibyte character`);
+  }
   console.log("PJAN-69 real MCP pagination and capture regressions passed");
 } finally {
   await client.close();
   rmSync(temp, { recursive: true, force: true });
+  rmSync(verboseFixture, { recursive: true, force: true });
+  rmSync(verboseServer, { force: true });
 }
