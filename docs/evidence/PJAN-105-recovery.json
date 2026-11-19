@@ -1,0 +1,316 @@
+{
+  "ticket": "PJAN-105",
+  "timestamp_utc": "2026-11-19T10:25:28.727118+00:00",
+  "status": "Both exact cleanup commits remotely preserved on archive branches; full normal hook gates remain non-green. Not full acceptance.",
+  "recovery": [
+    {
+      "key": "standalone",
+      "commit": "fbbd28351599300f1df61995b1488fb12d7f4357",
+      "archive_branch": "PJAN-105-recover-standalone",
+      "archive_url": "https://github.com/delorenj/skillex/tree/PJAN-105-recover-standalone",
+      "clone": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-standalone",
+      "initial_linked_worktree": "/home/delorenj/code/skillex/.worktrees/PJAN-105-recover-standalone",
+      "locked_setup": "npm ci && uv sync --locked; both exit 0; normal lefthook install; git submodule update --init all-skills exit 0 at exact gitlink",
+      "submodule_setup_log": "Submodule 'all-skills' (https://github.com/delorenj/skills.git) registered for path 'all-skills'\nCloning into '/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-standalone/all-skills'...\nSubmodule path 'all-skills': checked out 'f706512212deba7ad65da2592d9484a12154072b'\n",
+      "pre_submodule_gate_log": {
+        "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-standalone-full-gate.log",
+        "sha256": "908372f6f167770eb10234f8f2936e66021c5236ab05233cfab42d868b6cd297",
+        "bytes": 202466
+      },
+      "setup_logs": [
+        {
+          "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-standalone-setup.log",
+          "sha256": "8ae7937d8c9675c20e6e7d0e64f6b2e8c9516e6a207d34f6cecc0634d663069a",
+          "bytes": 1672
+        },
+        {
+          "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-standalone-clone-setup.log",
+          "sha256": "b27aba0b4ad1f0d7690398f5be525fc50668d3596e2d0cac7bb379887884a647",
+          "bytes": 1107
+        }
+      ],
+      "trust_note": "Standalone clones required scoped mise trust mise.toml after reading its config; no trust-all or enter-hook task was executed.",
+      "normal_push": {
+        "command": "git push --set-upstream origin HEAD:refs/heads/PJAN-105-recover-standalone",
+        "rc": 0,
+        "log": "\u001b[38;2;56;56;56m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[m\n\u001b[38;2;56;56;56m\u2502\u001b[m \ud83e\udd4a lefthook  v2.2.1   hook:  \u001b[1mpre-push\u001b[m \u001b[38;2;56;56;56m\u2502\u001b[m\n\u001b[38;2;56;56;56m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[m\n\u2502  serialized-checks (skip) no matching push files\n\u001b[38;2;56;56;56m  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[m\nsummary: (done in 1.74 seconds)\nremote: \nremote: Create a pull request for 'PJAN-105-recover-standalone' on GitHub by visiting:        \nremote:      https://github.com/delorenj/skillex/pull/new/PJAN-105-recover-standalone        \nremote: \nTo github.com:delorenj/skillex.git\n * [new branch]      HEAD -> PJAN-105-recover-standalone\nbranch 'PJAN-105-recover-standalone' set up to track 'origin/PJAN-105-recover-standalone'.\n",
+        "qualification": "Normal installed pre-push hook ran, but Lefthook skipped every job: no matching push files. Not a passing test gate."
+      },
+      "full_normal_gate": {
+        "command": "lefthook run pre-push --force",
+        "rc": 1,
+        "note": "--force means run every configured job rather than skip; it is not git push --force or a hook bypass.",
+        "log": "PJAN-105-recovery-standalone-full-gate.txt",
+        "sha256": "7d3c7460ac4a0a07f686e7b878965247b8dddc165b9bfc27ad23e1d4e11f1ff3",
+        "summary": [
+          "\u2139 tests 1334",
+          "\u2139 pass 1333",
+          "\u2139 fail 0",
+          "\u2139 skipped 1",
+          "All checks passed!",
+          "Success: no issues found in 42 source files",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_install_links_the_tracked_units_and_enables_only_the_path",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_install_twice_changes_nothing",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_off_default_layout_gets_a_drop_in_and_loses_it_when_it_becomes_default",
+          "FAILED tests/unit/test_sync_aliases.py::test_sync_creates_every_missing_global_alias_relative",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_nested_alias_gets_the_right_depth",
+          "FAILED tests/unit/test_sync_aliases.py::test_sync_creates_the_project_aliases",
+          "FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_creates_the_parent_directory",
+          "FAILED tests/unit/test_sync_aliases.py::test_check_aliases_judges_by_resolved_path_not_string",
+          "FAILED tests/unit/test_sync_aliases.py::test_an_alias_pointing_elsewhere_is_an_error_and_is_not_changed",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_dangling_alias_is_reported_not_replaced",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_real_directory_at_an_alias_path_is_reported_and_survives",
+          "FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_moves_the_directory_aside_and_links",
+          "FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_never_deletes_a_second_time",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_regular_file_at_an_alias_path_is_reported_not_removed",
+          "FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_dry_run_creates_nothing_and_still_reports",
+          "15 failed, 962 passed, 5 skipped, 52 warnings in 18.43s",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_install_links_the_tracked_units_and_enables_only_the_path",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_install_twice_changes_nothing",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_off_default_layout_gets_a_drop_in_and_loses_it_when_it_becomes_default",
+          "FAILED tests/unit/test_sync_aliases.py::test_sync_creates_every_missing_global_alias_relative",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_nested_alias_gets_the_right_depth",
+          "FAILED tests/unit/test_sync_aliases.py::test_sync_creates_the_project_aliases",
+          "FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_creates_the_parent_directory",
+          "FAILED tests/unit/test_sync_aliases.py::test_check_aliases_judges_by_resolved_path_not_string",
+          "FAILED tests/unit/test_sync_aliases.py::test_an_alias_pointing_elsewhere_is_an_error_and_is_not_changed",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_dangling_alias_is_reported_not_replaced",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_real_directory_at_an_alias_path_is_reported_and_survives",
+          "FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_moves_the_directory_aside_and_links",
+          "FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_never_deletes_a_second_time",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_regular_file_at_an_alias_path_is_reported_not_removed",
+          "FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_dry_run_creates_nothing_and_still_reports",
+          "summary: (done in 65.21 seconds)"
+        ]
+      },
+      "head_after": {
+        "rc": 0,
+        "stdout": "fbbd28351599300f1df61995b1488fb12d7f4357",
+        "stderr": ""
+      },
+      "bare_after": {
+        "rc": 0,
+        "stdout": "false",
+        "stderr": ""
+      },
+      "status_after": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "original_branch_after": {
+        "rc": 0,
+        "stdout": "fbbd28351599300f1df61995b1488fb12d7f4357",
+        "stderr": ""
+      },
+      "remote_archive_after": {
+        "rc": 0,
+        "stdout": "fbbd28351599300f1df61995b1488fb12d7f4357\trefs/heads/PJAN-105-recover-standalone",
+        "stderr": ""
+      },
+      "original_remote_branch_after": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "original_branch_mutated_by_worker": false,
+      "only_scoped_deletions": {
+        "rc": 0,
+        "stdout": "D\tagents/hermes/pm/.scripts/75-scrum-master.sh\nD\tagents/hermes/pm/.scripts/90-chain-scrum-master.sh\nD\tagents/hermes/pm/.scripts/scrum-master/bin/emit-event.py\nD\tagents/hermes/pm/.scripts/scrum-master/bin/issue-autonomous-review.sh\nD\tagents/hermes/pm/.scripts/scrum-master/bin/issue-close-gate.sh\nD\tagents/hermes/pm/.scripts/scrum-master/continuous-ticket-sentinel.prompt.md\nD\tagents/hermes/pm/.scripts/scrum-master/continuous-ticket-sentinel.sh\nD\tagents/hermes/pm/.scripts/scrum-master/docs/autonomous-delegated-review.md\nD\tagents/hermes/pm/.scripts/scrum-master/docs/bloodbank-events.md\nD\tagents/hermes/pm/.scripts/scrum-master/docs/continuous-ticket-orchestration.md",
+        "stderr": ""
+      }
+    },
+    {
+      "key": "retire-mise",
+      "commit": "6404fef79e1608c23ac5cfd440d96a445d654726",
+      "archive_branch": "PJAN-105-recover-retire-mise",
+      "archive_url": "https://github.com/delorenj/skillex/tree/PJAN-105-recover-retire-mise",
+      "clone": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise",
+      "initial_linked_worktree": "/home/delorenj/code/skillex/.worktrees/PJAN-105-recover-retire-mise",
+      "locked_setup": "npm ci && uv sync --locked; both exit 0; normal lefthook install; git submodule update --init all-skills exit 0 at exact gitlink",
+      "submodule_setup_log": "Submodule 'all-skills' (https://github.com/delorenj/skills.git) registered for path 'all-skills'\nCloning into '/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/all-skills'...\nSubmodule path 'all-skills': checked out '89e046495fc2802905b77fc2ba5599136cc4db30'\n",
+      "pre_submodule_gate_log": {
+        "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise-full-gate.log",
+        "sha256": "be97056c667b752bfa2b836752d4f4ee9e5bfda1e1734b58b97d99c569b994e5",
+        "bytes": 132834
+      },
+      "setup_logs": [
+        {
+          "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise-setup.log",
+          "sha256": "ece5db4c9f4f3e8c3a382d97bc7c3a3cf0c6bffdd899b96d3318c9dcd43f9678",
+          "bytes": 1678
+        },
+        {
+          "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise-clone-setup.log",
+          "sha256": "8a3f7ea71b0d261d6c5d55c2006ce03536bdf2150361b96d7a052b5e805bd47b",
+          "bytes": 1109
+        }
+      ],
+      "trust_note": "Standalone clones required scoped mise trust mise.toml after reading its config; no trust-all or enter-hook task was executed.",
+      "normal_push": {
+        "command": "git push --set-upstream origin HEAD:refs/heads/PJAN-105-recover-retire-mise",
+        "rc": 0,
+        "log": "\u001b[38;2;56;56;56m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[m\n\u001b[38;2;56;56;56m\u2502\u001b[m \ud83e\udd4a lefthook  v2.2.1   hook:  \u001b[1mpre-push\u001b[m \u001b[38;2;56;56;56m\u2502\u001b[m\n\u001b[38;2;56;56;56m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[m\n\u2502  node-check (skip) no matching push files\n\u2502  lint (skip) no matching push files\n\u2502  typecheck (skip) no matching push files\n\u2502  test (skip) no matching push files\n\u001b[38;2;56;56;56m  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[m\nsummary: (done in 1.74 seconds)\nremote: \nremote: Create a pull request for 'PJAN-105-recover-retire-mise' on GitHub by visiting:        \nremote:      https://github.com/delorenj/skillex/pull/new/PJAN-105-recover-retire-mise        \nremote: \nTo github.com:delorenj/skillex.git\n * [new branch]      HEAD -> PJAN-105-recover-retire-mise\nbranch 'PJAN-105-recover-retire-mise' set up to track 'origin/PJAN-105-recover-retire-mise'.\n",
+        "qualification": "Normal installed pre-push hook ran, but Lefthook skipped every job: no matching push files. Not a passing test gate."
+      },
+      "full_normal_gate": {
+        "command": "lefthook run pre-push --force",
+        "rc": 1,
+        "note": "--force means run every configured job rather than skip; it is not git push --force or a hook bypass.",
+        "log": "PJAN-105-recovery-retire-mise-full-gate.txt",
+        "sha256": "bec7b64a6a8cff33d02c8dbae0ca65b970d7e17006e69e1fb1e2115214f3a953",
+        "summary": [
+          "\u2139 tests 925",
+          "\u2139 pass 923",
+          "\u2139 fail 1",
+          "\u2139 skipped 1",
+          "All checks passed!",
+          "Success: no issues found in 42 source files",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_install_links_the_tracked_units_and_enables_timer_and_path",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_install_twice_changes_nothing",
+          "FAILED tests/unit/test_install_hermes_resync.py::test_off_default_layout_gets_a_drop_in_and_loses_it_when_it_becomes_default",
+          "FAILED tests/unit/test_sync_aliases.py::test_sync_creates_every_missing_global_alias_relative",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_nested_alias_gets_the_right_depth",
+          "FAILED tests/unit/test_sync_aliases.py::test_sync_creates_the_project_aliases",
+          "FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_creates_the_parent_directory",
+          "FAILED tests/unit/test_sync_aliases.py::test_check_aliases_judges_by_resolved_path_not_string",
+          "FAILED tests/unit/test_sync_aliases.py::test_an_alias_pointing_elsewhere_is_an_error_and_is_not_changed",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_dangling_alias_is_reported_not_replaced",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_real_directory_at_an_alias_path_is_reported_and_survives",
+          "FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_moves_the_directory_aside_and_links",
+          "FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_never_deletes_a_second_time",
+          "FAILED tests/unit/test_sync_aliases.py::test_a_regular_file_at_an_alias_path_is_reported_not_removed",
+          "FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_dry_run_creates_nothing_and_still_reports",
+          "15 failed, 913 passed, 5 skipped, 52 warnings in 11.58s",
+          "summary: (done in 49.70 seconds)"
+        ]
+      },
+      "head_after": {
+        "rc": 0,
+        "stdout": "6404fef79e1608c23ac5cfd440d96a445d654726",
+        "stderr": ""
+      },
+      "bare_after": {
+        "rc": 0,
+        "stdout": "false",
+        "stderr": ""
+      },
+      "status_after": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "original_branch_after": {
+        "rc": 0,
+        "stdout": "d0c3406a6330c7a5a6463f7fa98c25628994058e",
+        "stderr": ""
+      },
+      "remote_archive_after": {
+        "rc": 0,
+        "stdout": "6404fef79e1608c23ac5cfd440d96a445d654726\trefs/heads/PJAN-105-recover-retire-mise",
+        "stderr": ""
+      },
+      "original_remote_branch_after": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "original_branch_mutated_by_worker": false,
+      "only_scoped_deletions": {
+        "rc": 0,
+        "stdout": "D\tagents/hermes/pm/.scripts/75-scrum-master.sh\nD\tagents/hermes/pm/.scripts/90-chain-scrum-master.sh\nD\tagents/hermes/pm/.scripts/scrum-master/bin/emit-event.py\nD\tagents/hermes/pm/.scripts/scrum-master/bin/issue-autonomous-review.sh\nD\tagents/hermes/pm/.scripts/scrum-master/bin/issue-close-gate.sh\nD\tagents/hermes/pm/.scripts/scrum-master/continuous-ticket-sentinel.prompt.md\nD\tagents/hermes/pm/.scripts/scrum-master/continuous-ticket-sentinel.sh\nD\tagents/hermes/pm/.scripts/scrum-master/docs/autonomous-delegated-review.md\nD\tagents/hermes/pm/.scripts/scrum-master/docs/bloodbank-events.md\nD\tagents/hermes/pm/.scripts/scrum-master/docs/continuous-ticket-orchestration.md",
+        "stderr": ""
+      }
+    }
+  ],
+  "prior_publications_remote_readback": [
+    {
+      "repository": "TonnyBox",
+      "refs": {
+        "rc": 0,
+        "stdout": "f2a5ea278513d8b15401f20ff5a190b31cd1280c\trefs/heads/main",
+        "stderr": ""
+      }
+    },
+    {
+      "repository": "sidepiece",
+      "refs": {
+        "rc": 0,
+        "stdout": "b38e1e7f17d4ffa5aab07883c3c1adddc09bf661\trefs/heads/main",
+        "stderr": ""
+      }
+    },
+    {
+      "repository": "KeepyMoney",
+      "refs": {
+        "rc": 0,
+        "stdout": "e92e7978971a1b18fd5cfffa705762f05be8b4e0\trefs/heads/main\ndd81efc2050262dc3e3222f908eb59871b403eed\trefs/heads/worktree-finance-contract",
+        "stderr": ""
+      }
+    },
+    {
+      "repository": "skillex",
+      "refs": {
+        "rc": 0,
+        "stdout": "a790f488f3c092ad6b8a93ae655bdc4c1426d259\trefs/heads/fix/skrill20-native-cutover\n3dd14bd17620cb5911846cc7a401432ed72fe3d7\trefs/heads/main\n37e48f78706991d2c7d780e3cd4cf2198bfe7d4b\trefs/heads/skillex-integration-pilot",
+        "stderr": ""
+      }
+    },
+    {
+      "repository": "holocene",
+      "refs": {
+        "rc": 0,
+        "stdout": "c6f5ac176e834a944ee01bbf8b3312863fcd5ec0\trefs/heads/main",
+        "stderr": ""
+      }
+    },
+    {
+      "repository": "voxxy",
+      "refs": {
+        "rc": 0,
+        "stdout": "21c6b3cc0695f3a87dab555e8eec8d54ffb0d1be\trefs/heads/feat/voxxy-1-telegram-clone\nd2acbee8c4f5902c2d5f74d80b8a12726a1efb4c\trefs/heads/main",
+        "stderr": ""
+      }
+    },
+    {
+      "repository": "gruvato",
+      "refs": {
+        "rc": 0,
+        "stdout": "116d438818513dcd131ee3358a874c4e8c3a2574\trefs/heads/gruv-189-copy-gate\n1a06891d2eafa1505f40e7af2a2bb1faa488b388\trefs/heads/main",
+        "stderr": ""
+      }
+    }
+  ],
+  "skillex_shared_bare_after": {
+    "rc": 0,
+    "stdout": "true",
+    "stderr": ""
+  },
+  "retire_owner_descendant_contains_cleanup": {
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "unpushed_before_cleanup": {
+    "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-unpushed-before.log",
+    "sha256": "07290c242f060b45d026d9396898ad1bcfe0d44a0c24e8ff9de3cf4c9628c926",
+    "bytes": 2319
+  },
+  "unpushed_after_cleanup": {
+    "path": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-unpushed-after.log",
+    "sha256": "98bbf22389afa01d4eac8547d22237dbec2563793cbd6aed1b652d988df1d4c9",
+    "bytes": 2162
+  },
+  "unpushed_relevant_remaining": [
+    "33GOD-35-mcp-standalone: no upstream, but cleanup object now remote on archive",
+    "skillex-retire-mise: 21 commits ahead of old upstream; cleanup ancestor now remote on archive; concurrent owner commits not published by this worker"
+  ],
+  "safety": [
+    "No original branch reset/switch/stash/force push",
+    "No bare config change",
+    "No unrelated application/test/source edit",
+    "No board edit",
+    "Exact cleanup objects were archived unchanged"
+  ],
+  "owner_next_step": "Skillex owner: in preserved isolated clones, resolve existing alias/configuration and resync-layout test failures (plus retire-mise Node resolution global-scope test), rerun lefthook run pre-push --force, then reconcile original branches without overwriting d0c3406a6330 or later work. Locked dependencies and exact all-skills gitlinks are already installed."
+}

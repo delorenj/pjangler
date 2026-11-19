@@ -1,0 +1,1506 @@
+[38;2;56;56;56m╭───────────────────────────────────────╮[m
+[38;2;56;56;56m│[m 🥊 lefthook  v2.2.1   hook:  [1mpre-push[m [38;2;56;56;56m│[m
+[38;2;56;56;56m╰───────────────────────────────────────╯[m
+┃  node-check ❯ 
+
+> @delorenj/skillex@0.2.0 check
+> npm run lint && npm run typecheck && npm test
+
+
+> @delorenj/skillex@0.2.0 lint
+> biome check src scripts tests/node schemas skills.schema.json package.json tsconfig.json tsconfig.build.json biome.json
+
+tests/node/bmad-freeze.test.mjs:44:9 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━━━━━━━━━
+
+  ! This variable manifest is unused.
+  
+    42 │   ];
+    43 │   writeFileSync(join(config, "skill-manifest.csv"), `${csvRows.join("\n")}\n`);
+  > 44 │   const manifest = {
+       │         ^^^^^^^^
+    45 │     installation: {
+    46 │       version,
+  
+  i Unused variables are often the result of typos, incomplete refactors, or other sources of bugs.
+  
+  i Unsafe fix: If this is intentional, prepend manifest with an underscore.
+  
+      42   42 │     ];
+      43   43 │     writeFileSync(join(config, "skill-manifest.csv"), `${csvRows.join("\n")}\n`);
+      44      │ - ··const·manifest·=·{
+           44 │ + ··const·_manifest·=·{
+      45   45 │       installation: {
+      46   46 │         version,
+  
+
+tests/node/bmad-freeze.test.mjs:238:45 lint/correctness/noUnusedFunctionParameters  FIXABLE  ━━━━━━━━━━
+
+  ! This parameter path is unused.
+  
+    236 │   const registry = registryFixture(t);
+    237 │   ok(await freezeBmadPack(source.root, registry.options));
+  > 238 │   const filesOnly = (rows) => rows.filter(([path, , , kind]) => kind !== "directory");
+        │                                             ^^^^
+    239 │   const before = filesOnly(snapshot(registry.root));
+    240 │   const again = ok(await freezeBmadPack(source.root, registry.options));
+  
+  i Unused parameters might be the result of an incomplete refactoring.
+  
+  i Unsafe fix: If this is intentional, prepend path with an underscore.
+  
+     236  236 │     const registry = registryFixture(t);
+     237  237 │     ok(await freezeBmadPack(source.root, registry.options));
+     238      │ - ··const·filesOnly·=·(rows)·=>·rows.filter(([path,·,·,·kind])·=>·kind·!==·"directory");
+          238 │ + ··const·filesOnly·=·(rows)·=>·rows.filter(([_path,·,·,·kind])·=>·kind·!==·"directory");
+     239  239 │     const before = filesOnly(snapshot(registry.root));
+     240  240 │     const again = ok(await freezeBmadPack(source.root, registry.options));
+  
+
+Checked 120 files in 90ms. No fixes applied.
+Found 2 warnings.
+
+> @delorenj/skillex@0.2.0 typecheck
+> tsc --noEmit
+
+
+> @delorenj/skillex@0.2.0 test
+> npm run build && node --test tests/node/*.test.mjs
+
+
+> @delorenj/skillex@0.2.0 build
+> node scripts/build.mjs
+
+✔ first and repeated reads discover a stable path without creating state (9.5794ms)
+✔ location-only validation creates nothing and ignores unhealthy activation receipts (7.430521ms)
+✔ location-only validation still rejects source roots and symlinked state parents (4.597653ms)
+✔ writes return fresh complete snapshots, replace atomically, and retain mode 600 (84.520583ms)
+✔ an omitted write location reuses the snapshot's selected state home (29.395146ms)
+✔ receipt identity ignores pack target changes and canonicalizes the scope base (39.52359ms)
+✔ state selection honors explicit, environment, and injected-home precedence (4.437842ms)
+✔ invalid explicit or environment locations never fall through (2.092313ms)
+✔ a stale absence cannot overwrite a receipt created after its read (49.128767ms)
+✔ changed bytes in the same receipt inode refuse replacement (41.989897ms)
+✔ identical bytes in a replaced receipt inode do not retain authority (58.521977ms)
+✔ replaced receipt parents refuse even when document bytes still match (107.132609ms)
+✔ replaced scope bases and reconstructed snapshots require a fresh read (64.092383ms)
+✔ write options cannot redirect a previous snapshot into another state home (36.215818ms)
+✔ malformed, legacy, mismatched, and foreign envelopes refuse without rewriting (93.942045ms)
+✔ legacy Python projection receipts are neither read nor adopted (7.484373ms)
+✔ receipt symlinks and real-directory collisions are preserved (24.374226ms)
+✔ symlink state parents are rejected before missing descendants are created (6.748075ms)
+✔ a regular file in the parent chain is an unsafe path rather than absence (8.999667ms)
+✔ permission failures remain IO errors rather than missing state (45.235693ms)
+﹣ filesystem ownership is checked on receipts and managed directories (1.163271ms) # SKIP
+✔ Git directory ancestors forbid state even when target directories do not exist (8.903816ms)
+✔ Git file ancestors forbid state even when target directories do not exist (12.28639ms)
+✔ forbidden roots cover canonical aliases and nonexistent future roots (10.289838ms)
+✔ dangling forbidden-root aliases cannot become allowed through state creation (4.753907ms)
+✔ new repository markers or stricter forbidden roots are rechecked before writes (39.614521ms)
+✔ unserializable payloads cannot create or alter a receipt (12.46714ms)
+✔ readers in another Node process observe only complete atomically published documents (708.651926ms)
+✔ freezes rendered skills into canonical all-skills and a reference-only versioned pack (266.793059ms)
+✔ re-freezing the same version is idempotent and changes nothing (253.06857ms)
+✔ dry-run plans without writing (8.568023ms)
+✔ refuses to overwrite foreign canonical content without provenance (10.576028ms)
+✔ refuses a source version switch without --replace and refuses --replace over edited bytes (114.884034ms)
+✔ bmad status traces frozen skills and reports drift and undeclared pack children (113.554208ms)
+✔ bmad explain reports provenance, baseline agreement, and references (33.688135ms)
+✔ refuses unsafe version overrides and missing source layouts (3.818575ms)
+✔ finding 1: --replace performs a real version upgrade with changed source bytes on a pristine canonical (112.25531ms)
+✔ finding 1b: --replace refuses an edited (locally modified) canonical even at a new version (57.816367ms)
+✔ finding 2: pack collision is detected before any registry write; dry-run reports the same refusal (158.946064ms)
+✔ finding 3: --replace retires the old version pack out of discoverable packs and old baselines no longer verify green (254.088331ms)
+✔ finding 4: --no-commands is honored on fresh freeze and preserves existing commands on repeat (213.830828ms)
+✔ finding 5: replace never destroys pre-existing swap/backup artifacts (unique owned temps) (90.143948ms)
+✔ finding 6: status picks the semantically highest pack version, not lexical (7.750573ms)
+✔ finding 7: status traced is grounded in composition membership; orphaned canonicals are excluded (46.187877ms)
+✔ QF1: --version override keeps installation provenance; pack verifies green and status succeeds (191.981099ms)
+✔ QF2: stamped crash-recovery backup does not brick bmad status; real drift still reported (145.596823ms)
+✔ QF3: --no-commands repeat preserves prior source.commands provenance and manifest bytes (196.028165ms)
+✔ QF3b: --no-commands repeat with a corrupted/missing command file falls back to an empty inventory (135.142645ms)
+✔ D1: CLI --no-commands is honored on fresh freeze and preserves bytes on repeat (687.422797ms)
+✔ D2: CLI status stays green after --replace; archived packs are undiscoverable; malformed non-hidden packs still error (935.263005ms)
+✔ QF4: CLI regression — fresh freeze with commands, --no-commands repeat keeps exact pack.toml bytes and command files; fresh --no-commands is zero (645.23654ms)
+✔ QF5: CLI regression — --version override pack verifies green via the real CLI and bmad status stays green (746.027679ms)
+✔ QF6: fresh freeze refuses to clobber a physically pre-existing FOREIGN pack.toml (with and without commands; dry-run parity; --replace cannot bypass) (1154.929268ms)
+✔ QF6b: malformed prior pack.toml refuses (both modes), never a silent rewrite; full tree digest unchanged under dry-run and apply (736.498895ms)
+✔ QF6c: owned pack.toml edited after freeze (identity/type/version/source_root) refuses instead of discarding authored edits (628.452755ms)
+✔ QF6e: authored edit INSIDE the command inventory region always refuses — annotation preserved even when the disk diverges (missing file or --replace cannot sweep it) (1762.778723ms)
+✔ QF6f: foreign non-command file in the pack commands tree is never counted as command reality, never adopted/deleted, and never licenses sweeping authored inventory edits (1634.277252ms)
+✔ QF6g: client-authored field nested inside a [[source.commands]] entry refuses (missing BMAD command file does not license the sweep) (813.458141ms)
+✔ QF6d: owned unmodified same-source repeat stays idempotent (byte-identical manifest) and normal upgrade/custom-version flows still work (681.555211ms)
+✔ QF7: bmad status/explain survive non-directory files inside pack families; malformed real version directories still error (356.172728ms)
+▶ installed skill catalog CLI
+  ✔ loads all catalog APIs from the installed package with only Node on PATH (150.636568ms)
+  ✔ accepts global flags at the root and filters by description (259.961147ms)
+  ✔ accepts global flags at the family and filters by description (194.121041ms)
+  ✔ accepts global flags at the leaf and filters by description (202.175618ms)
+  ✔ lists canonical identities in deterministic order and shows metadata and references (650.101646ms)
+  ✔ returns an empty successful list when a query matches no skills (170.219636ms)
+  ✔ prints useful human list and show output without modifying the catalog (373.9003ms)
+  ✔ plans a scaffold without creating any catalog or activation files (169.338817ms)
+  ✔ creates a valid canonical scaffold and immediately shows it through the installed CLI (530.173839ms)
+  ✔ creates a minimal valid skill when no description flag is given (367.346051ms)
+  ✔ plans a complete import and preserves all source bytes and executable modes when applied (529.868614ms)
+  ✔ refuses an existing canonical name during create without changing either definition (303.029316ms)
+  ✔ refuses an existing canonical name during import without changing either definition (361.750757ms)
+  ✔ reports a missing skill through a refusal envelope and human stderr (450.602021ms)
+  ✔ refuses a missing import source without leaving a partial destination (180.024732ms)
+  ✔ returns E_SKILL_METADATA_INVALID for malformed YAML during list (162.46728ms)
+  ✔ returns E_SKILL_METADATA_INVALID for malformed YAML during show (134.39704ms)
+  ✔ returns E_SKILL_METADATA_INVALID for malformed YAML during import (134.682106ms)
+  ✔ keeps a usable mixed catalog partial even when the query filters out its valid skill (288.661734ms)
+  ✔ reports malformed provenance with a named configuration diagnostic (140.370715ms)
+  ✔ rejects invalid UTF-8 metadata instead of silently replacing source bytes (131.789827ms)
+  ✔ rejects unsafe create name "../escape" before writing (142.848624ms)
+  ✔ rejects unsafe create name "nested/name" before writing (154.082982ms)
+  ✔ rejects unsafe import name "../escape" before writing (204.227975ms)
+  ✔ rejects unsafe import name "nested/name" before writing (145.008914ms)
+  ✔ returns usage diagnostics for incomplete arguments ["skill","list","--query"] (190.174184ms)
+  ✔ returns usage diagnostics for incomplete arguments ["skill","import","/fixture/source"] (151.308795ms)
+✔ installed skill catalog CLI (9163.971961ms)
+✔ catalog create and import honor the same catalog writer lock (97.163093ms)
+✔ catalog writes refuse state inside source repositories and honor interruption before writes (13.666561ms)
+✔ create scaffolds a real canonical skill with valid quoted metadata and provenance (38.878004ms)
+✔ create supplies a useful default description and a complete immutable dry-run plan (43.64754ms)
+✔ invalid names and empty descriptions fail before creating anything (12.173828ms)
+✔ create and import preserve an existing destination directory (38.378142ms)
+✔ create and import preserve an existing destination file (29.658733ms)
+✔ create and import preserve an existing destination symlink (8.546644ms)
+✔ create and import preserve an existing destination broken-link (25.359552ms)
+✔ import preserves complete support bytes, modes, empty directories, and the source (32.294229ms)
+✔ import digest matches the Python wire contract including owner execute and nested provenance (30.293789ms)
+✔ digest path ordering matches Python for supplementary Unicode filenames (21.712781ms)
+✔ import excludes VCS and runtime content explicitly while preserving authored support assets (30.195795ms)
+✔ import dry-run validates the whole source and reports all planned writes without mutation (7.836405ms)
+✔ invalid SKILL.md prevents import even during dry-run (9.678506ms)
+✔ invalid .source.yaml prevents import even during dry-run (9.44147ms)
+✔ import requires a real source directory and a real SKILL.md (4.96753ms)
+✔ a portable internal link still cannot replace the owned SKILL.md definition (4.91987ms)
+✔ recursive source/destination topology is refused before any destination appears (7.40379ms)
+✔ an unsafe external support link refuses the whole import before writes (6.836181ms)
+✔ an unsafe dangling support link refuses the whole import before writes (11.264274ms)
+✔ an unsafe cycle support link refuses the whole import before writes (7.099737ms)
+✔ an unsafe directory-cycle support link refuses the whole import before writes (11.152153ms)
+✔ an unsafe excluded support link refuses the whole import before writes (4.500379ms)
+✔ safe internal file and directory links are relocated portably without copying targets twice (21.733249ms)
+✔ mutually linked support directories are a cycle even though each link resolves (3.475499ms)
+✔ concurrent creators refuse the losing claim and preserve the winner (47.688775ms)
+✔ concurrent imports retain one complete source and leave both originals untouched (64.299513ms)
+✔ lists canonical names in stable order and searches names or descriptions (128.412654ms)
+✔ shows the canonical directory identity with unchanged provenance fields (26.688316ms)
+✔ allows Markdown without frontmatter and empty frontmatter (35.980084ms)
+✔ reads UTF-8 BOM and CRLF frontmatter without changing source bytes (14.858426ms)
+✔ maps canonical set links and each pack version's declared membership (22.459889ms)
+✔ continues past unrelated legacy packs while retaining valid references (34.973056ms)
+✔ reports missing or mismatched set members without fabricating references (8.030811ms)
+✔ lists valid entries while reporting malformed metadata and linked catalog entries (12.638624ms)
+✔ does not mistake catalog metadata files or hidden directories for skills (5.129986ms)
+✔ reports a wholly malformed catalog as a configuration failure (6.609403ms)
+✔ reports a catalog containing only linked definitions as an invariant failure (8.223044ms)
+✔ keeps partial inspection semantics when the query filters out valid definitions (9.478069ms)
+✔ reports unterminated frontmatter as malformed metadata (26.729934ms)
+✔ reports malformed YAML as malformed metadata (13.083612ms)
+✔ reports duplicate YAML keys as malformed metadata (5.372633ms)
+✔ reports scalar YAML as malformed metadata (3.317441ms)
+✔ reports sequence YAML as malformed metadata (19.545478ms)
+✔ reports nonstring name as malformed metadata (10.976692ms)
+✔ reports nonstring description as malformed metadata (4.232875ms)
+✔ reports nonfinite number as malformed metadata (4.323245ms)
+✔ reports recursive alias as malformed metadata (11.673626ms)
+✔ reports unresolved alias as malformed metadata (12.42954ms)
+✔ reports unsupported tag as malformed metadata (6.061691ms)
+✔ reports malformed provenance "origin: [wrong]\n" (12.265671ms)
+✔ reports malformed provenance "modified_locally: 1\n" (8.757932ms)
+✔ reports malformed provenance "origin: {broken\n" (10.740036ms)
+✔ reports malformed provenance "- wrong\n" (18.24682ms)
+✔ rejects invalid UTF-8 in SKILL.md (9.94593ms)
+✔ rejects linked SKILL.md (5.267055ms)
+✔ rejects invalid UTF-8 in .source.yaml (4.732457ms)
+✔ rejects linked .source.yaml (9.337794ms)
+✔ rejects missing or unsafe selected names with actionable diagnostics (6.726724ms)
+▶ installed set and pack CLI
+  ✔ exports the composition APIs from the installed package with only Node on PATH (158.750867ms)
+  ✔ accepts global options at the root without creating state for reads (273.170746ms)
+  ✔ accepts global options at the family without creating state for reads (192.072782ms)
+  ✔ accepts global options at the leaf without creating state for reads (167.586395ms)
+  ✔ lists empty set and pack catalogs without mutation (426.987236ms)
+  ✔ returns usable set entries with partial exit 4 when another composition is invalid (145.91433ms)
+  ✔ returns usable pack entries with partial exit 4 when another composition is invalid (149.912043ms)
+  ✔ previews set creation without creating state, then applies the same complete plan (455.799153ms)
+  ✔ previews pack creation without creating state, then applies the same complete plan (697.971964ms)
+  ✔ maintains set canonical links, preserves support assets, and makes repeated edits no-ops (1184.893998ms)
+  ✔ maintains pack canonical links, preserves support assets, and makes repeated edits no-ops (1484.370048ms)
+  ✔ selects the latest semantic pack version while preserving explicit versions (419.170267ms)
+  ✔ prints usable human set list and show output (274.75445ms)
+  ✔ prints usable human pack list and show output (320.938009ms)
+  ✔ returns lock-busy exit 5 from the installed CLI while a public lock is held (2477.018047ms)
+  ✔ refuses all set add changes when any requested canonical name is missing (266.773843ms)
+  ✔ refuses all set remove changes when any requested canonical name is missing (236.314051ms)
+  ✔ refuses all pack add changes when any requested canonical name is missing (215.257767ms)
+  ✔ refuses all pack remove changes when any requested canonical name is missing (199.090154ms)
+  ✔ refuses a missing set reference before creating any catalog or state paths (294.466973ms)
+  ✔ refuses a missing pack reference before creating any catalog or state paths (335.226491ms)
+  ✔ refuses a noncanonical destination collision during set creation (102.902047ms)
+  ✔ refuses a noncanonical destination collision during pack creation (105.697143ms)
+  ✔ refuses set edits with dangling or conflicting member links (216.517571ms)
+  ✔ refuses pack edits with dangling or conflicting member links (219.263254ms)
+  ✔ rejects unsafe set names as configuration errors (105.888424ms)
+  ✔ rejects unsafe pack names as configuration errors (106.085735ms)
+  ✔ verifies pack missing canonical member as drift without changing files or state (105.374926ms)
+  ✔ verifies pack missing member link as drift without changing files or state (102.414919ms)
+  ✔ verifies pack extra link as drift without changing files or state (96.692898ms)
+  ✔ verifies pack wrong link as drift without changing files or state (104.174575ms)
+  ✔ verifies pack embedded definition as drift without changing files or state (97.532911ms)
+  ✔ reports invalid pack metadata with a configuration diagnostic (98.71609ms)
+  ✔ requires an explicit pack composition version instead of consuming the root version flag (82.472794ms)
+  ✔ accepts an equals-form composition version for pack creation (293.329649ms)
+  ✔ prints only the package version for ["--version","pack","create","writers","--version","7.4.2"] (92.015575ms)
+  ✔ prints only the package version for ["pack","create","writers","--version","7.4.2","-V"] (91.65242ms)
+  ✔ prints only the package version for ["pack","create","writers","-V"] (91.6047ms)
+  ✔ does not expose the legacy pack render command (82.939795ms)
+  ✔ does not expose the legacy pack seal command (90.633381ms)
+  ✔ does not expose the legacy pack flatten command (91.125849ms)
+✔ installed set and pack CLI (14921.777381ms)
+▶ installed diagnostics CLI
+  ✔ exports installed diagnostics APIs and runs without Python or uv (204.091167ms)
+  ✔ reports healthy global/project roots, ownership, counts, and every supported alias (2640.481003ms)
+  ✔ reports exclusive pack mode and pack-owned membership through a whole-root alias (4874.175893ms)
+  ✔ reports missing activation as drift while sources-only doctor ignores activation and runtime (726.286513ms)
+  ✔ distinguishes missing owned skills from dangling and incorrectly redirected aliases (1334.014319ms)
+  ✔ reports foreign canonical links and BMAD content without adopting ownership or touching Hermes overlays (948.245968ms)
+  ✔ retains useful actual observations for required and optional missing selections (955.84748ms)
+  ✔ explains inherited, set, and direct origins as well as local exclusion (865.563147ms)
+  ✔ explains dormant ordinary selections without treating them as failures under an active pack (760.086399ms)
+  ✔ distinguishes a known unselected name from a missing canonical name (952.00488ms)
+  ✔ keeps noncanonical catalog aliases and copied set/pack definitions as source failures (150.662346ms)
+  ✔ reports malformed provenance as a configuration error (190.420899ms)
+  ✔ detects changed imported content from its recorded digest without refreshing provenance (495.860767ms)
+  ✔ separates configured writer references with source lines from observed running writers (1233.471266ms)
+  ✔ does not treat legacy receipts or quoted/read-only process text as a running writer (737.590392ms)
+  ✔ reports unavailable process observation as incomplete while sources-only remains independent (907.088529ms)
+  ✔ keeps malformed scope and explicit-root errors visible without inventing source fallback (1067.887354ms)
+  ✔ provides human reports and JSON help while refusing write-style diagnostic flags (1656.868307ms)
+✔ installed diagnostics CLI (22882.115494ms)
+✔ reports missing desired activation as drift without creating roots, aliases, or state (936.159173ms)
+✔ reports unowned canonical links and BMAD entries as foreign without adopting or treating them as drift (28.923928ms)
+✔ keeps actual ownership, aliases, and receipt observations when required resolution fails (707.790022ms)
+✔ collects identifiable roots for malformed and absent project manifests while retaining configuration exits (23.051644ms)
+✔ detects exact ownership replacement and still reports the wrong alias target (1046.224808ms)
+✔ counts pack members separately and rejects aliases that bypass the stable activation root (369.342803ms)
+✔ traces aliases through parent links while preserving the planner's redirected-parent refusal (641.785588ms)
+✔ explains canonical contributions, inherited origins, set exclusions, and known unselected names (873.861523ms)
+✔ explains a local exclusion without editing inherited declarations (713.522263ms)
+✔ explains dormant direct, set, and global selections under an exclusive pack (1098.358408ms)
+✔ reports named CLI reachability separately from a reachable scope root (749.484091ms)
+✔ never chooses a canonical winner after inherited and local sources diverge (7.146625ms)
+✔ uses the resolved inherited canonical target instead of an unselected local catalog name (548.473469ms)
+✔ reports a published pending journal without recovering or misclassifying its exact new link (894.284153ms)
+✔ reports invalid receipts alongside actual activation instead of adopting ownership (597.339292ms)
+✔ retains invariant exits through file and cyclic roots and supports write-free cancellation (12.985157ms)
+✔ retains an independent root-file invariant before an optional-resolution partial exit (4.659129ms)
+✔ nested cwd selects the nearest project and global write scopes (57.855481ms)
+✔ project-only writes retain the global inheritance source (9.52665ms)
+✔ global-only discovery ignores project paths and nested manifest errors (9.323287ms)
+✔ independent project defers dormant global directory validation (13.392344ms)
+✔ independent project defers dormant global broken-link validation (32.116493ms)
+✔ independent project defers dormant global non-directory-parent validation (13.242752ms)
+✔ pack project defers dormant global directory validation (17.732451ms)
+✔ pack project defers dormant global broken-link validation (9.176791ms)
+✔ pack project defers dormant global non-directory-parent validation (6.345997ms)
+✔ HOME's manifest is never adopted as a project (3.515895ms)
+✔ a nested .git directory prevents adopting the outer manifest (8.214357ms)
+✔ a nested .git file prevents adopting the outer manifest (2.881729ms)
+✔ explicit project selects its own root instead of searching ancestors (4.115865ms)
+✔ explicit project errors distinguish a missing directory and manifest (3.82142ms)
+✔ explicit HOME and filesystem-root project targets are refused (2.260349ms)
+✔ project requires a project manifest (1.515906ms)
+✔ both requires a project manifest (1.578875ms)
+✔ scope discovery reports invalid manifest paths instead of walking past them (1.601487ms)
+✔ scope discovery canonicalizes an explicit symlinked project root (1.548708ms)
+✔ explicit registry root outranks environment, URL cache, and checkout (1.143655ms)
+✔ an environment registry root is exclusive and accepts relative paths (1.09339ms)
+✔ explicit and environment overrides never fall through when empty or incomplete (1.624861ms)
+✔ registry root supports home expansion and resolves root symlinks canonically (1.657152ms)
+✔ configured cache uses the legacy byte-compatible URL name and outranks cwd (11.854686ms)
+✔ missing configured cache falls through to a discovered enclosing checkout (19.942185ms)
+✔ installed checkout outranks the fallback checkout (40.48965ms)
+✔ an installed npm package without a catalog is skipped for the fallback checkout (29.019669ms)
+✔ no local catalog reports all searched candidates without creating a cache (37.330147ms)
+✔ an uninitialized all-skills submodule is refused with its repair, never selected (596.305976ms)
+✔ an uninitialized all-skills submodule holding only leftover ignored files is still refused (554.001815ms)
+✔ a declared all-skills without git metadata is refused only when it holds no definition (15.780394ms)
+✔ an empty all-skills that is not a submodule remains a valid empty catalog (2.517795ms)
+✔ all-skills must be a real directory rather than an activation-style symlink (6.981374ms)
+✔ broken symlinks and non-directory parents produce IO errors instead of fallback (6.924447ms)
+✔ successful discovery leaves every fixture file and link unchanged (7.043852ms)
+✔ sources-only is write-free and independent of missing scope, state, and process paths (25.060959ms)
+✔ source audit accepts absent frontmatter and ordinary support content (12.749723ms)
+✔ hidden and dormant composition copies are all reported (28.455045ms)
+✔ source audit aggregates catalog links, off-catalog references, and dangling references (15.67241ms)
+✔ a linked canonical SKILL.md is refused (12.503268ms)
+✔ sets accept canonical references and their own support assets (14.738971ms)
+✔ set member names cannot disguise a different canonical skill (28.775038ms)
+✔ all pack versions are audited, including an inactive older version (33.707501ms)
+✔ pack verification aggregates missing, extra, and wrong-target members (32.404286ms)
+✔ malformed and legacy pack manifests retain configuration failures (27.984538ms)
+✔ a pack directory without any manifest remains a failure (45.640525ms)
+✔ malformed provenance is a configuration failure (41.241527ms)
+✔ invalid SKILL.md frontmatter is a configuration failure (9.237094ms)
+✔ known provenance fields reject incorrect types (15.897585ms)
+✔ upstream provenance requires a source manifest without resolving an upstream checkout (20.111774ms)
+✔ upstream provenance requires a matching named source declaration (10.397551ms)
+✔ source declarations are parsed even without upstream skills (2.368172ms)
+✔ provenance cannot silently switch its declared upstream identity (4.067243ms)
+✔ imported bytes and modes verify, then byte edits report drift without writes (32.811042ms)
+✔ executable mode changes count as digest drift (27.409064ms)
+✔ legacy vendored digests include all regular files and ignore only root provenance (12.114867ms)
+✔ repository administration cannot be silently dropped from a vendored digest (20.957357ms)
+✔ unsupported digest formats are incomplete observations (7.380967ms)
+✔ safe imported symlinks verify their actual stored target bytes (48.501125ms)
+✔ full doctor retains source findings and actual status when resolution refuses (888.85279ms)
+✔ healthy full doctor does not mutate source, manifests, activation, or state (717.899811ms)
+✔ configured mise tasks and user services have exact file and line evidence (972.560651ms)
+✔ comments, descriptions, and echo commands do not configure a legacy writer (742.347786ms)
+✔ masked user services are inactive definitions while other device targets stay incomplete (845.461702ms)
+✔ project writer discovery includes ancestor hooks but not unrelated registry tasks (628.13165ms)
+✔ running writer evidence recognizes only actual interpreter, uv, or script entrypoints (713.905906ms)
+✔ arbitrary argv and read-only Python invocations do not prove a running writer (882.872672ms)
+✔ unavailable process observation is partial and cannot claim a clean writer check (522.743328ms)
+✔ malformed process output preserves already observed writers but remains incomplete (479.315031ms)
+✔ default process observation executes bounded ps with injected environment (716.097986ms)
+✔ missing ps is an unknown observation rather than an empty healthy table (852.061908ms)
+✔ malformed applicable writer configuration is an incomplete observation (331.248265ms)
+✔ an interrupted doctor returns a shaped incomplete result without observations or writes (1.936068ms)
+✔ sources-only validates the selected manifest while preserving topology findings (2.991237ms)
+✔ sources-only honors an explicit missing project selector (1.349112ms)
+✔ sources-only follows each selected manifest registry without reading activation state (5.267856ms)
+✔ array-shaped provenance origin is rejected instead of becoming empty metadata (1.944113ms)
+✔ unresolved configured shell wrappers retain candidate evidence without claiming an invocation (456.404874ms)
+✔ interpreter and uv help flags cannot masquerade as writer execution (332.224876ms)
+✔ retire-mise CLI previews, applies, converges, and rejects conflicting scope (2900.205624ms)
+✔ real Node processes serialize repeated critical sections without losing updates (2506.708149ms)
+✔ a timed-out contender never runs its callback and preserves the live owner (415.47273ms)
+✔ multiple real contenders safely reap one dead owner's unique claim (705.981324ms)
+✔ callback failure is rethrown and releases the claim for another process (289.284939ms)
+✔ distinct resources can be held by separate processes simultaneously (312.481135ms)
+✔ EPERM cannot be used as evidence that a live owner died (199.727756ms)
+✔ foreign-host claims remain busy even when their PID is dead locally (333.096117ms)
+✔ a malformed ticket gets an actionable refusal without deleting foreign state (311.055939ms)
+✔ a directory ticket gets an actionable refusal without deleting foreign state (278.528712ms)
+✔ a symlink ticket gets an actionable refusal without deleting foreign state (259.401592ms)
+✔ release refuses a replaced ticket and preserves its replacement (162.362522ms)
+✔ release preserves an unrelated file even when its name resembles preparation state (138.336202ms)
+✔ a dead chooser's incomplete unpublished ticket can be recovered (297.463919ms)
+✔ explicit state home outranks XDG and normal defaults stay outside the repository (24.224283ms)
+✔ invalid explicit state and timeout values never fall through or run the action (3.7468ms)
+✔ filesystem errors and symlinked state paths fail without invoking child callbacks (347.565099ms)
+▶ canonical manifest validation
+  ✔ normalizes an empty declaration without mutating it (27.150176ms)
+  ✔ preserves scope, offline registry identity, declaration order, and duplicate contributions (2.606601ms)
+  ✔ normalizes pack shorthands and object entries without discarding dormant selections (4.468019ms)
+  ✔ returns independent arrays and entries for consumers (2.596212ms)
+  ✔ rejects null root against the shipped schema (2.995965ms)
+  ✔ rejects array root against the shipped schema (1.924486ms)
+  ✔ rejects string root against the shipped schema (0.394704ms)
+  ✔ rejects unknown root field against the shipped schema (0.958817ms)
+  ✔ rejects nonboolean inheritance against the shipped schema (1.519523ms)
+  ✔ rejects unsupported scope against the shipped schema (0.230955ms)
+  ✔ rejects empty registry identity against the shipped schema (0.13264ms)
+  ✔ rejects scalar skill selection against the shipped schema (1.637175ms)
+  ✔ rejects numeric skill entry against the shipped schema (0.91284ms)
+  ✔ rejects empty skill object against the shipped schema (0.149222ms)
+  ✔ rejects uppercase canonical name against the shipped schema (1.768132ms)
+  ✔ rejects skill version shorthand against the shipped schema (0.603247ms)
+  ✔ rejects skill traversal against the shipped schema (0.097454ms)
+  ✔ rejects skill nested path against the shipped schema (0.057498ms)
+  ✔ rejects skill Windows path against the shipped schema (0.089569ms)
+  ✔ rejects hidden skill name against the shipped schema (1.416078ms)
+  ✔ rejects trailing skill separator against the shipped schema (0.064191ms)
+  ✔ rejects unknown skill field against the shipped schema (1.606687ms)
+  ✔ rejects set version shorthand against the shipped schema (0.132821ms)
+  ✔ rejects set traversal against the shipped schema (0.10634ms)
+  ✔ rejects nonboolean set optional against the shipped schema (0.092925ms)
+  ✔ rejects invalid set include against the shipped schema (0.117041ms)
+  ✔ rejects scalar set exclude against the shipped schema (0.099698ms)
+  ✔ rejects unknown set field against the shipped schema (0.086733ms)
+  ✔ rejects multiple packs against the shipped schema (4.956829ms)
+  ✔ rejects empty pack version against the shipped schema (0.292471ms)
+  ✔ rejects multiple pack versions against the shipped schema (0.938007ms)
+  ✔ rejects pack traversal against the shipped schema (0.643712ms)
+  ✔ rejects pack version traversal against the shipped schema (0.225806ms)
+  ✔ rejects pack version path against the shipped schema (0.071204ms)
+  ✔ rejects nonboolean pack optional against the shipped schema (0.813773ms)
+  ✔ rejects unknown pack field against the shipped schema (0.143721ms)
+  ✔ rejects scalar exclusions against the shipped schema (0.094618ms)
+  ✔ rejects unsafe excluded name against the shipped schema (1.084864ms)
+  ✔ rejects invalid dormant skill against the shipped schema (0.725467ms)
+  ✔ identifies retired field /source with a migration action (1.842441ms)
+  ✔ identifies retired field /slots with a migration action (0.108274ms)
+  ✔ identifies retired field /payload with a migration action (0.054974ms)
+  ✔ identifies retired field /skills/0/source with a migration action (0.068058ms)
+  ✔ identifies retired field /skills/0/registry_path with a migration action (0.054213ms)
+  ✔ identifies retired field /skills/0/registry with a migration action (0.125606ms)
+  ✔ identifies retired field /skills/0/version with a migration action (0.057157ms)
+  ✔ identifies retired field /sets/0/flatten with a migration action (0.540378ms)
+  ✔ identifies retired field /sets/0/sealed with a migration action (0.830695ms)
+  ✔ identifies retired field /sets/0/registry with a migration action (0.370337ms)
+  ✔ identifies retired field /sets/0/version with a migration action (0.553863ms)
+  ✔ identifies retired field /packs/0/policy with a migration action (0.1061ms)
+  ✔ identifies retired field /packs/0/payload with a migration action (0.902962ms)
+  ✔ identifies retired field /packs/0/include with a migration action (0.140495ms)
+  ✔ identifies retired field /packs/0/exclude with a migration action (0.161584ms)
+  ✔ names helpers follow the same safe component rules as the schema (0.38755ms)
+✔ canonical manifest validation (75.252359ms)
+▶ reading a manifest
+  ✔ reads valid JSON without changing the file (173.389479ms)
+  ✔ distinguishes absent files, unreadable paths, invalid JSON, and invalid declarations (30.338964ms)
+✔ reading a manifest (204.718148ms)
+✔ migration has no ambient activation target and preview is entirely immutable (140.191788ms)
+✔ the registry checkout can migrate its own inherited activation without changing source collections (1501.654926ms)
+▶ registry-as-project support still refuses projects inside canonical definitions or collections
+  ✔ all-skills (42.977608ms)
+  ✔ all-skills/alpha (36.72126ms)
+  ✔ sets (60.116751ms)
+  ✔ packs (71.891267ms)
+✔ registry-as-project support still refuses projects inside canonical definitions or collections (213.099831ms)
+✔ a selected external registry below an activation root remains protected (39.069565ms)
+✔ validated Python claims become exact v2 ownership while real and foreign entries retain their inode and bytes (1489.631321ms)
+▶ legacy parser refuses wrong roots, scopes, versions, malformed targets, and duplicate keys without preview writes
+  ✔ wrong root (57.809845ms)
+  ✔ wrong scope (62.488891ms)
+  ✔ unknown version (42.829539ms)
+  ✔ target type (66.128849ms)
+  ✔ unknown fields (44.944745ms)
+✔ legacy parser refuses wrong roots, scopes, versions, malformed targets, and duplicate keys without preview writes (346.312629ms)
+✔ pending-only empty targets and replaced links never become pruning claims (1197.287859ms)
+✔ an alias-mode Python receipt adopts only the actual whole-root link and preserves the shared target (1274.401317ms)
+✔ a shared pack receipt cannot be borrowed by a second scope with the same Python hash (32.768472ms)
+✔ explicit equivalent-content mapping relinks a foreign pointer and records its actual new inode (1204.900964ms)
+✔ mapped link-only CLI directories convert after counterparts are verified, while installer directories block only their own alias (671.328452ms)
+✔ null activation mappings preserve the original link and block that item (1148.992753ms)
+✔ named profile whole-root conversion preserves shared content and gives claims only to mapped canonical children (169.151243ms)
+✔ publication failures retain exact directory recovery evidence and report the completed prefix before retry (792.282743ms)
+✔ real process termination after parking a legacy root recovers before invalid current intent is checked (825.610158ms)
+✔ unrecorded staging artifacts stay visible and immutable instead of silently gaining ownership (509.759765ms)
+✔ a child stage created before journal publication remains visible and unowned on every retry (710.818368ms)
+✔ concurrent migration serializes the same scope and cancellation before planning is write-free (498.921193ms)
+✔ installed migration previews registry conversion without selecting the ambient project (337.71521ms)
+✔ installed migration applies and converges with no Python or uv on PATH (543.793641ms)
+✔ installed explicit null mapping removes only the stale Kurzgesagt member (330.650839ms)
+✔ installed migration rejects malformed mapping JSON with configuration exit 2 (149.715352ms)
+✔ installed migration rejects a missing mapping file without fallback (140.922855ms)
+✔ installed migration rejects conflicting explicit scopes before writing (152.920502ms)
+✔ installed migration supports shared JSON and registry flags before the subcommand (157.720866ms)
+✔ installed migration help explains explicit write and target selection (179.644194ms)
+✔ never discovers the ambient manifest scope and rejects conflicting explicit selectors (180.065948ms)
+✔ previews exact external references with complete proposed intent and no state writes (62.422666ms)
+✔ applies canonical intent while preserving sources and activations, then remains byte-identical (389.653422ms)
+✔ translates slash references and preserves legacy empty-include selection meaning (399.154784ms)
+✔ does not infer external names or discard unknown slot, payload, and additive pack semantics (450.000658ms)
+✔ requires an explicit decision before legacy project packs stop inheriting global skills (879.932191ms)
+✔ uses an explicitly authored replacement without copying raw retired payload text into state (390.471483ms)
+✔ refuses malformed declarations by default but accepts an exact authored replacement (329.113844ms)
+✔ honors migration digest pins over source modes before publishing a declaration (165.652781ms)
+✔ uses catalog conversion name mappings even after the old lexical source was retired (714.042433ms)
+✔ translates an explicit TOML scope and retires it only after verified canonical publication (434.049823ms)
+✔ previews a future canonical destination and publishes it before the dependent manifest (649.234603ms)
+✔ uses the normal global XDG state default outside authored manifest and source roots (407.706156ms)
+✔ blocks conflicting TOML, other active scopes, and non-equivalent adapter policy without changing either source (319.080019ms)
+✔ refuses linked declarations and state inside registry or external source before writing (153.142661ms)
+✔ compares the exact authored declaration again after waiting for the shared activation lock (197.393477ms)
+✔ refuses a changed canonical destination after lock wait without replacing legacy intent (281.298571ms)
+✔ retains legacy TOML through retirement failure and resumes verified publication without repeating the mapping (572.258915ms)
+✔ preserves changed TOML encountered after target verification instead of retiring stale evidence (275.716533ms)
+✔ refuses malformed migration receipts without clobbering current intent or verification evidence (252.286556ms)
+✔ registry migration preview inventories complete embedded content with zero filesystem writes (129.979957ms)
+✔ apply preserves bytes, modes, provenance and support, then converges without further writes (465.953977ms)
+✔ identical content reuses an existing canonical name and normalizes the set label (439.33928ms)
+✔ identical payloads with different provenance reuse content without losing either origin (223.4375ms)
+✔ differing content receives a deterministic source-qualified canonical name (373.411329ms)
+✔ duplicate embedded definitions share one new canonical destination (394.224324ms)
+✔ explicit name and digest mappings refuse changed or conflicting content without cutover (83.236012ms)
+✔ digest values from preview pin the exact migrated definition inventory (223.105593ms)
+✔ missing references block their composition while independent definitions are retained (284.117822ms)
+✔ exact dangling-reference mappings repair names without inventing content (319.813831ms)
+✔ null mappings retire exact symbolic references and preserve their real referents (255.966591ms)
+✔ nested pack inventories and assigned slots become explicit canonical leaf membership (528.797396ms)
+✔ missing pack versions require authored mappings instead of an invented default (322.145144ms)
+✔ an explicitly renamed manifest-less pack preserves all content before retiring its old root (261.864673ms)
+✔ a case-only pack rename recovers interrupted publication and preserves canonical spelling (395.195885ms)
+✔ mapped composition renames refuse a distinct existing destination even with identical content (32.224757ms)
+✔ explicitly retiring the stale Kurzgesagt creator reference preserves other creator definitions (335.835549ms)
+✔ undeclared or real generated pack content is preserved and blocks cutover (47.210824ms)
+✔ set wrapper ownership is explicit and inline relative routes are checked (288.275787ms)
+✔ hidden system definitions are preserved and referenced in place without gaining set membership (310.022602ms)
+✔ linked external set roots become real compositions while external source content survives (233.555824ms)
+✔ a linked canonical definition is materialized without modifying its external source (205.966991ms)
+✔ an identical canonical alias is retired only after its composition references are normalized (197.770899ms)
+✔ explicit absolute source mappings can preserve an unlinked local definition (201.670345ms)
+✔ unsafe support links and malformed metadata preserve affected definitions (47.238436ms)
+✔ Python runtime caches block candidate imports while preserving source and existing canonical content (111.86763ms)
+✔ ignored node_modules in a canonical definition never trips the content limit or its digest (611.922179ms)
+✔ an authored file over 128 MiB still blocks its canonical definition (1129.888506ms)
+✔ a composition that migration would replace refuses generated content it cannot remove (397.616466ms)
+✔ an unchanged composition keeps its generated content without blocking (24.080482ms)
+✔ authored example, log, backup and env files in a legacy composition migrate byte for byte (453.185629ms)
+✔ materializing a linked canonical carries authored files and discloses only the generated ones it skips (191.024687ms)
+✔ an alias that differs from a canonical only by an authored log is materialized, never retired as identical (113.489425ms)
+✔ an alias identical to a canonical except for generated entries is retired and says what stays behind (117.570466ms)
+✔ hidden and underscore projection entries in a set never become canonical membership (28.20273ms)
+✔ portable internal support links survive relocation (199.811293ms)
+✔ mutually recursive support directory links are refused without moving source content (19.162977ms)
+✔ a linked versioned pack family never authorizes writes through an external ancestor (32.313055ms)
+✔ migration holds the shared catalog lock and never creates state for refused previews (55.71648ms)
+✔ state inside an external linked-set is refused before lock bookkeeping or source onboarding (18.161639ms)
+✔ state inside an external linked-definition is refused before lock bookkeeping or source onboarding (15.39112ms)
+✔ state inside an external mapped-definition is refused before lock bookkeeping or source onboarding (7.994363ms)
+✔ interrupted publication resumes only recorded trees and converges (219.93494ms)
+✔ foreign replacement during recovery is preserved with an actionable refusal (175.231259ms)
+✔ unrecognized staging and malformed or foreign receipts never authorize cleanup (9.775399ms)
+✔ preview rejects symlink receipt parents without following or creating state (3.560439ms)
+✔ mapping paths reject traversal and source administration is never copied (7.924411ms)
+✔ a replaced canonical destination is never overwritten during a locked replan (13.293598ms)
+✔ source onboarding preview verifies recorded source identity without writes or changing pins (47.121245ms)
+✔ source onboarding publishes the exact prepared declaration, records evidence, and is idempotent (254.844917ms)
+✔ an existing source declaration remains authoritative over an invalid prepared fallback (9.304852ms)
+✔ onboarding refuses a prepared source that changes recorded upstream identity (20.862649ms)
+✔ a missing explicit declaration cannot fall back to the prepared file (7.146235ms)
+✔ onboarding never overwrites a different existing declaration (15.928513ms)
+✔ source migration refuses state inside its selected catalog before creating locks (4.289903ms)
+✔ unknown source staging remains visible and immutable on repeated migration (38.793825ms)
+✔ an error immediately after source publication reports its actual prefix and recovers (137.683392ms)
+✔ an invalid explicit target refuses before onboarding an otherwise ready declaration (2.093294ms)
+✔ registry-only migration ignores ambient project selection (5.772507ms)
+✔ mapping schema and traversal errors are rejected before any catalog publication (2.386386ms)
+✔ already cancelled migration is immutable (0.847066ms)
+▶ published Node package
+  ✔ ships the ESM runtime, declarations and schemas without source or runtime state (3.702285ms)
+  ✔ isolates the installed executable from Python and uv (4.993078ms)
+  ✔ prints usable help for [] (252.401753ms)
+  ✔ prints usable help for ["--help"] (154.18317ms)
+  ✔ prints the installed package version (192.318224ms)
+  ✔ returns one help envelope for ["--json"] (172.484314ms)
+  ✔ returns one help envelope for ["--json","--help"] (147.666923ms)
+  ✔ returns one help envelope for ["--help","--json"] (222.348998ms)
+  ✔ returns one version envelope for ["--json","--version"] (147.74508ms)
+  ✔ returns one version envelope for ["--version","--json"] (143.725877ms)
+  ✔ reports invalid arguments with usage exit 2 for ["unknown-command"] (147.516539ms)
+  ✔ reports invalid arguments with usage exit 2 for ["--unknown-option"] (144.611766ms)
+  ✔ reports invalid arguments with usage exit 2 for ["--json=invalid"] (150.429588ms)
+  ✔ reports a usage error envelope for ["--json","unknown-command"] (164.018312ms)
+  ✔ reports a usage error envelope for ["unknown-command","--json"] (173.030042ms)
+  ✔ reports a usage error envelope for ["--json","--unknown-option"] (152.211686ms)
+  ✔ reports a usage error envelope for ["--unknown-option","--json"] (155.23857ms)
+  ✔ imports the installed core without launching the CLI or printing (135.103812ms)
+  ✔ exports the result contract and enforces successful-result invariants (130.609874ms)
+  ✔ exports both packaged JSON schemas (29.774832ms)
+  ✔ resolves canonical selections through the installed core without Python (132.761328ms)
+  ✔ provides usable public declarations to an isolated TypeScript consumer (1072.694202ms)
+✔ published Node package (5884.396804ms)
+✔ creates explicit pack versions, resolves latest, and edits authoritative membership (133.811477ms)
+✔ preserves source provenance, manifest mode, and pack support assets across edits (47.241802ms)
+✔ all pack dry-runs and inspections preserve content and leave lock state absent (35.03912ms)
+✔ refuses unknown skills, invalid references, and malformed descriptions before writes (8.609031ms)
+✔ repairs generated roots and missing links from a committed declaration on retry (63.555721ms)
+✔ finishes explicit stale removals without adopting unrelated extra links (41.114949ms)
+✔ does not rewrite valid duplicate declarations during idempotent commands (9.660001ms)
+✔ verification reports wrong-link and mutations refuse without writes (14.206167ms)
+✔ verification reports dangling-link and mutations refuse without writes (87.461364ms)
+✔ verification reports file and mutations refuse without writes (15.879971ms)
+✔ verification reports directory and mutations refuse without writes (35.603815ms)
+✔ verification reports symlink-root and mutations refuse without writes (29.357314ms)
+✔ verification reports extra and mutations refuse without writes (49.243113ms)
+✔ verification names missing canonical members and embedded definitions at any depth (45.626078ms)
+✔ reports malformed description pack data without creating state (5.130908ms)
+✔ reports malformed source pack data without creating state (6.917844ms)
+✔ reports malformed legacy pack data without creating state (11.728148ms)
+✔ reports malformed unknown pack data without creating state (16.93046ms)
+✔ reports malformed utf8 pack data without creating state (27.827943ms)
+✔ lists each version alongside actionable failures and requires disambiguating legacy versions (53.595945ms)
+✔ reports unsafe versions as configuration errors while retaining valid versions and families (8.005154ms)
+✔ refuses exclusive creation over a version directory without a manifest (2.258315ms)
+✔ serializes concurrent pack additions without losing manifest membership (232.024759ms)
+✔ reports pre-manifest partial creation honestly and refuses to adopt the partial directory (202.7869ms)
+✔ reports interrupted link execution and converges on retry without rewriting the saved declaration (242.627096ms)
+✔ PM setup opts out of bundled skills and never resets runtime state (1.455803ms)
+✔ documents persistent Skillex-only PM ownership and a safe cutover (1.049688ms)
+▶ installed Hermes profile CLI
+  ✔ imports the public APIs without Python and lists profile path metadata read-only (1229.047631ms)
+  ✔ shows unmanaged local entries and explicit project winners without inferring the CWD (438.877279ms)
+  ✔ honors Hermes root selection and the closest command override without sticky profile inference (835.152017ms)
+  ✔ projects global plus explicit project A from project B without touching generic activations (365.043111ms)
+  ✔ keeps independent global contributions through project inheritance and exclusion settings (940.125496ms)
+  ✔ flattens authoritative pack membership and restores ordinary project selection in the same directory (997.153669ms)
+  ✔ preserves local definitions, same-target foreign links, and Hermes runtime overlays without adoption (405.30934ms)
+  ✔ previews winning sources and operations without creating state or changing any inode (174.033984ms)
+  ✔ keeps converged identities and receipt bytes stable and shows the recorded project from unrelated CWD (1025.308979ms)
+  ✔ prunes only stale receipt-owned links while preserving unowned references and runtime files (879.386062ms)
+  ✔ relinquishes replaced managed children and preserves their new local contents on later pruning (660.682953ms)
+  ✔ supports a symlinked named profile root while preserving its real skills directory identity (416.087529ms)
+  ✔ refuses whole-skills symlinks without following or modifying their shared targets (355.637319ms)
+  ✔ preserves an existing projection when selection is optional-incomplete, missing, or malformed (664.418943ms)
+  ✔ refuses a canonical name that resolves to different global and project registries (134.222952ms)
+  ✔ refuses malformed profile ownership evidence without replacing it or touching child links (347.798369ms)
+  ✔ provides human output, help, shared flags, and actionable JSON selector errors (1649.782778ms)
+  ✔ returns JSON interruption while waiting for its profile lock and converges on rerun (2425.110613ms)
+✔ installed Hermes profile CLI (16261.959231ms)
+✔ missing default Hermes installation lists no profiles and creates no state (17.146407ms)
+✔ list exposes the default and valid named profile directories in stable order (31.496254ms)
+✔ a real profile with missing skills is visible without creating the directory (11.655411ms)
+✔ list and show ignore ambient project, sticky selection and profile configuration content (24.22274ms)
+✔ explicit Hermes root wins over HERMES_HOME without activating the ambient profile (14.865941ms)
+✔ Hermes root overrides expand home and cwd-relative paths (14.439847ms)
+✔ programmatic home and cwd expand tilde consistently in an isolated child environment (236.245883ms)
+✔ HERMES_HOME profile suffix is stripped lexically before resolving a profile symlink (37.980262ms)
+✔ HERMES_HOME can name the installation root and empty HERMES_HOME uses the default (23.249437ms)
+✔ explicit empty, missing and non-directory Hermes roots refuse instead of falling through (6.391011ms)
+✔ Hermes installation aliases retain their lexical selector and canonical target (20.153393ms)
+✔ profile name "" is rejected before filesystem selection (15.230798ms)
+✔ profile name "../outside" is rejected before filesystem selection (5.854482ms)
+✔ profile name "/absolute" is rejected before filesystem selection (4.155179ms)
+✔ profile name "UPPER" is rejected before filesystem selection (2.343846ms)
+✔ profile name "_prefix" is rejected before filesystem selection (2.758107ms)
+✔ profile name "-prefix" is rejected before filesystem selection (5.146257ms)
+✔ profile name "dot.name" is rejected before filesystem selection (3.21613ms)
+✔ profile name "space name" is rejected before filesystem selection (1.396301ms)
+✔ profile name "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" is rejected before filesystem selection (1.215731ms)
+✔ maximum-length and digit-starting profile names are accepted (13.755679ms)
+✔ an explicit missing named profile never falls back to the default (9.092332ms)
+✔ one broken named profile does not hide healthy profiles from the list (16.083595ms)
+✔ profile-root files and dangling or cyclic aliases produce actionable invariant errors (7.338117ms)
+✔ a whole-skills alias remains visible for migration and its content is not traversed (10.744155ms)
+✔ dangling and cyclic skills aliases are observable without resolving their contents (26.300646ms)
+✔ a skills-root file is reported without interpreting it as a directory (13.679134ms)
+✔ profile-owned files, directories and links are observed without reading skill bytes (16.99378ms)
+✔ read commands surface unreadable profile roots as IO failures rather than absence (4.307236ms)
+✔ pre-aborted profile reads do not create or modify profile/state paths (6.214549ms)
+✔ strict preview is immutable and strict ownership persists across ordinary sync (721.541873ms)
+✔ strict ownership tolerates Hermes bookkeeping but still refuses archives and hubs (472.510792ms)
+✔ strict sync refuses external discovery without mutating local overrides (62.428728ms)
+✔ profile inheritance opt-out persists through ordinary show and resync (298.219623ms)
+✔ profile inheritance policy refuses non-boolean and strict symlink config (168.328293ms)
+✔ ordinary linked profile config keeps legacy global inheritance (325.661739ms)
+✔ ordinary linked profile config can declare persistent inheritance opt-out (376.523432ms)
+✔ projects global and project canonical children while preserving the real directory and source roots (307.999972ms)
+✔ project inheritance and masks apply only to project contribution, including flattened pack declarations (493.090527ms)
+✔ matching foreign links and real local definitions win without being adopted or pruned (156.209568ms)
+✔ local replacement relinquishes its claim while stale exact owned links alone are pruned (461.331057ms)
+✔ dry-run is fully immutable and a converged sync preserves receipt bytes and inode (279.600692ms)
+✔ missing real skills roots may be created and empty projection context is visible and idempotent (151.328462ms)
+✔ missing required sources, invalid state placement, and whole-root aliases refuse before profile writes (30.42134ms)
+✔ profile-local overrides cannot hide divergent canonical definitions (9.49487ms)
+✔ replaced root identity refuses while a constructor-named child works through receipt round trips (279.9667ms)
+✔ concurrent lexical aliases of one profile share its lock, receipt, and exact final selection (466.259011ms)
+✔ an error after publication reports its applied prefix and preserves earlier stale links until retry (621.06757ms)
+✔ a local replacement of an interrupted published link survives recovery and loses the old claim (511.156567ms)
+✔ real process termination after parking restores recorded content before attempting missing current manifests (803.285975ms)
+✔ cancellation before planning is immutable and cancellation after publication leaves recoverable exact evidence (319.649811ms)
+✔ real termination before staging is journaled preserves the unknown inode and reports it until explicitly removed (377.372773ms)
+✔ a failed pending receipt publication cleans only its exact known unjournaled stage before retry (416.908286ms)
+✔ a local entry appearing after final preflight is preserved and reported as the winning partial result (538.119821ms)
+✔ tilde-expanded protected projects refuse state placement before creating lock or profile state (3.890129ms)
+✔ a tilde home uses one normalized state location for the lock and receipt (280.917693ms)
+✔ a lexical profile alias retargeted during sync or read preflight refuses without writing either target (386.026719ms)
+✔ syncs both scopes, inheritance and aliases, records exact ownership, and has a write-free second run (2318.561455ms)
+✔ previews alias and root changes without writes and returns drift only when requested (2273.878843ms)
+✔ retains correct preexisting links without adopting ownership or creating state (27.42291ms)
+✔ prunes only recorded stale links while preserving foreign skills, BMAD content and overlays (767.696307ms)
+✔ switches composed to pack, pack version to pack version, then back using the same receipt key (1308.374569ms)
+✔ preserves unavailable optional selections and refuses unverified generated pack links (619.371675ms)
+✔ preflights every selected scope before creating global roots or lock state (12.892432ms)
+✔ project-only sync resolves global inheritance from nested cwd without mutating global activation (396.252706ms)
+✔ global scope ignores unrelated malformed projects and explicit project overrides nested repositories (1176.176432ms)
+✔ refuses real-child destinations without changing source, activation or state (18.254254ms)
+✔ refuses wrong-link destinations without changing source, activation or state (31.601263ms)
+✔ refuses redirected-parent destinations without changing source, activation or state (5.368355ms)
+✔ refuses whole-root transitions when the root or any contained entry is unowned (485.961685ms)
+✔ refuses foreign aliases that point directly at the old pack when switching plans (255.778546ms)
+✔ refuses cyclic aliases and recursive source destinations (4.416782ms)
+✔ refuses changed ownership identities without adopting a same-target replacement (453.328728ms)
+✔ serializes concurrent sync invocations and converges on one owned root (396.108023ms)
+✔ recovers an interrupted child publication with unchanged manifest intent (637.433357ms)
+✔ recovers an interrupted child publication with changed manifest intent (517.925781ms)
+✔ recovers root-unpublished pack switching without deleting foreign or canonical content (481.013622ms)
+✔ recovers root-published pack switching without deleting foreign or canonical content (498.116557ms)
+✔ recovers a dead writer after publication using its recorded identity and bounded stale-lock cleanup (451.290778ms)
+✔ refuses recovery when foreign interference occupies a pending destination (365.704728ms)
+✔ does not prune an earlier scope when a later scope addition fails (774.405539ms)
+✔ rechecks the activation-root inode captured during planning before child writes (300.407615ms)
+✔ revalidates skill sources after journaling and before publication (343.906466ms)
+✔ revalidates pack sources after journaling and before publication (343.576013ms)
+✔ returns interruption before writes for already-aborted planning and sync (1.44374ms)
+✔ returns 130 at a journaled cancellation boundary and safely recovers on retry (360.548152ms)
+✔ cancellation while waiting for the bounded lock returns 130 instead of contention (87.19905ms)
+✔ records actual local Git commit hashes for the catalog and pack sources (279.067406ms)
+✔ refuses cross-device alias staging during readonly preflight (113.288207ms)
+✔ publishes owned aliases when hard-linking symbolic links is unsupported (354.174774ms)
+✔ refuses a foreign entry that arrives after journaling before guarded publication (573.958057ms)
+✔ composes inheritance, declared sets, and explicit skills with complete provenance (76.577306ms)
+✔ project-only targeting still resolves global inheritance by default (36.348588ms)
+✔ disabled inheritance avoids reading a malformed global manifest (29.876253ms)
+✔ global targeting does not parse an unrelated malformed project manifest (49.397535ms)
+✔ a project may explicitly re-enable a skill excluded globally (9.200836ms)
+✔ scope exclusions apply after direct entries and inherited or set contributions (13.153003ms)
+✔ set include and exclude filters run before resolving unselected broken references (8.785824ms)
+✔ a requested include member absent from a required set is an error (22.112905ms)
+✔ an optional missing set reports partial resolution while preserving direct selections (33.33035ms)
+✔ optional unresolved set members remain visible without discarding valid members (20.288287ms)
+✔ optional missing include members report a skip and retain present requested members (21.578649ms)
+✔ refuses a missing required skills reference (27.182156ms)
+✔ refuses a missing required sets reference (21.78097ms)
+✔ refuses a missing required packs reference (9.603646ms)
+✔ an exclusive pack resolves its manifest without a materialized skills directory (20.716995ms)
+✔ disabling a pack restores the retained composition and its exclusions (50.985627ms)
+✔ an optional missing pack never substitutes the dormant composition (3.564346ms)
+✔ auto targeting resolves global writes even when the project uses an exclusive pack (12.927628ms)
+✔ both-scope targeting validates global input even when project inheritance is disabled (5.412789ms)
+✔ versionless pack selection uses semantic version ordering (21.706029ms)
+✔ multiple packs fail preflight even when neither pack exists (13.569878ms)
+✔ rejects pack include filters instead of accepting ineffective selection (15.441976ms)
+✔ rejects pack exclude filters instead of accepting ineffective selection (21.702322ms)
+✔ schema validation still rejects legacy fields in a pack's dormant selection (18.09259ms)
+✔ selected pack trees cannot contain embedded skill definitions (8.121583ms)
+✔ pack manifests reject legacy copied-payload policy (5.357334ms)
+✔ rejects a canonical catalog entry with a directory-link (7.56293ms)
+✔ rejects a canonical catalog entry with a definition-link (3.854883ms)
+✔ rejects copied definitions in a set even when a canonical definition exists (8.24216ms)
+✔ set symlinks must point to the canonical definition of their declared name (5.03153ms)
+✔ divergent canonical paths for one inherited name are refused across registry caches (21.964415ms)
+✔ an explicit registry root outranks a different valid environment registry (10.866034ms)
+✔ resolves a relative argument registry from nested invocation cwd with auto targeting (5.857868ms)
+✔ resolves a relative argument registry from nested invocation cwd with project targeting (4.558559ms)
+✔ resolves a relative environment registry from nested invocation cwd with auto targeting (5.988133ms)
+✔ resolves a relative environment registry from nested invocation cwd with project targeting (3.863961ms)
+▶ invalid explicit registry roots never fall through to a valid environment root
+  ✔ "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/skillex-resolution-4hOm8b/missing" (4.698062ms)
+  ✔ "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/skillex-resolution-4hOm8b/not-a-registry" (1.950005ms)
+  ✔ "" (2.58468ms)
+✔ invalid explicit registry roots never fall through to a valid environment root (13.153724ms)
+✔ uses the invocation registry checkout for auto targeting with an empty global selection and no installed catalog (4.709814ms)
+✔ uses the invocation registry checkout for auto targeting with an inherited global selection and no installed catalog (7.354036ms)
+✔ uses the invocation registry checkout for project targeting with an empty global selection and no installed catalog (13.967508ms)
+✔ uses the invocation registry checkout for project targeting with an inherited global selection and no installed catalog (20.116794ms)
+✔ discovers the nearest project manifest from nested working directories (9.533614ms)
+✔ does not inherit an outer project across an unrelated nested Git boundary (6.185505ms)
+✔ an explicit project override selects its manifest across a nested Git boundary (5.734384ms)
+✖ auto targeting outside a project resolves and selects only the global scope (9.868404ms)
+✔ malformed JSON becomes an actionable result instead of an uncaught rejection (18.137916ms)
+▶ schema-invalid manifests fail before any references are resolved
+  ✔ {"skills":"not-an-array"} (5.239242ms)
+  ✔ {"skills":[],"inherit_global":"yes"} (1.934324ms)
+  ✔ {"skills":[],"exclude":[42]} (3.960102ms)
+✔ schema-invalid manifests fail before any references are resolved (13.057833ms)
+▶ unsafe canonical names cannot escape a catalog or enter a composition
+  ✔ {"skills":["../outside"]} (6.273741ms)
+  ✔ {"skills":["/absolute"]} (1.756489ms)
+  ✔ {"skills":["bad\\name"]} (5.321697ms)
+  ✔ {"sets":["bad/name"]} (1.854153ms)
+  ✔ {"skills":[],"exclude":["../outside"]} (1.377045ms)
+✔ unsafe canonical names cannot escape a catalog or enter a composition (22.524541ms)
+▶ legacy source, payload, and slot fields receive migration diagnostics
+  ✔ {"skills":[{"name":"old","source":"file:///legacy/skill"}]} (1.614292ms)
+  ✔ {"sets":[{"name":"old","registry_path":"skill-sets/old"}]} (1.336228ms)
+  ✔ {"skills":[],"payload":"snapshot"} (3.202014ms)
+  ✔ {"skills":[],"slots":[]} (1.280643ms)
+  ✔ {"packs":[{"name":"old","flatten":false}]} (1.134157ms)
+✔ legacy source, payload, and slot fields receive migration diagnostics (10.520803ms)
+✔ retires task-local pins and call edges while preserving unrelated configuration (8.487773ms)
+✔ legacy hyphenated skill-task names are retired too (0.417115ms)
+✔ preserves the following tool's managed comment markers (0.322397ms)
+✔ retains checks whose argument is the skillex source directory (0.181472ms)
+✔ detects non-prefixed legacy tasks and fleet resync wrappers (0.828852ms)
+✔ does not parse table-looking text inside multiline values as real tasks (0.99782ms)
+✔ recognizes legacy script-style hooks and refuses mixed command chains (0.904194ms)
+✔ removes hooks calling retired projectors even with no named task (0.270369ms)
+✔ refuses compact task syntax instead of rewriting unrelated bytes (0.552091ms)
+✔ preview writes nothing, apply preserves mode, repeat preserves bytes and inode (59.120134ms)
+✔ all configs preflight before writes; malformed sibling refuses everything (9.249898ms)
+✔ refuses config symlinks and redirected parent directories (1.940446ms)
+✔ global selector never edits project and conflicting selectors refuse (23.28352ms)
+✔ wildcard dependencies refuse because their membership may cross config boundaries (0.734664ms)
+✔ wrapper matching is token exact and follows aliases (2.310764ms)
+✔ mixed tasks, wrapper hooks, and shell substitutions refuse without data loss (0.66328ms)
+✔ mixed hooks and broad watches refuse instead of dropping unrelated behavior (0.321216ms)
+✔ explicit missing config refuses; unconfigured project stays a write-free no-op (6.764095ms)
+▶ installed selection CLI
+  ✔ exports the selection APIs from an installed package with only Node on PATH (201.578993ms)
+  ✔ initializes the nearest Git root without activation and defaults project inheritance on (1258.47024ms)
+  ✔ leaves an existing declaration byte-for-byte intact when init is repeated (182.224757ms)
+  ✔ initializes an explicit existing non-Git project without touching the nearby project (229.807681ms)
+  ✔ initializes global selection outside any project without activating it (232.137983ms)
+  ✔ enables a project skill immediately with shared flags at the root (650.31607ms)
+  ✔ enables a project skill immediately with shared flags at the family (579.407214ms)
+  ✔ enables a project skill immediately with shared flags at the leaf (592.47658ms)
+  ✔ defaults enable to global when a Git root has no existing project declaration (630.85438ms)
+  ✔ honors explicit global selection while leaving the discovered project untouched (811.930082ms)
+  ✔ treats the project option as an exact project target without requiring a scope flag (480.825637ms)
+  ✔ requires explicit init for a missing selected declaration instead of creating it (507.604294ms)
+  ✔ masks inherited skills locally and reenables them without editing global intent (1211.834539ms)
+  ✔ manages set contributions and local skill exclusions without changing the shared set (1148.69917ms)
+  ✔ turns project inheritance off and on with immediate activation and no global write (910.104461ms)
+  ✔ retains dormant ordinary selections under a pack and restores them when it is disabled (724.403495ms)
+  ✔ refuses skill, set, and inheritance edits while a pack is active (1067.539519ms)
+  ✔ never disables a different pack name or version and accepts the matching unversioned name (780.805096ms)
+  ✔ repairs activation drift even when enabling the same declaration requires no manifest write (817.656151ms)
+  ✔ previews init without creating a manifest, activation, or state (104.746142ms)
+  ✔ previews combined declaration, canonical link, and alias changes with zero writes (610.422633ms)
+  ✔ refuses missing skill before saving selection or changing activation (114.838838ms)
+  ✔ refuses colliding real content before saving selection or changing activation (119.578369ms)
+  ✔ refuses unverified pack before saving selection or changing activation (120.568785ms)
+  ✔ respects a nested Git boundary for default selection and initializes that inner root (1073.856702ms)
+  ✔ returns JSON interruption without saving intent while enable waits for the activation lock (2630.112025ms)
+  ✔ provides human preview/success output and actionable errors with consistent JSON usage failures (1015.350525ms)
+✔ installed selection CLI (20617.120359ms)
+✔ initializes the nearest Git project without a registry or activation and preserves existing bytes (163.395328ms)
+✔ initializes global or explicit non-Git scopes and refuses conflicting scope identities (59.635215ms)
+✔ previews init without creating state and rejects state placement inside the new project (5.670845ms)
+✔ enables from a nested project while leaving global intent and activation untouched (1394.285652ms)
+✔ uses global for a checkout with no manifest and requires init for an explicitly selected project (1139.135781ms)
+✔ masks inherited and set members locally, then re-enables an explicit canonical skill (1056.466145ms)
+✔ preserves an existing filtered optional set and repairs activation on a declaration no-op (716.946795ms)
+✔ retains dormant selections through pack switches and restores them only for a matching disable (1113.924969ms)
+✔ removes missing direct declarations without looking up their absent sources (976.537935ms)
+✔ refuses a local exclusion when a retained required set still names a missing source (18.7931ms)
+✔ toggles inheritance only for the selected project and preserves global state (1455.704957ms)
+✔ refuses malformed or unknown enables and foreign activation collisions before any writes (39.836279ms)
+✔ previews the proposed declaration and complete activation changes without writes (16.754659ms)
+✔ serializes concurrent selection edits without losing either declaration (1052.034605ms)
+✔ reports saved intent honestly when a post-save activation collision occurs and sync recovers (506.573221ms)
+✔ keeps original intent on publication failure and reports saved intent on cancellation (732.119764ms)
+✔ refuses different foreign intent at the saved-manifest read boundary (647.153321ms)
+✔ returns interruption before any writes and after an aborted contention wait (118.423683ms)
+✔ missing declarations are read-only plain snapshots with canonical scope roots (72.442425ms)
+✔ existing .agents with no declaration is also a write-free read (12.842207ms)
+✔ scope roots must exist and are never created by reads (18.625083ms)
+✔ creation writes a complete current manifest inside the source repository (113.605635ms)
+✔ updates preserve permissions and replace only the declaration inode (38.603366ms)
+✔ semantic no-ops preserve original bytes, mode, inode, and modification time (12.981319ms)
+✔ snapshot payload edits cannot falsify original bytes or no-op decisions (16.827366ms)
+✔ foreign .agents assets and unrelated temporary-looking files survive updates (19.581145ms)
+✔ reconstructed snapshots do not authorize writes (7.0321ms)
+✔ invalid proposed declarations fail before creating .agents (23.78224ms)
+✔ reads refuse malformed, legacy, and invalid UTF-8 declarations without changing them (10.795461ms)
+✔ symlinked or file-shaped .agents paths are refused without following them (2.219833ms)
+✔ symlinked and directory-shaped declaration entries are preserved (1.984178ms)
+✔ a declaration appearing after an absence snapshot is never adopted or overwritten (7.757828ms)
+✔ changed bytes refuse writes even when the declaration is still semantically equal (10.316097ms)
+✔ identical bytes in another inode and concurrent mode changes lose snapshot authority (8.017687ms)
+✔ replaced .agents and scope roots are detected before declaration writes (17.753331ms)
+✔ a new foreign .agents directory invalidates an earlier missing-parent snapshot (8.229005ms)
+✔ parent redirection after reading cannot write through a foreign symlink (19.41939ms)
+✔ read-only directories allow no-ops and report unpublished write failures (33.236684ms)
+✔ durability failures report saved intent after first publication (19.062868ms)
+✔ durability failures report saved intent after replacement (23.326452ms)
+✔ a prepublication failure removes only the newly created empty .agents directory (8.766989ms)
+✔ readers observe complete source declarations during child-process atomic updates (670.395174ms)
+✔ creates and edits sets with canonical links and idempotent membership (59.441569ms)
+✔ set read, create, add, and remove dry-runs preserve every fixture entry and leave state absent (11.482566ms)
+✔ preflights every requested skill and refuses unknown names without a lock or any writes (4.026306ms)
+✔ refuses conflicting set file content before valid additions (3.330335ms)
+✔ refuses conflicting set directory content before valid additions (5.180271ms)
+✔ refuses conflicting set wrong-link content before valid additions (4.745351ms)
+✔ refuses conflicting set dangling-link content before valid additions (27.929374ms)
+✔ rejects nested embedded definitions and symlinked set roots, including idempotent create (3.623748ms)
+✔ lists valid sets in stable order and retains unrelated validation failures (6.934335ms)
+✔ serializes concurrent set changes and preserves both updates (168.03484ms)
+▶ installed sync CLI
+  ✔ exposes installed planning/apply APIs and plans without Python, uv, or state writes (175.198788ms)
+  ✔ previews all bindings and aliases with global flags at the root (284.331325ms)
+  ✔ previews all bindings and aliases with global flags at the leaf (261.509584ms)
+  ✔ applies global and nearest-project projections and converges without replacing identities or receipts (2178.887682ms)
+  ✔ narrows writes to the project while retaining global inheritance and applying project exclusions (573.579123ms)
+  ✔ narrows global writes without reading a malformed project declaration (568.155023ms)
+  ✔ targets the exact explicit project instead of the nearest invocation project (713.493248ms)
+  ✔ preserves correct absolute and relative CLI aliases without claiming or replacing them (419.334397ms)
+  ✔ prunes stale owned links while preserving unowned canonical links, BMAD output, and Hermes content (1485.346398ms)
+  ✔ does not adopt a preexisting canonical link when its desired selection later disappears (593.16162ms)
+  ✔ never imports pruning authority from an unchanged legacy Python receipt (453.01649ms)
+  ✔ refuses a canonical skill collision before changing either scope (166.696208ms)
+  ✔ refuses a BMAD alias directory collision before changing either scope (156.838714ms)
+  ✔ refuses a foreign alias collision before changing either scope (159.820122ms)
+  ✔ refuses a symlinked alias parent collision before changing either scope (181.044432ms)
+  ✔ switches composed roots to exclusive packs, changes versions, and restores dormant selections (1037.867722ms)
+  ✔ verifies pack membership before activating a whole-root alias (269.329148ms)
+  ✔ preserves activation and receipts when an optional pack or set cannot be fully resolved (926.341665ms)
+  ✔ serializes concurrent installed invocations and leaves a converged projection (816.522304ms)
+  ✔ reports lock contention from the installed CLI and succeeds after the owner releases (3180.31872ms)
+  ✔ handles SIGINT while waiting for the activation lock and converges on rerun (3048.830291ms)
+  ✔ prints human previews and sync help with the supported options (231.2982ms)
+  ✔ rejects exit-code without dry-run and preserves usage/configuration errors over drift (345.431119ms)
+✔ installed sync CLI (20413.418867ms)
+▶ installed vendor CLI
+  ✔ exports the installed vendor APIs and runs with Git but without Python or uv (241.575835ms)
+  ✔ lists declarations and shows source membership through machine-local checkout mappings (1117.07276ms)
+  ✔ imports committed bytes and executable modes with complete pinned provenance (2291.160326ms)
+  ✔ previews imports without staging, locks, receipt writes, or activation changes (2119.794058ms)
+  ✔ keeps a converged catalog and provenance byte-identical on repeated sync (2783.873952ms)
+  ✔ verifies catalog content offline after both the checkout and Git disappear (1556.475358ms)
+  ✔ makes missing and malformed source declarations actionable configuration errors (698.450094ms)
+  ✔ selects named sources and resolves repeatable explicit checkout arguments (1119.299735ms)
+  ✔ does not fall back from an invalid explicit checkout to a working mapping (248.012292ms)
+  ✔ refuses the entire sync before publication when one required pin is unavailable (616.538567ms)
+  ✔ requires explicit adoption and separately authorizes discarding unmanaged edits (3678.359474ms)
+  ✔ refuses linked canonical destinations even with adoption and edit-discard flags (562.846421ms)
+  ✔ detects byte and executable-mode edits offline and restores them only when explicitly requested (5262.691288ms)
+  ✔ prunes only explicitly removed managed members and protects unavailable optional sources (4643.418199ms)
+  ✔ keeps offline status separate from an explicitly requested upstream pin comparison (1446.357074ms)
+  ✔ provides readable human output and JSON help while rejecting malformed arguments (1324.788194ms)
+✔ installed vendor CLI (31542.945166ms)
+✔ read APIs require the canonical declaration and never load a prepared migration file (27.43333ms)
+✔ declarations expose legacy defaults, shared checkout IDs, and explicit empty membership (14.808211ms)
+✔ source selection deduplicates requested order and refuses unknown names or checkout IDs (4.819391ms)
+✔ invalid source declaration rejects machine checkout path (4.027289ms)
+✔ invalid source declaration rejects traversing subdirectory (3.738885ms)
+✔ invalid source declaration rejects absolute subdirectory (3.089701ms)
+✔ invalid source declaration rejects control character in subdirectory (4.890925ms)
+✔ invalid source declaration rejects traversing member directory (12.503659ms)
+✔ invalid source declaration rejects duplicate member names (5.144513ms)
+✔ invalid source declaration rejects noncanonical skill name (5.786073ms)
+✔ invalid source declaration rejects unknown member field (3.500927ms)
+✔ invalid source declaration rejects explicit empty inventory with include (3.968958ms)
+✔ invalid source declaration rejects explicit inventory with exclude (3.329514ms)
+✔ invalid source declaration rejects nonboolean optional field (3.796744ms)
+✔ invalid source declaration rejects unsafe version expression (6.999498ms)
+✔ invalid source declaration rejects unknown source field (10.096534ms)
+✔ invalid TOML, schema versions, duplicate sources and retired fetch flags fail clearly (18.860567ms)
+✔ source declarations refuse symlinks, nonregular metadata and invalid UTF-8 (24.099368ms)
+✔ checkout precedence is explicit, environment, mapping, then default with canonical paths (38.211598ms)
+✔ explicit and environment checkout overrides never fall through when absent or invalid (6.172961ms)
+✔ invalid machine mappings block fallback but explicit checkout avoids irrelevant mappings (5.194518ms)
+✔ source show remains useful before first sync and exposes recorded orphan membership (34.087707ms)
+✔ offline status verifies full bytes and mode wire format without checkout, mapping or Git (18.609173ms)
+✔ status detects instruction bytes changes independently of modified_locally flags (11.520086ms)
+✔ status detects executable mode changes independently of modified_locally flags (10.296711ms)
+✔ status detects authored log changes independently of modified_locally flags (16.383891ms)
+✔ status detects nested authored cache changes independently of modified_locally flags (9.922606ms)
+✔ receipt formatting and extra evidence leave the digest stable while a local-edit flag stays drift (10.053403ms)
+✔ offline status identifies version and explicit directory declaration drift without Git (6.911713ms)
+✔ offline discovery status compares recorded paths with the current declared subtree (13.677461ms)
+✔ missing receipt, digest or pin evidence is incomplete and never silently clean (11.931351ms)
+✔ malformed provenance is configuration failure while valid foreign ownership is an invariant (38.656336ms)
+✔ complete SHA-256 Git object IDs are supported alongside SHA-1 receipts (15.123235ms)
+✔ transport-equivalent receipt identity is accepted and different upstream is refused (8.723376ms)
+✔ symlinked receipts and canonical directories are refused without changing their targets (7.345681ms)
+✔ missing canonical content is an invariant and unknown digest formats remain incomplete (9.012221ms)
+✔ nested .git under an authored excluded directory is refused (11.897096ms)
+✔ nested .hg under an authored excluded directory is refused (7.038141ms)
+✔ nested .svn under an authored excluded directory is refused (12.006563ms)
+✔ vendored support symlinks are refused even when their target is internal (8.071328ms)
+✔ explicitly removed members are drift while unrecorded discovery membership is unknown (21.926945ms)
+✔ undeclared recorded sources are reported without losing healthy selected observations (14.657829ms)
+✔ requested upstream observation distinguishes required and optional unavailable checkouts (10.353688ms)
+✔ pre-aborted read APIs return interrupted results without writing any state (3.365912ms)
+✔ valid pending vendor journal keeps matching recorded content incomplete without recovery (14.05394ms)
+✔ malformed or symlinked vendor state preserves source data and never repairs the journal (12.169239ms)
+▶ installed public vendor recovery
+  ✔ cleans a failed first journal publication and converges on retry (992.49939ms)
+  ✔ does not overwrite a competing first journal or leave its own temporary file (483.883499ms)
+  ✔ preserves pre-existing foreign, symlinked, and malformed journals (1038.008186ms)
+  ✔ preserves edited stage evidence before cleaning any earlier published member (1159.667586ms)
+  ✔ preserves edited parked evidence before cleaning any earlier published member (1324.697324ms)
+  ✔ blocks create and import until a pending vendor journal is safely recovered (1561.553146ms)
+✔ installed public vendor recovery (8387.858455ms)
+✔ vendors only pinned committed bytes, binary files, executable modes, and source evidence (773.766344ms)
+✔ dry-run and a converged second invocation leave every fixture byte, inode, and state path unchanged (817.839878ms)
+✔ resolves local branches and annotated tags while explicit inventory and discovery filters stay bounded (493.280816ms)
+✔ rejects an enclosing Git repository borrowed through a checkout subdirectory (43.8174ms)
+▶ refuses symlink farms, nested symlinks, gitlinks, malformed metadata, and non-UTF8 committed names before writes
+  ✔ root-link (128.697861ms)
+  ✔ nested-link (138.83448ms)
+  ✔ gitlink (157.681692ms)
+  ✔ yaml (120.838633ms)
+  ✔ utf8 (132.156638ms)
+✔ refuses symlink farms, nested symlinks, gitlinks, malformed metadata, and non-UTF8 committed names before writes (680.143762ms)
+✔ explicit missing SKILL.md and duplicate canonical selections refuse all earlier valid work (235.668033ms)
+✔ adoption requires both explicit options for differing content and never replaces catalog links (944.301705ms)
+✔ preserves original adoption evidence without recursively nesting vendor receipts on updates (2029.317393ms)
+✔ mode edits and absent baseline cannot be overwritten implicitly or pruned with a discard flag (968.671202ms)
+✔ prunes only successfully enumerated selected sources and preserves foreign content and optional unavailable owners (660.915221ms)
+✔ stages the whole update before touching old content and reports incomplete staging honestly (1358.796524ms)
+✔ a publish failure retains old parked bytes and a retry converges after re-resolving current declarations (1152.259148ms)
+✔ changed declarations during staging preserve all old destinations and the retry follows current intent (776.622375ms)
+✔ real process termination after parking recovers old content even when the checkout is now unavailable (885.097624ms)
+✔ published-prefix reporting survives an I/O error immediately after rename (503.1603ms)
+✔ concurrent selected-source updates serialize without losing either catalog publication (326.218708ms)
+✔ already-aborted calls are immutable and cancellation while waiting wins over lock contention (53.578873ms)
+ℹ tests 925
+ℹ suites 11
+ℹ pass 923
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 32275.180177
+
+✖ failing tests:
+
+test at tests/node/resolution.test.mjs:537:1
+✖ auto targeting outside a project resolves and selects only the global scope (9.868404ms)
+  AssertionError [ERR_ASSERTION]: [{"code":"W_SCOPE_MISMATCH","severity":"warning","message":"Manifest labels itself global; its location selects project.","path":"/home/delorenj/.agents/skills.json","scope":"project","fix":"Correct the advisory scope label to match the manifest's location."},{"code":"E_PACK_MISSING","severity":"error","message":"Required directory is missing: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/skillex-resolution-VSfU1R/registry/packs/bmad","path":"/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/skillex-resolution-VSfU1R/registry/packs/bmad","fix":"Check the declared name and registry checkout.","scope":"project"}]
+  
+  3 !== 0
+  
+      at assertSuccess (file:///home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/tests/node/resolution-fixture.mjs:149:10)
+      at TestContext.<anonymous> (file:///home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/tests/node/resolution.test.mjs:542:3)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 3,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+exit status 1
+┃  lint ❯ 
+All checks passed!
+
+┃  typecheck ❯ 
+Success: no issues found in 42 source files
+
+┃  test ❯ 
+........................................................................ [  7%]
+...................................FF.F................................. [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 30%]
+...................sssss................................................ [ 38%]
+........FFFF.F.FFFFFF...F............................................... [ 46%]
+........................................................................ [ 54%]
+........................................................................ [ 61%]
+........................................................................ [ 69%]
+........................................................................ [ 77%]
+........................................................................ [ 84%]
+........................................................................ [ 92%]
+.....................................................................    [100%]
+=================================== FAILURES ===================================
+_______ test_install_links_the_tracked_units_and_enables_timer_and_path ________
+
+box = <tests.unit.test_install_hermes_resync.Box object at 0x7ada72674c20>
+
+    def test_install_links_the_tracked_units_and_enables_timer_and_path(box):
+        done = box.run("install")
+        assert done.returncode == 0, done.stderr
+        for unit in UNITS:
+            link = box.user / unit
+            assert link.is_symlink() and link.resolve() == (REPO / "systemd" / unit).resolve()
+        assert box.calls() == [
+            "--user daemon-reload",
+            "--user reset-failed " + " ".join(UNITS),
+            "--user enable --now skillex-hermes-resync.timer skillex-hermes-resync.path",
+        ]
+        # the default layout needs no drop-in: the tracked units already say ~/code/skillex
+>       assert not list(box.user.glob("*.d"))
+E       AssertionError: assert not [PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_install_links_the_tracked0/home/.config/systemd/user/skillex-hermes-resync.path.d')]
+E        +  where [PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_install_links_the_tracked0/home/.config/systemd/user/skillex-hermes-resync.path.d')] = list(<map object at 0x7ada725f8dc0>)
+E        +    where <map object at 0x7ada725f8dc0> = glob('*.d')
+E        +      where glob = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_install_links_the_tracked0/home/.config/systemd/user').glob
+E        +        where PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_install_links_the_tracked0/home/.config/systemd/user') = <tests.unit.test_install_hermes_resync.Box object at 0x7ada72674c20>.user
+
+tests/unit/test_install_hermes_resync.py:80: AssertionError
+______________________ test_install_twice_changes_nothing ______________________
+
+box = <tests.unit.test_install_hermes_resync.Box object at 0x7ada72583ed0>
+
+    def test_install_twice_changes_nothing(box):
+        assert box.run("install").returncode == 0
+        before = sorted(str(p) for p in box.user.rglob("*"))
+        again = box.run("install")
+        assert again.returncode == 0
+>       assert again.stdout.count("ok       ") == 3 and "linked" not in again.stdout
+E       AssertionError: assert (4 == 3)
+E        +  where 4 = <built-in method count of str object at 0x1fc07270>('ok       ')
+E        +    where <built-in method count of str object at 0x1fc07270> = 'ok       /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_install_twice_ch...AD: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/.git/modules/all-skills)\n'.count
+E        +      where 'ok       /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_install_twice_ch...AD: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/.git/modules/all-skills)\n' = CompletedProcess(args=['bash', '/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mis...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/.git/modules/all-skills)\n', stderr='').stdout
+
+tests/unit/test_install_hermes_resync.py:88: AssertionError
+_ test_off_default_layout_gets_a_drop_in_and_loses_it_when_it_becomes_default __
+
+tmp_path = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_off_default_layout_gets_a0')
+
+    def test_off_default_layout_gets_a_drop_in_and_loses_it_when_it_becomes_default(tmp_path):
+        box = Box(tmp_path, link_default=False)
+        assert box.run("install").returncode == 0
+        service = (box.user / "skillex-hermes-resync.service.d/10-layout.conf").read_text()
+        assert f"ExecStart=/usr/bin/python3 -B {REPO}/scripts/hermes-skillex-resync.py" in service
+        assert service.splitlines()[1:3] == ["ExecStart=", service.splitlines()[2]]
+        assert f"PJ_SKILLS_REGISTRY_ROOT={REPO}" in service
+        path = (box.user / "skillex-hermes-resync.path.d/10-layout.conf").read_text()
+        gitdir = subprocess.run(
+            ["git", "-C", str(REPO / "all-skills"), "rev-parse", "--absolute-git-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert f"PathModified={gitdir}/logs/HEAD" in path and f"PathChanged={gitdir}/HEAD" in path
+        assert path.splitlines()[1:3] == ["PathModified=", "PathChanged="]  # resets the tracked list
+    
+        (box.home / "code").mkdir()
+        (box.home / "code/skillex").symlink_to(REPO)  # now the default layout
+        assert box.run("install").returncode == 0
+>       assert not list(box.user.glob("*.d"))
+E       AssertionError: assert not [PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_off_default_layout_gets_a0/home/.config/systemd/user/skillex-hermes-resync.path.d')]
+E        +  where [PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_off_default_layout_gets_a0/home/.config/systemd/user/skillex-hermes-resync.path.d')] = list(<map object at 0x7ada725b2f00>)
+E        +    where <map object at 0x7ada725b2f00> = glob('*.d')
+E        +      where glob = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_off_default_layout_gets_a0/home/.config/systemd/user').glob
+E        +        where PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_off_default_layout_gets_a0/home/.config/systemd/user') = <tests.unit.test_install_hermes_resync.Box object at 0x7ada72972ea0>.user
+
+tests/unit/test_install_hermes_resync.py:124: AssertionError
+____________ test_sync_creates_every_missing_global_alias_relative _____________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_syn...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_sync_creates_every_missin0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_sync_creates_every_missin0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+run_sync = <function run_sync at 0x7ada73f34d50>
+
+    def test_sync_creates_every_missing_global_alias_relative(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        run_sync,
+    ) -> None:
+        write_catalog(registry, "alpha")
+        sandbox.write_global_manifest(skills=["alpha"])
+    
+        code, out = run_sync(cwd=sandbox.home)
+        assert code == EXIT_OK, out
+    
+        for relative in GLOBAL_CLI_ALIASES:
+            alias = sandbox.home / relative
+>           assert alias.is_symlink(), f"{relative} was not created"
+E           AssertionError: .claude/skills was not created
+E           assert False
+E            +  where False = is_symlink()
+E            +    where is_symlink = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_sync_creates_every_missin0/home/.claude/skills').is_symlink
+
+tests/unit/test_sync_aliases.py:145: AssertionError
+___________________ test_a_nested_alias_gets_the_right_depth ___________________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_n...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_nested_alias_gets_the_r0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_nested_alias_gets_the_r0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+run_sync = <function run_sync at 0x7ada73f34d50>
+
+    def test_a_nested_alias_gets_the_right_depth(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        run_sync,
+    ) -> None:
+        """``.config/opencode/skills`` is one level deeper than the other seven, so a
+        hardcoded ``../.agents/skills`` would dangle."""
+        write_catalog(registry, "alpha")
+        sandbox.write_global_manifest(skills=["alpha"])
+        assert run_sync(cwd=sandbox.home)[0] == EXIT_OK
+    
+>       assert os.readlink(sandbox.home / ".claude" / "skills") == "../.agents/skills"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_nested_alias_gets_the_r0/home/.claude/skills'
+
+tests/unit/test_sync_aliases.py:165: FileNotFoundError
+____________________ test_sync_creates_the_project_aliases _____________________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_syn...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_sync_creates_the_project_0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_sync_creates_the_project_0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+run_sync = <function run_sync at 0x7ada73f34d50>
+
+    def test_sync_creates_the_project_aliases(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        run_sync,
+    ) -> None:
+        """No project-scope alias exists on this machine today; without creation a
+        successful project sync is invisible to every CLI."""
+        write_catalog(registry, "alpha", "beta")
+        sandbox.write_global_manifest(skills=["alpha"])
+        project = sandbox.project("repo", manifest={"skills": ["beta"], "inherit_global": False})
+    
+        code, out = run_sync(cwd=project)
+        assert code == EXIT_OK, out
+    
+        for relative in PROJECT_CLI_ALIASES:
+            alias = project / relative
+>           assert alias.is_symlink(), f"{relative} was not created"
+E           AssertionError: .claude/skills was not created
+E           assert False
+E            +  where False = is_symlink()
+E            +    where is_symlink = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_sync_creates_the_project_0/projects/repo/.claude/skills').is_symlink
+
+tests/unit/test_sync_aliases.py:186: AssertionError
+_______________ test_ensure_aliases_creates_the_parent_directory _______________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ens...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ensure_aliases_creates_th0/state'))
+
+    def test_ensure_aliases_creates_the_parent_directory(sandbox: Sandbox) -> None:
+        root = sandbox.global_root
+        root.mkdir(parents=True)
+        reporter = Reporter()
+    
+        ensure_aliases(sandbox.home, root, reporter, is_global=True)
+    
+>       assert (sandbox.home / ".config" / "opencode").is_dir()
+E       AssertionError: assert False
+E        +  where False = is_dir()
+E        +    where is_dir = ((PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ensure_aliases_creates_th0/home') / '.config') / 'opencode').is_dir
+E        +      where PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ensure_aliases_creates_th0/home') = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ens...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ensure_aliases_creates_th0/state')).home
+
+tests/unit/test_sync_aliases.py:200: AssertionError
+____________ test_check_aliases_judges_by_resolved_path_not_string _____________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_che...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_check_aliases_judges_by_r0/state'))
+
+    def test_check_aliases_judges_by_resolved_path_not_string(sandbox: Sandbox) -> None:
+        """The unit-level statement of the same rule."""
+        root = sandbox.global_root
+        root.mkdir(parents=True)
+        for relative, body in (
+            (".claude/skills", "../.agents/skills"),
+            (".codex/skills", str(root)),
+            # A path with a redundant component still resolves to the root.
+            (".gemini/skills", str(sandbox.home / ".agents" / "." / "skills")),
+        ):
+            alias = sandbox.home / relative
+            alias.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(body, alias)
+    
+        by_path = {s.path: s for s in check_aliases(sandbox.home, root, is_global=True)}
+        for relative in (".claude/skills", ".codex/skills", ".gemini/skills"):
+>           status = by_path[sandbox.home / relative]
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           KeyError: PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_check_aliases_judges_by_r0/home/.claude/skills')
+
+tests/unit/test_sync_aliases.py:256: KeyError
+_______ test_an_alias_pointing_elsewhere_is_an_error_and_is_not_changed ________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_an_...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_an_alias_pointing_elsewhe0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_an_alias_pointing_elsewhe0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+run_sync_json = <function run_sync_json at 0x7ada73f34eb0>
+
+    def test_an_alias_pointing_elsewhere_is_an_error_and_is_not_changed(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        run_sync_json,
+    ) -> None:
+        write_catalog(registry, "alpha")
+        sandbox.write_global_manifest(skills=["alpha"])
+    
+        elsewhere = sandbox.tmp / "somebody-elses-skills"
+        elsewhere.mkdir()
+        alias = sandbox.home / ".gemini" / "skills"
+        alias.parent.mkdir(parents=True)
+        os.symlink(str(elsewhere), alias)
+        before = link_state(alias)
+    
+        code, payload = run_sync_json(cwd=sandbox.home)
+    
+>       assert code == EXIT_REFUSED
+E       assert 0 == 3
+
+tests/unit/test_sync_aliases.py:303: AssertionError
+________________ test_a_dangling_alias_is_reported_not_replaced ________________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_d...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_dangling_alias_is_repor0/state'))
+
+    def test_a_dangling_alias_is_reported_not_replaced(sandbox: Sandbox) -> None:
+        """``is_symlink()`` is true for a dangling link, so it takes the symlink branch
+        rather than the ``absent`` one -- it must not be silently overwritten."""
+        root = sandbox.global_root
+        root.mkdir(parents=True)
+        alias = sandbox.home / ".kimi" / "skills"
+        alias.parent.mkdir(parents=True)
+        os.symlink(str(sandbox.tmp / "vanished"), alias)
+        before = link_state(alias)
+    
+        reporter = Reporter()
+        ensure_aliases(sandbox.home, root, reporter, is_global=True)
+    
+>       assert [f.code for f in reporter.findings] == [Code.E_CLI_ALIAS_WRONG_TARGET]
+E       AssertionError: assert [] == [<Code.E_CLI_...RONG_TARGET'>]
+E         
+E         Right contains one more item: <Code.E_CLI_ALIAS_WRONG_TARGET: 'E_CLI_ALIAS_WRONG_TARGET'>
+E         Use -v to get more diff
+
+tests/unit/test_sync_aliases.py:326: AssertionError
+_______ test_a_real_directory_at_an_alias_path_is_reported_and_survives ________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_r...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_real_directory_at_an_al0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_real_directory_at_an_al0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+write_skill = <function write_skill at 0x7ada73f2e980>
+run_sync_json = <function run_sync_json at 0x7ada73f34eb0>
+
+    def test_a_real_directory_at_an_alias_path_is_reported_and_survives(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        write_skill,
+        run_sync_json,
+    ) -> None:
+        write_catalog(registry, "alpha")
+        sandbox.write_global_manifest(skills=["alpha"])
+    
+        occupied = sandbox.home / ".copilot" / "skills"
+        write_skill(occupied, "hand-rolled")
+        (occupied / "notes.md").write_text("mine\n", encoding="utf-8")
+        before = tree_contents(occupied)
+    
+        code, payload = run_sync_json(cwd=sandbox.home)
+    
+        assert code == EXIT_OK  # a warning, not a refusal
+>       assert Code.W_CLI_ROOT_NOT_ALIAS.value in codes_in(payload)
+E       AssertionError: assert 'W_CLI_ROOT_NOT_ALIAS' in []
+E        +  where 'W_CLI_ROOT_NOT_ALIAS' = <Code.W_CLI_ROOT_NOT_ALIAS: 'W_CLI_ROOT_NOT_ALIAS'>.value
+E        +    where <Code.W_CLI_ROOT_NOT_ALIAS: 'W_CLI_ROOT_NOT_ALIAS'> = Code.W_CLI_ROOT_NOT_ALIAS
+E        +  and   [] = codes_in({'dry_run': False, 'exit': 0, 'findings': [], 'ok': True, ...})
+
+tests/unit/test_sync_aliases.py:353: AssertionError
+_____________ test_fix_aliases_moves_the_directory_aside_and_links _____________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix_aliases_moves_the_dir0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix_aliases_moves_the_dir0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+write_skill = <function write_skill at 0x7ada73f2e980>
+run_sync_json = <function run_sync_json at 0x7ada73f34eb0>
+
+    def test_fix_aliases_moves_the_directory_aside_and_links(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        write_skill,
+        run_sync_json,
+    ) -> None:
+        write_catalog(registry, "alpha")
+        sandbox.write_global_manifest(skills=["alpha"])
+    
+        occupied = sandbox.home / ".copilot" / "skills"
+        write_skill(occupied, "hand-rolled")
+        (occupied / "notes.md").write_text("mine\n", encoding="utf-8")
+        before = tree_contents(occupied)
+    
+        code, payload = run_sync_json("--fix-aliases", cwd=sandbox.home)
+    
+        assert code == EXIT_OK
+        assert Code.W_CLI_ROOT_NOT_ALIAS.value not in codes_in(payload)
+    
+        # It is now an alias, written relative like every other created one.
+>       assert occupied.is_symlink()
+E       AssertionError: assert False
+E        +  where False = is_symlink()
+E        +    where is_symlink = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix_aliases_moves_the_dir0/home/.copilot/skills').is_symlink
+
+tests/unit/test_sync_aliases.py:382: AssertionError
+_________________ test_fix_aliases_never_deletes_a_second_time _________________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix_aliases_never_deletes0/state'))
+registry = PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_fix_aliases_never_deletes0/registry')
+write_catalog = <function write_catalog at 0x7ada73f2ec40>
+write_skill = <function write_skill at 0x7ada73f2e980>
+run_sync = <function run_sync at 0x7ada73f34d50>
+
+    def test_fix_aliases_never_deletes_a_second_time(
+        sandbox: Sandbox,
+        registry: Path,
+        write_catalog,
+        write_skill,
+        run_sync,
+    ) -> None:
+        """Re-running must not clobber the first rescue directory."""
+        write_catalog(registry, "alpha")
+        sandbox.write_global_manifest(skills=["alpha"])
+        occupied = sandbox.home / ".copilot" / "skills"
+        write_skill(occupied, "hand-rolled")
+    
+        assert run_sync("--fix-aliases", cwd=sandbox.home)[0] == EXIT_OK
+        aside = sorted(sandbox.home.glob(".copilot/skills.pre-skillex-*"))
+>       assert len(aside) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/unit/test_sync_aliases.py:408: AssertionError
+_________ test_a_regular_file_at_an_alias_path_is_reported_not_removed _________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_r...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_a_regular_file_at_an_alia0/state'))
+
+    def test_a_regular_file_at_an_alias_path_is_reported_not_removed(sandbox: Sandbox) -> None:
+        root = sandbox.global_root
+        root.mkdir(parents=True)
+        blocker = sandbox.home / ".openclaw" / "skills"
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("not a directory\n", encoding="utf-8")
+    
+        reporter = Reporter()
+        ensure_aliases(sandbox.home, root, reporter, is_global=True, fix=True)
+    
+>       assert Code.W_CLI_ROOT_NOT_ALIAS in [f.code for f in reporter.findings]
+E       AssertionError: assert <Code.W_CLI_ROOT_NOT_ALIAS: 'W_CLI_ROOT_NOT_ALIAS'> in []
+E        +  where <Code.W_CLI_ROOT_NOT_ALIAS: 'W_CLI_ROOT_NOT_ALIAS'> = Code.W_CLI_ROOT_NOT_ALIAS
+
+tests/unit/test_sync_aliases.py:426: AssertionError
+________ test_ensure_aliases_dry_run_creates_nothing_and_still_reports _________
+
+sandbox = Sandbox(tmp=PosixPath('/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ens...lorenj/.hermes/profiles/pjangler-pm/cache/scratch/pytest-of-delorenj/pytest-55/test_ensure_aliases_dry_run_cr0/state'))
+write_skill = <function write_skill at 0x7ada73f2e980>
+snapshot = <function snapshot at 0x7ada73f2f740>
+
+    def test_ensure_aliases_dry_run_creates_nothing_and_still_reports(
+        sandbox: Sandbox,
+        write_skill,
+        snapshot,
+    ) -> None:
+        root = sandbox.global_root
+        root.mkdir(parents=True)
+        occupied = sandbox.home / ".copilot" / "skills"
+        write_skill(occupied, "hand-rolled")
+        before = snapshot(sandbox.home)
+    
+        reporter = Reporter()
+        statuses = ensure_aliases(sandbox.home, root, reporter, is_global=True, dry_run=True)
+    
+        assert snapshot(sandbox.home) == before
+>       assert Code.W_CLI_ROOT_NOT_ALIAS in [f.code for f in reporter.findings]
+E       AssertionError: assert <Code.W_CLI_ROOT_NOT_ALIAS: 'W_CLI_ROOT_NOT_ALIAS'> in []
+E        +  where <Code.W_CLI_ROOT_NOT_ALIAS: 'W_CLI_ROOT_NOT_ALIAS'> = Code.W_CLI_ROOT_NOT_ALIAS
+
+tests/unit/test_sync_aliases.py:516: AssertionError
+=============================== warnings summary ===============================
+tests/integration/test_e2e.py: 39 warnings
+tests/unit/test_loader.py: 13 warnings
+  /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/.venv/lib/python3.14/site-packages/frontmatter/__init__.py:161: DeprecationWarning: codecs.open() is deprecated. Use open() instead.
+    with codecs.open(fd, "r", encoding) as f:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/unit/test_packs_contract.py:1144: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/packs/bmad/6.10.1-next.31 not present
+SKIPPED [1] tests/unit/test_packs_contract.py:1144: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/packs/bmad/6.10.2 not present
+SKIPPED [1] tests/unit/test_packs_contract.py:1154: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/packs/bmad/6.10.1-next.31 not present
+SKIPPED [1] tests/unit/test_packs_contract.py:1154: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/packs/bmad/6.10.2 not present
+SKIPPED [1] tests/unit/test_packs_contract.py:1164: /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105/recovery-retire-mise/packs/bmad/6.10.2 not present
+FAILED tests/unit/test_install_hermes_resync.py::test_install_links_the_tracked_units_and_enables_timer_and_path
+FAILED tests/unit/test_install_hermes_resync.py::test_install_twice_changes_nothing
+FAILED tests/unit/test_install_hermes_resync.py::test_off_default_layout_gets_a_drop_in_and_loses_it_when_it_becomes_default
+FAILED tests/unit/test_sync_aliases.py::test_sync_creates_every_missing_global_alias_relative
+FAILED tests/unit/test_sync_aliases.py::test_a_nested_alias_gets_the_right_depth
+FAILED tests/unit/test_sync_aliases.py::test_sync_creates_the_project_aliases
+FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_creates_the_parent_directory
+FAILED tests/unit/test_sync_aliases.py::test_check_aliases_judges_by_resolved_path_not_string
+FAILED tests/unit/test_sync_aliases.py::test_an_alias_pointing_elsewhere_is_an_error_and_is_not_changed
+FAILED tests/unit/test_sync_aliases.py::test_a_dangling_alias_is_reported_not_replaced
+FAILED tests/unit/test_sync_aliases.py::test_a_real_directory_at_an_alias_path_is_reported_and_survives
+FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_moves_the_directory_aside_and_links
+FAILED tests/unit/test_sync_aliases.py::test_fix_aliases_never_deletes_a_second_time
+FAILED tests/unit/test_sync_aliases.py::test_a_regular_file_at_an_alias_path_is_reported_not_removed
+FAILED tests/unit/test_sync_aliases.py::test_ensure_aliases_dry_run_creates_nothing_and_still_reports
+15 failed, 913 passed, 5 skipped, 52 warnings in 11.58s
+
+exit status 1
+[38;2;56;56;56m  ────────────────────────────────────[m
+summary: (done in 49.70 seconds)
+✔️ lint (0.09 seconds)
+✔️ typecheck (0.20 seconds)
+🥊 node-check (37.07 seconds)
+🥊 test (12.35 seconds)

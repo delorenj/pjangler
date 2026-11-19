@@ -1,0 +1,473 @@
+{
+  "provenance": "Independent reviewer session b13615e6-5045-5e1c-b887-3d389d1f54dd; this worker only preserves its output.",
+  "verdict_at_review": "partial; AC6 failed because two cleanup commits were unpublished",
+  "delivery": [
+    {
+      "repository": "TonnyBox",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "f2a5ea278513d8b15401f20ff5a190b31cd1280c",
+          "remote_tip": "f2a5ea278513d8b15401f20ff5a190b31cd1280c",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    },
+    {
+      "repository": "sidepiece",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "b38e1e7f17d4ffa5aab07883c3c1adddc09bf661",
+          "remote_tip": "b38e1e7f17d4ffa5aab07883c3c1adddc09bf661",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    },
+    {
+      "repository": "KeepyMoney",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "e92e7978971a1b18fd5cfffa705762f05be8b4e0",
+          "remote_tip": "e92e7978971a1b18fd5cfffa705762f05be8b4e0",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "worktree-finance-contract",
+          "sha": "dd81efc2050262dc3e3222f908eb59871b403eed",
+          "remote_tip": "dd81efc2050262dc3e3222f908eb59871b403eed",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    },
+    {
+      "repository": "skillex",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "3dd14bd17620cb5911846cc7a401432ed72fe3d7",
+          "remote_tip": "3dd14bd17620cb5911846cc7a401432ed72fe3d7",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "33GOD-35-mcp-standalone",
+          "sha": "fbbd28351599300f1df61995b1488fb12d7f4357",
+          "remote_tip": null,
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "skillex-integration-pilot",
+          "sha": "37e48f78706991d2c7d780e3cd4cf2198bfe7d4b",
+          "remote_tip": "37e48f78706991d2c7d780e3cd4cf2198bfe7d4b",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "skillex-retire-mise",
+          "sha": "6404fef79e1608c23ac5cfd440d96a445d654726",
+          "remote_tip": null,
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "fix/skrill20-native-cutover",
+          "sha": "a790f488f3c092ad6b8a93ae655bdc4c1426d259",
+          "remote_tip": "a790f488f3c092ad6b8a93ae655bdc4c1426d259",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    },
+    {
+      "repository": "holocene",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "c6f5ac176e834a944ee01bbf8b3312863fcd5ec0",
+          "remote_tip": "c6f5ac176e834a944ee01bbf8b3312863fcd5ec0",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    },
+    {
+      "repository": "voxxy",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "d2acbee8c4f5902c2d5f74d80b8a12726a1efb4c",
+          "remote_tip": "d2acbee8c4f5902c2d5f74d80b8a12726a1efb4c",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "feat/voxxy-1-telegram-clone",
+          "sha": "21c6b3cc0695f3a87dab555e8eec8d54ffb0d1be",
+          "remote_tip": "21c6b3cc0695f3a87dab555e8eec8d54ffb0d1be",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    },
+    {
+      "repository": "gruvato",
+      "commits": [
+        {
+          "branch": "main",
+          "sha": "1a06891d2eafa1505f40e7af2a2bb1faa488b388",
+          "remote_tip": "1a06891d2eafa1505f40e7af2a2bb1faa488b388",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        },
+        {
+          "branch": "gruv-189-copy-gate",
+          "sha": "116d438818513dcd131ee3358a874c4e8c3a2574",
+          "remote_tip": "116d438818513dcd131ee3358a874c4e8c3a2574",
+          "only_scoped_deletions": true,
+          "nonlegacy_diff_empty": true
+        }
+      ]
+    }
+  ],
+  "protected_state": [
+    {
+      "path": "/home/delorenj/code/TonnyBox",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/sidepiece",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/KeepyMoney",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0,
+      "runtime_entries": 15,
+      "runtime_full_metadata_equal": true,
+      "runtime_metadata_digest": "8a40d3b3270ff8a92c62d76050d3b6cfdceeb5ca1d6938101604a035dbcb0052"
+    },
+    {
+      "path": "/home/delorenj/code/KeepyMoney/.claude/worktrees/finance-contract",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0,
+      "runtime_entries": 644,
+      "runtime_full_metadata_equal": true,
+      "runtime_metadata_digest": "e2dfb945f3472cafaee7c45ea4c0c9e715f17e67a24c99cf9332432fed4f5457"
+    },
+    {
+      "path": "/home/delorenj/code/skillex",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 128
+    },
+    {
+      "path": "/home/delorenj/code/skillex/.worktrees/33GOD-35-mcp-standalone",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/skillex/.worktrees/skillex-integration-pilot",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/skillex/.worktrees/skillex-retire-mise",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": false,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/skillex/.worktrees/skrill20-native-cutover",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/33GOD/holocene",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/voxxy",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/voxxy/.worktrees/voxxy-1-telegram-clone",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/gruvato",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    },
+    {
+      "path": "/home/delorenj/code/gruvato/.worktrees/gruv-189-copy-gate",
+      "canonical_equal": true,
+      "canonical_changed": [],
+      "index_nonlegacy_equal": true,
+      "dirty_prior_files_equal": true,
+      "status_rc": 0
+    }
+  ],
+  "current_template_refresh": [
+    {
+      "command": [
+        "flume",
+        "remediate",
+        "hermes.pm-scaffold",
+        "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture",
+        "--scripts-only",
+        "--json",
+        "--dry-run"
+      ],
+      "rc": 0,
+      "result": {
+        "repo": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture",
+        "dryRun": true,
+        "ok": true,
+        "selectedRules": [
+          "hermes.pm-scaffold"
+        ],
+        "results": [
+          {
+            "id": "hermes.pm-scaffold",
+            "title": "Hermes orchestrator scaffold parity",
+            "status": "applied",
+            "summary": "1 orchestrator scaffold(s) normalized",
+            "changedFiles": [
+              "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture/agents/hermes/pm/.scripts/heartbeat.sh"
+            ],
+            "details": [
+              "scripts-only: refreshing .scripts/ only; SOUL, wrapper, .gitignore, runtime, profile metadata and registry rows are left alone"
+            ]
+          }
+        ],
+        "changedFiles": [
+          "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture/agents/hermes/pm/.scripts/heartbeat.sh"
+        ]
+      },
+      "stderr": "",
+      "legacy_fs": [],
+      "outside_unchanged": true,
+      "heartbeat_exists": false
+    },
+    {
+      "command": [
+        "flume",
+        "remediate",
+        "hermes.pm-scaffold",
+        "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture",
+        "--scripts-only",
+        "--json"
+      ],
+      "rc": 1,
+      "result": {
+        "repo": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture",
+        "dryRun": false,
+        "ok": false,
+        "selectedRules": [
+          "hermes.pm-scaffold"
+        ],
+        "results": [
+          {
+            "id": "hermes.pm-scaffold",
+            "title": "Hermes orchestrator scaffold parity",
+            "status": "partial",
+            "summary": "5 orchestrator scaffold issue(s) detected",
+            "changedFiles": [
+              "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture/agents/hermes/pm/.scripts/heartbeat.sh"
+            ],
+            "details": [
+              "scripts-only: refreshing .scripts/ only; SOUL, wrapper, .gitignore, runtime, profile metadata and registry rows are left alone",
+              "still failing after migrate: 5 orchestrator scaffold issue(s) detected",
+              "tonnybox-pm: missing agents/hermes/pm/runtime/memories/MEMORY.md",
+              "tonnybox-pm: missing agents/hermes/pm/.runtime-scaffold/README.md",
+              "tonnybox-pm: soul-drift agents/hermes/pm/SOUL.md (tracked copy; composed from roles/pm.md)",
+              "tonnybox-pm: runtime/profile.yaml missing inherited default config metadata",
+              "fleet registry missing tonnybox-pm"
+            ]
+          }
+        ],
+        "changedFiles": [
+          "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture/agents/hermes/pm/.scripts/heartbeat.sh"
+        ]
+      },
+      "stderr": "",
+      "legacy_fs": [],
+      "outside_unchanged": true,
+      "heartbeat_exists": true
+    },
+    {
+      "command": [
+        "flume",
+        "remediate",
+        "hermes.pm-scaffold",
+        "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture",
+        "--scripts-only",
+        "--json"
+      ],
+      "rc": 1,
+      "result": {
+        "repo": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/refresh-fixture",
+        "dryRun": false,
+        "ok": false,
+        "selectedRules": [
+          "hermes.pm-scaffold"
+        ],
+        "results": [
+          {
+            "id": "hermes.pm-scaffold",
+            "title": "Hermes orchestrator scaffold parity",
+            "status": "partial",
+            "summary": "5 orchestrator scaffold issue(s) detected",
+            "changedFiles": [],
+            "details": [
+              "scripts-only: refreshing .scripts/ only; SOUL, wrapper, .gitignore, runtime, profile metadata and registry rows are left alone",
+              "still failing after migrate: 5 orchestrator scaffold issue(s) detected",
+              "tonnybox-pm: missing agents/hermes/pm/runtime/memories/MEMORY.md",
+              "tonnybox-pm: missing agents/hermes/pm/.runtime-scaffold/README.md",
+              "tonnybox-pm: soul-drift agents/hermes/pm/SOUL.md (tracked copy; composed from roles/pm.md)",
+              "tonnybox-pm: runtime/profile.yaml missing inherited default config metadata",
+              "fleet registry missing tonnybox-pm"
+            ]
+          }
+        ],
+        "changedFiles": []
+      },
+      "stderr": "",
+      "legacy_fs": [],
+      "outside_unchanged": true,
+      "heartbeat_exists": true
+    }
+  ],
+  "linked_worktree_push_environment_hazard": {
+    "hook_git_env": {
+      "GIT_CONFIG_GLOBAL": "/dev/null",
+      "GIT_CONFIG_NOSYSTEM": "1",
+      "GIT_DIR": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/hook-common/.git/worktrees/hook-worktree",
+      "GIT_EXEC_PATH": "/usr/lib/git-core",
+      "GIT_PREFIX": "",
+      "GIT_TEMPLATE_DIR": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/empty-template"
+    },
+    "head_before": {
+      "rc": 0,
+      "stdout": "e2f8c925da4b5b563bf6fd28224da624031e1e0b",
+      "stderr": ""
+    },
+    "config_bare_before": {
+      "rc": 0,
+      "stdout": "false",
+      "stderr": ""
+    },
+    "nested_init": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": "warning: re-init: ignored --initial-branch=main"
+    },
+    "nested_gitdir": {
+      "rc": 0,
+      "stdout": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/hook-common/.git/worktrees/hook-worktree",
+      "stderr": ""
+    },
+    "nested_commit": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "head_after": {
+      "rc": 0,
+      "stdout": "f0363a517cad0de695e9a356d6f51a979d1599d4",
+      "stderr": ""
+    },
+    "config_bare_after": {
+      "rc": 0,
+      "stdout": "true",
+      "stderr": ""
+    }
+  },
+  "standalone_push_environment_control": {
+    "hook_git_dir": null,
+    "head_before": {
+      "rc": 0,
+      "stdout": "a761e0271edbedc2ab347434159109735a202d87",
+      "stderr": ""
+    },
+    "bare_before": {
+      "rc": 0,
+      "stdout": "false",
+      "stderr": ""
+    },
+    "nested_init": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "nested_gitdir": {
+      "rc": 0,
+      "stdout": "/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-105-quality/standalone-nested-fixture/.git",
+      "stderr": ""
+    },
+    "nested_commit": {
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "head_after": {
+      "rc": 0,
+      "stdout": "a761e0271edbedc2ab347434159109735a202d87",
+      "stderr": ""
+    },
+    "bare_after": {
+      "rc": 0,
+      "stdout": "false",
+      "stderr": ""
+    }
+  }
+}

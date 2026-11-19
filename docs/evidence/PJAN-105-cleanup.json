@@ -1,0 +1,322 @@
+{
+  "timestamp_utc": "2026-11-19T10:22:39.088553+00:00",
+  "operations": [
+    {
+      "repo": "/home/delorenj/code/TonnyBox",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/TonnyBox/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "f2a5ea278513d8b15401f20ff5a190b31cd1280c",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "f2a5ea278513d8b15401f20ff5a190b31cd1280c",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "f2a5ea278513d8b15401f20ff5a190b31cd1280c\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was f2a5ea2).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/sidepiece",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/sidepiece/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "b38e1e7f17d4ffa5aab07883c3c1adddc09bf661",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "b38e1e7f17d4ffa5aab07883c3c1adddc09bf661",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "b38e1e7f17d4ffa5aab07883c3c1adddc09bf661\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was b38e1e7).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/KeepyMoney",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/KeepyMoney/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "e92e7978971a1b18fd5cfffa705762f05be8b4e0",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "e92e7978971a1b18fd5cfffa705762f05be8b4e0",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "e92e7978971a1b18fd5cfffa705762f05be8b4e0\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was e92e797).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/skillex",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/skillex/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "3dd14bd17620cb5911846cc7a401432ed72fe3d7",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "3dd14bd17620cb5911846cc7a401432ed72fe3d7",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "3dd14bd17620cb5911846cc7a401432ed72fe3d7\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was 3dd14bd).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/33GOD/holocene",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/33GOD/holocene/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "c6f5ac176e834a944ee01bbf8b3312863fcd5ec0",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "c6f5ac176e834a944ee01bbf8b3312863fcd5ec0",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "c6f5ac176e834a944ee01bbf8b3312863fcd5ec0\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was c6f5ac1).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/voxxy",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/voxxy/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "d2acbee8c4f5902c2d5f74d80b8a12726a1efb4c",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "d2acbee8c4f5902c2d5f74d80b8a12726a1efb4c",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "d2acbee8c4f5902c2d5f74d80b8a12726a1efb4c\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was d2acbee).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/gruvato",
+      "branch": "PJAN-105-legacy-retirement",
+      "path": "/home/delorenj/code/gruvato/.worktrees/PJAN-105-legacy-retirement",
+      "expected": "1a06891d2eafa1505f40e7af2a2bb1faa488b388",
+      "remote_ref": "refs/heads/main",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "1a06891d2eafa1505f40e7af2a2bb1faa488b388",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "1a06891d2eafa1505f40e7af2a2bb1faa488b388\trefs/heads/main",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-legacy-retirement (was 1a06891d).",
+        "stderr": ""
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/skillex",
+      "branch": "PJAN-105-recover-standalone",
+      "path": "/home/delorenj/code/skillex/.worktrees/PJAN-105-recover-standalone",
+      "expected": "fbbd28351599300f1df61995b1488fb12d7f4357",
+      "remote_ref": "refs/heads/PJAN-105-recover-standalone",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "fbbd28351599300f1df61995b1488fb12d7f4357",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "fbbd28351599300f1df61995b1488fb12d7f4357\trefs/heads/PJAN-105-recover-standalone",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-recover-standalone (was fbbd283).",
+        "stderr": "warning: deleting branch 'PJAN-105-recover-standalone' that has been merged to\n         'refs/remotes/origin/PJAN-105-recover-standalone', but not yet merged to HEAD"
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    },
+    {
+      "repo": "/home/delorenj/code/skillex",
+      "branch": "PJAN-105-recover-retire-mise",
+      "path": "/home/delorenj/code/skillex/.worktrees/PJAN-105-recover-retire-mise",
+      "expected": "6404fef79e1608c23ac5cfd440d96a445d654726",
+      "remote_ref": "refs/heads/PJAN-105-recover-retire-mise",
+      "preflight": {
+        "head": {
+          "rc": 0,
+          "stdout": "6404fef79e1608c23ac5cfd440d96a445d654726",
+          "stderr": ""
+        },
+        "status": {
+          "rc": 0,
+          "stdout": "",
+          "stderr": ""
+        },
+        "remote": {
+          "rc": 0,
+          "stdout": "6404fef79e1608c23ac5cfd440d96a445d654726\trefs/heads/PJAN-105-recover-retire-mise",
+          "stderr": ""
+        }
+      },
+      "worktree_remove": {
+        "rc": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      "branch_delete": {
+        "rc": 0,
+        "stdout": "Deleted branch PJAN-105-recover-retire-mise (was 6404fef).",
+        "stderr": "warning: deleting branch 'PJAN-105-recover-retire-mise' that has been merged to\n         'refs/remotes/origin/PJAN-105-recover-retire-mise', but not yet merged to HEAD"
+      },
+      "result": "clean landed task worktree removed; branch removed"
+    }
+  ],
+  "original_target_worktrees_preserved": true,
+  "force_removal_used": false
+}
