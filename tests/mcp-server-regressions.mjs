@@ -313,10 +313,28 @@ try {
   await callContract("pjangler_info", { project_id: "TEST-INFO", registryPath: infoRegistry });
   await callContract("pjangler_describe_recipe", { recipe: "node" });
   const initPreview = await callContract("pjangler_project_init", { name: "Contract Preview", targetDir: join(mcpTmp, "contract-preview"), registryPath: infoRegistry });
+  const bootPreview = await callContract("pjangler_bootstrap_33god_project", {
+    parentDir: mcpTmp, projectName: "Contract Boot", projectSlug: "contract-boot", dryRun: true, registryPath: infoRegistry,
+  });
+  for (const [name, preview] of [
+    ["pjangler_project_init", initPreview.structuredContent],
+    ["pjangler_bootstrap_33god_project", bootPreview.structuredContent],
+  ]) {
+    assert.equal(preview.dryRun, true);
+    rejectMalformed(name, preview, (p) => { p.project = {}; }, "empty preview project");
+    rejectMalformed(name, preview, (p) => { delete p.actions; }, "preview missing actions");
+    rejectMalformed(name, preview, (p) => { delete p.manifest; }, "preview missing manifest");
+    rejectMalformed(name, preview, (p) => { delete p.registryPath; }, "preview missing registry path");
+    rejectMalformed(name, preview, (p) => { p.dryRun = false; }, "preview masquerading as execution");
+    for (const minimal of [{ ok: true, dryRun: true }, { ok: true, dryRun: false }]) {
+      const validate = ajv.compile(advertised.get(name).outputSchema);
+      assert.equal(validate(minimal), false, `${name} must reject minimal ${JSON.stringify(minimal)}`);
+    }
+  }
   rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.actions[0] = {}; }, "empty preview action");
-  rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.project = {}; }, "empty preview project");
-  const bootPreview = await callContract("pjangler_bootstrap_33god_project", { parentDir: mcpTmp, projectName: "Contract Boot", projectSlug: "contract-boot", dryRun: true, registryPath: infoRegistry });
-  rejectMalformed("pjangler_bootstrap_33god_project", bootPreview.structuredContent, (p) => { p.project = {}; }, "empty preview project");
+  rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.manifest.ticket_provider = {}; }, "empty manifest ticket provider");
+  rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.manifest.agents.maintainer = {}; }, "empty manifest agent");
+  rejectMalformed("pjangler_project_init", initPreview.structuredContent, (p) => { p.project.agents.maintainer = {}; }, "empty registry agent");
   const recipePreviewDir = join(mcpTmp, "contract-recipe-preview");
   mkdirSync(recipePreviewDir);
   const previewRecipe = await callContract("pjangler_run_recipe", { recipe: "node", targetDir: recipePreviewDir });
@@ -331,6 +349,16 @@ try {
   assert.deepEqual(auditText.structuredContent.rules, auditJson.structuredContent.rules);
   assert.ok(!auditText.content[0].text.startsWith("{"));
   const describeJson = await callContract("pjangler_describe_project", { targetDir: recipePreviewDir, registryPath: infoRegistry });
+  for (const field of ["git", "activity", "type", "identity", "parity", "notebook"]) {
+    rejectMalformed("pjangler_describe_project", describeJson.structuredContent, (p) => { p[field] = {}; }, `empty ${field}`);
+  }
+  for (const field of ["subsystems", "configFiles", "nextSteps"]) {
+    rejectMalformed("pjangler_describe_project", describeJson.structuredContent, (p) => { p[field] = [{}]; }, `empty ${field} entry`);
+  }
+  rejectMalformed("pjangler_describe_project", describeJson.structuredContent, (p) => { p.activity.scanned = {}; }, "empty activity scan");
+  rejectMalformed("pjangler_describe_project", describeJson.structuredContent, (p) => { p.identity.agents = [{}]; }, "empty identity agent");
+  rejectMalformed("pjangler_describe_project", describeJson.structuredContent, (p) => { p.subsystems[0].rules = [{}]; }, "empty subsystem rule");
+  rejectMalformed("pjangler_describe_project", describeJson.structuredContent, (p) => { p.parity.counts = {}; }, "empty parity counts");
   const describeText = await callContract("pjangler_describe_project", { targetDir: recipePreviewDir, registryPath: infoRegistry, json: false }, { formatted: true });
   assert.deepEqual(describeText.structuredContent.identity, describeJson.structuredContent.identity);
   const migrationPreview = await callContract("pjangler_migrate_project", { targetDir: contractAuditDir, ruleId: "sot.agent-symlinks", dryRun: true }, { error: false });

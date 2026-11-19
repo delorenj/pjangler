@@ -43,6 +43,6 @@ context: []
 ## Spec Change Log
 ## Verification
 **Commands:**
-- `npm run build && npm run typecheck` — passes.
-- `node tests/mcp-server-regressions.mjs` — protocol assertions pass.
-- `npm test` — existing suite passes.
+- `npm run typecheck && npm run build` — passed on the PJAN-68 worktree.
+- `node tests/mcp-server-regressions.mjs && node tests/mcp-catalog-regressions.mjs && node tests/pjan-67-trusted-lifecycle-regressions.mjs && git diff --check` — passed, including client-advertised preview/execution variants, describe field rejection, and trusted create/sync apply.
+- Earlier full-suite run encountered the unrelated published BMAD release lookup limitation; see `issue-evidence/PJAN-68.md`.

@@ -140,21 +140,23 @@ function slugify(value: string): string {
 // Stable keys are contracted at each nested boundary. Preserve additional
 // fields on evolving registry/plan/report objects without accepting empty
 // placeholders for the objects a client must actually interpret.
-const RECORD = z.record(z.string(), z.unknown());
 const RULES = z.array(z.string());
 const GUIDANCE = z.object({ skill: z.string(), guidance: z.string(), workflows: RULES }).passthrough();
 const RECIPE_META = z.object({ name: z.string(), description: z.string(), commands: RULES }).passthrough();
 const COMMAND_META = z.object({ name: z.string(), description: z.string(), group: z.string() }).passthrough();
 const TICKET = z.object({ type: z.string() }).passthrough();
+const AGENT = z.object({ role: z.string(), provisioning_state: z.string().optional(), role_dir: z.string().optional() }).passthrough();
 const MANIFEST = z.object({
   project_name: z.string(), project_description: z.string(), project_id: z.string(),
-  repo_path: z.string(), ticket_provider: TICKET, agents: RECORD,
+  repo_path: z.string(), ticket_provider: TICKET.extend({ workspace: z.string(), identifier: z.string(), board_id: z.string() }),
+  agents: z.record(z.string(), AGENT),
 }).passthrough();
 const PROJECT = z.object({
   name: z.string(), slug: z.string(), repo_path: z.string(), description: z.string(),
   status: z.string(), source_artifacts: z.array(z.object({ kind: z.string(), path: z.string() }).passthrough()),
   template: z.object({ commonproject: z.object({ enabled: z.boolean(), primary_language: z.string() }).passthrough() }).passthrough(),
-  ticket_provider: TICKET, agents: RECORD, created_at: z.string(), updated_at: z.string(),
+  ticket_provider: TICKET, agents: z.record(z.string(), AGENT.extend({ provisioning_state: z.string() })),
+  created_at: z.string(), updated_at: z.string(),
 }).passthrough();
 const PROJECT_ACTION = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("registry.upsert"), registryPath: z.string(), slug: z.string(), project: PROJECT }).passthrough(),
@@ -198,20 +200,20 @@ const AUDIT_OUTPUT = AUDIT_REPORT.extend({
 const MIGRATION_OUTPUT = MIGRATION_REPORT.extend({
   summary: z.object({ counts: z.record(z.string(), z.number()), changedFileCount: z.number() }),
 }).passthrough();
-// Preview exposes the plan at the top level; apply exposes a recipe result
-// with its nested plan. Require the common envelope and type both branch
-// payloads while preserving the advertised top-level JSON Schema object.
-const PROJECT_LIFECYCLE_OUTPUT = z.object({
-  ok: z.boolean(), dryRun: z.boolean(),
-  apply: z.boolean().optional(), live: z.boolean().optional(), registryPath: z.string().optional(),
-  project: PROJECT.optional(), manifest: MANIFEST.optional(), actions: z.array(PROJECT_ACTION).optional(),
-  plan: PLAN.optional(), recipeId: z.string().optional(), mode: z.enum(["create", "sync"]).optional(),
-  changedFiles: RULES.optional(), logs: RULES.optional(), errors: RULES.optional(),
-  phases: z.array(PHASE).optional(), warnings: RULES.optional(),
-  selectedOperations: RULES.optional(), selectedParityRules: RULES.optional(),
+// MCP requires an object at the schema root. Its JSON Schema oneOf still
+// discriminates the two outcome shapes (the SDK drops a root Zod union).
+const PROJECT_PREVIEW = PLAN.extend({ dryRun: z.literal(true), guidance: GUIDANCE.optional() }).passthrough();
+const PROJECT_EXECUTION = z.object({
+  ok: z.boolean(), dryRun: z.literal(false), recipeId: z.string(),
+  mode: z.enum(["create", "sync"]), plan: PLAN,
+  changedFiles: RULES, logs: RULES, errors: RULES, phases: z.array(PHASE),
+  warnings: RULES, selectedOperations: RULES, selectedParityRules: RULES,
   audit: AUDIT_REPORT.optional(), migrationReport: MIGRATION_REPORT.optional(),
   guidance: GUIDANCE.optional(),
 }).passthrough();
+const PROJECT_LIFECYCLE_OUTPUT = z.object({ ok: z.boolean(), dryRun: z.boolean() })
+  .passthrough()
+  .meta({ oneOf: [z.toJSONSchema(PROJECT_PREVIEW), z.toJSONSchema(PROJECT_EXECUTION)] });
 const INFO_OUTPUT = z.object({
   ok: z.literal(true), project_id: z.string(), repo_path: z.string(),
   manifest_path: z.string(),
@@ -222,10 +224,64 @@ const INFO_OUTPUT = z.object({
 }).passthrough();
 const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: z.record(z.string(), PROJECT) }).passthrough();
 const PROJECT_SHOW_OUTPUT = PROJECT;
+const CAPTURE_ADMISSION = z.object({
+  unresolved_count: z.number().nullable(), unresolved_count_lower_bound: z.number(),
+  unresolved_bytes: z.number().nullable(), unresolved_bytes_lower_bound: z.number(),
+  unmeasurable_entry_count: z.number(),
+  integrity_entries: z.array(z.object({ entry_id: z.string(), reason: z.string() }).passthrough()),
+  receipt_caps: z.object({ max_count: z.number(), max_bytes: z.number() }).passthrough(),
+  receiptless_session_count: z.number(), stale_receiptless_session_count: z.number(),
+  active_refusals: z.array(z.object({
+    session_key: z.string(), refused_at: z.string(), reason: z.enum(["count-cap", "byte-cap", "both"]),
+    current_count: z.number(), current_bytes: z.number(), candidate_bytes: z.number(),
+    max_count: z.number(), max_bytes: z.number(), next_actions: RULES,
+    outcome: z.literal("capture-refused-history"),
+  }).passthrough()),
+}).passthrough();
 const DESCRIBE_OUTPUT = z.object({
-  repo: z.string(), describedAt: z.string(), git: RECORD, activity: RECORD,
-  type: RECORD, identity: RECORD, subsystems: z.array(RECORD),
-  configFiles: z.array(RECORD), nextSteps: z.array(RECORD), parity: RECORD,
+  repo: z.string(), describedAt: z.string(),
+  git: z.object({
+    isRepo: z.boolean(), branch: z.string().optional(), head: z.string().optional(),
+    remote: z.string().optional(), dirtyFiles: z.number().optional(),
+  }).passthrough(),
+  activity: z.object({
+    updated: z.string().nullable(), updatedUnix: z.number().nullable(),
+    relative: z.string(), compact: z.string(), active: z.boolean(),
+    source: z.object({ kind: z.enum(["ref", "worktree", "uncommitted"]), label: z.string(), unix: z.number() }).passthrough().nullable(),
+    scanned: z.object({ refs: z.number(), worktrees: z.number(), dirtyFiles: z.number() }).passthrough(),
+  }).passthrough(),
+  type: z.object({ primaryLanguage: z.string().optional(), languages: RULES, roles: RULES, evidence: RULES }).passthrough(),
+  identity: z.object({
+    manifest: z.boolean(), registered: z.boolean(), registryPath: z.string(),
+    slug: z.string().optional(), name: z.string().optional(), description: z.string().optional(),
+    ticketProvider: TICKET.extend({
+      workspace: z.string().optional(), identifier: z.string().optional(), boardId: z.string().optional(), state: z.string().optional(),
+    }).optional(),
+    agents: z.array(z.object({ name: z.string(), role: z.string(), provisioningState: z.string(), roleDir: z.string().optional() }).passthrough()),
+    drift: z.array(z.object({ note: z.string(), command: z.string().optional() }).passthrough()),
+  }).passthrough(),
+  notebook: z.object({
+    declared: z.boolean(), bindingState: z.enum(["disabled", "planned", "linked"]).nullable(),
+    notebookId: z.string().nullable(), overviewNoteId: z.string().nullable(),
+    health: z.null(), remoteCheck: z.literal("skip"), captureAdmission: CAPTURE_ADMISSION.nullable(),
+  }).passthrough(),
+  subsystems: z.array(z.object({
+    id: z.string(), name: z.string(), description: z.string(),
+    status: z.enum(["installed", "drifted", "absent"]), parity: z.enum(["ok", "drift", "unchecked"]),
+    evidence: RULES,
+    rules: z.array(z.object({
+      id: z.string(), title: z.string(), status: z.enum(["pass", "fail", "warn", "skip"]),
+      summary: z.string(), fixable: z.boolean(),
+    }).passthrough()),
+  }).passthrough()),
+  configFiles: z.array(z.object({ path: z.string(), purpose: z.string(), subsystem: z.string() }).passthrough()),
+  nextSteps: z.array(z.object({
+    title: z.string(), reason: z.string(), source: z.enum(["lifecycle", "registry", "parity", "agents"]),
+    command: z.string().optional(), rules: RULES.optional(), details: RULES.optional(),
+  }).passthrough()),
+  parity: z.object({
+    ok: z.boolean(), counts: z.object({ pass: z.number(), fail: z.number(), warn: z.number(), skip: z.number() }).passthrough(),
+  }).passthrough(),
 }).passthrough();
 const RECIPE_INFO_OUTPUT = RECIPE_META;
 const RECIPE_RUN_OUTPUT = z.object({

@@ -202,6 +202,16 @@ try {
     const badPlan = structuredClone(result.structuredContent);
     badPlan.plan = {};
     assert.equal(validate(badPlan), false, `${name}: empty plan must fail discovery schema`);
+    for (const field of ["plan", "recipeId", "mode", "changedFiles", "logs", "errors", "phases", "warnings", "selectedOperations", "selectedParityRules"]) {
+      const missing = structuredClone(result.structuredContent);
+      delete missing[field];
+      assert.equal(validate(missing), false, `${name}: missing execution ${field} must fail discovery schema`);
+    }
+    for (const field of ["id", "status", "changedFiles"]) {
+      const missingPhaseField = structuredClone(result.structuredContent);
+      delete missingPhaseField.phases[0][field];
+      assert.equal(validate(missingPhaseField), false, `${name}: missing phase ${field} must fail discovery schema`);
+    }
   }
   const target = join(temporary, "trusted-project");
   const createdResult = await client.callTool({
