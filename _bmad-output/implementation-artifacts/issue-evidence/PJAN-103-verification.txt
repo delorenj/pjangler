@@ -1,0 +1,234 @@
+PJAN-103 repair verification; 2026-11-19
+All temporary fixtures used active-profile scratch; bubblewrap mounted scratch onto /tmp for runners that force /tmp.
+No full-suite pass claimed. Prior full PJangler run stopped at 40/124.
+
+COMMAND: PJ_TICKET_PROVIDER_ADAPTERS=<33GOD review worktree>/krebs/adapters/tp node tests/pjan-103-state-map-regressions.mjs (network-isolated)
+EXIT: 0
+ok 1 - stock default chooses Todo from two unstarted states, one PATCH and same-issue read-back
+ok 2 - project override beats conflicting legacy role and Todo default
+ok 3 - legacy role beats default when project override absent; inline comment is not part of name
+ok 4 - absent configured target refuses before mutation
+ok 5 - duplicate configured target refuses before mutation
+ok 6 - wrong-group configured target refuses before mutation
+ok 7 - wrong-group names do not fall through when the same name exists elsewhere
+ok 8 - malformed project map refuses before any request
+ok 9 - unknown project map key refuses before requests rather than silently using Todo
+ok 10 - YAML scalar decodes "Ready \"for\" Implementation" and trailing comment
+ok 11 - YAML scalar decodes 'Ready ''for'' Implementation' and trailing comment
+ok 12 - YAML scalar decodes "Ready # Implementation" and trailing comment
+ok 13 - YAML scalar decodes "Ready\u0020Implementation" and trailing comment
+ok 14 - YAML scalar decodes 'Ready for Implementation' and trailing comment
+ok 15 - YAML scalar decodes Ready for Implementation and trailing comment
+ok 16 - malformed YAML scalar "Ready for Implementation refuses before requests
+ok 17 - malformed YAML scalar "Ready\q" refuses before requests
+ok 18 - malformed YAML scalar 'Ready' garbage refuses before requests
+ok 19 - a different read-back state cannot certify the single PATCH
+ok 20 - true stock board has exactly five states and every standard lane resolves
+PJAN-103: 20 hermetic checks passed
+
+COMMAND: PJ_TICKET_PROVIDER_ADAPTERS=<33GOD review worktree>/krebs/adapters/tp node scripts/run-tests.mjs pjan-103 pjan-23 pjan-50 (network-isolated)
+EXIT: 0
+gate  typecheck ... ok (2.6s)
+gate  build ... ok (206ms)
+[ 1/3] pjan-23-regressions ... PASS (2.4s)
+[ 2/3] pjan-103-state-map-regressions ... PASS (5.9s)
+[ 3/3] pjan-50-regressions ... PASS (1.5s)
+
+========================================================================
+SUMMARY  attempted 3  passed 3  failed 0  quarantined-failing 0  (9.8s)
+========================================================================
+All suites passed.
+
+COMMAND: KREBS_TP_ADAPTERS=<33GOD review worktree>/krebs/adapters/tp uv run --with pytest pytest -q -p no:cacheprovider --basetemp <scratch>/tmp/template-pytest tests/test_pjan103_generated_role.py tests/test_tp_adapter_vendoring.py
+EXIT: 0
+.....                                                                    [100%]
+5 passed in 0.63s
+
+COMMAND: node scripts/run-tests.mjs pjan-103 pjan-48 role-contract scaffold-conditional (network-isolated)
+EXIT: 0
+gate  typecheck ... ok (3.3s)
+gate  build ... ok (209ms)
+[ 1/4] pjan-48-regressions ... PASS (13.4s)
+[ 2/4] pjan-103-generated-consumption ... PASS (14.8s)
+[ 3/4] scaffold-conditional-regressions ... PASS (864ms)
+[ 4/4] role-contract-regressions ... PASS (227ms)
+
+========================================================================
+SUMMARY  attempted 4  passed 4  failed 0  quarantined-failing 0  (29.2s)
+========================================================================
+All suites passed.
+
+COMMAND: node tests/pjan-103-generated-consumption.mjs (network-isolated, actual rule JSON)
+EXIT: 0
+ok 1 - fresh real Copier role ships Todo default and executable vendor, never Linear
+ok 2 - actual generated dispatcher on a true five-state stock board
+ok 3 - project Ready override beats conflicting generated Todo role
+ok 4 - legacy role fallback beats adapter Todo default with no project map
+ok 5 - generated dispatcher refuses unknown key without PATCH
+ok 6 - generated dispatcher refuses malformed map without PATCH
+ok 7 - generated dispatcher refuses missing target without PATCH
+ok 8 - generated dispatcher refuses wrong group without PATCH
+ok 9 - generated dispatcher refuses duplicate target without PATCH
+ok 10 - same-issue verification refuses wrong readback after exactly one PATCH
+ok 11 - review/hold retain lifecycle labels and hold never moves Todo
+ok 12 - forced real Copier regeneration retains supported project map and explicit role choices
+{"phase":"before-parity","report":{"id":"hermes.pm-scaffold","title":"Hermes orchestrator scaffold parity","status":"fail","summary":"3 orchestrator scaffold issue(s) detected","details":["fixture-pm: missing agents/hermes/pm/runtime/memories/MEMORY.md","fixture-pm: soul-drift agents/hermes/pm/SOUL.md (tracked copy; composed from roles/pm.md)","fixture-pm: runtime/profile.yaml missing inherited default config metadata"],"fixable":true}}
+{"phase":"parity-migrate","report":{"id":"hermes.pm-scaffold","title":"Hermes orchestrator scaffold parity","status":"applied","summary":"1 orchestrator scaffold(s) normalized","changedFiles":["/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/SOUL.md","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/.runtime-scaffold/.gitignore.jinja","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/.gitattributes","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/.gitignore.jinja","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/README.md","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/decisions/.gitkeep","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/logs/.gitkeep","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/memories/MEMORY.md","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/memories/USER.md","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/role.yaml","/home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/profile.yaml"],"details":["fixture-pm: composed SOUL from roles/pm.md (tone direct, role.yaml)","fixture-pm: template_rev -> 71a3a18","updated /home/delorenj/.hermes/profiles/pjangler-pm/cache/scratch/PJAN-103-repair/tmp/pjan103-generated-LDYUQO/fixture/agents/hermes/pm/runtime/profile.yaml"]}}
+{"phase":"after-parity","report":{"id":"hermes.pm-scaffold","title":"Hermes orchestrator scaffold parity","status":"pass","summary":"1 orchestrator scaffold(s) verified","details":[],"fixable":true}}
+ok 13 - actual hermes.pm-scaffold passes on regenerated fixed consumer, map retained, no Linear
+PJAN-103 generated consumption: 13 integration checks passed
+
+COMMAND: PJ_TICKET_PROVIDER_ADAPTERS=<33GOD review worktree>/krebs/adapters/tp node scripts/run-tests.mjs pjan-103 pjan-23 pjan-50 check:hermetic-test-env
+EXIT: 1
+gate  typecheck ... ok (2.5s)
+gate  build ... ok (206ms)
+[ 1/4] check:hermetic-test-env ... FAIL (1.1s)
+hermetic suite env: 1 finding(s). Every registered suite's first import is "./helpers/hermetic-suite.mjs" (PJAN-196):
+
+  tests/pjan-75-regressions.mjs:55  reads process.env.PJAN75_CLI_BUILT, which the hermetic-suite preamble deletes (not in PASSTHROUGH, not granted to this suite in SUITE_PASSTHROUGH, never set here): it is always undefined
+
+A suite that must see the operator env in-process gets a PREAMBLE_EXCEPTIONS entry with the reason.
+[ 2/4] pjan-23-regressions ... PASS (2.6s)
+[ 3/4] pjan-103-state-map-regressions ... PASS (6.2s)
+[ 4/4] pjan-50-regressions ... PASS (1.5s)
+
+========================================================================
+SUMMARY  attempted 4  passed 3  failed 1  quarantined-failing 0  (11.4s)
+========================================================================
+FAIL      check:hermetic-test-env
+
+COMMAND: node tests/pjan-103-generated-consumption.mjs with ONLY template plane.sh read-only-mounted from 9271e54 (expected failure)
+EXIT: 1
+ok 1 - fresh real Copier role ships Todo default and executable vendor, never Linear
+ok 2 - actual generated dispatcher on a true five-state stock board
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
++ actual - expected
+
+  {
++   state: 'todo'
+-   state: 'ready'
+  }
+
+    at success (file:///home/delorenj/code/33GOD/flume/.worktrees/PJAN-103-template-pin/tests/pjan-103-generated-consumption.mjs:70:10)
+    at file:///home/delorenj/code/33GOD/flume/.worktrees/PJAN-103-template-pin/tests/pjan-103-generated-consumption.mjs:136:5
+    at check (file:///home/delorenj/code/33GOD/flume/.worktrees/PJAN-103-template-pin/tests/pjan-103-generated-consumption.mjs:36:29)
+    at file:///home/delorenj/code/33GOD/flume/.worktrees/PJAN-103-template-pin/tests/pjan-103-generated-consumption.mjs:135:3
+    at ModuleJob.run (node:internal/modules/esm/module_job:569:25)
+    at async node:internal/modules/esm/loader:650:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: { state: 'todo' },
+  expected: { state: 'ready' },
+  operator: 'deepStrictEqual',
+  diff: 'simple'
+}
+
+Node.js v26.5.0
+
+COMMAND: PATH=/usr/bin:/bin <node26> tests/pjan-103-generated-consumption.mjs (expected missing-Copier failure)
+EXIT: 1
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Copier is REQUIRED by npm test; install tests/requirements.txt with uv tool install 'copier==9.14.0' (no skip): Error: spawnSync copier ENOENT
+
+null !== 0
+
+    at file:///home/delorenj/code/33GOD/flume/.worktrees/PJAN-103-template-pin/tests/pjan-103-generated-consumption.mjs:76:10
+    at ModuleJob.run (node:internal/modules/esm/module_job:569:25)
+    at async node:internal/modules/esm/loader:650:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: null,
+  expected: 0,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v26.5.0
+
+COMMAND: node tests/pjan-166-bmad-setup-scripts-regressions.mjs with network unshared (environment-only failure)
+EXIT: 1
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: real pinned package unavailable: could not resolve bmad-method@6.12.1: npm error errno ENETUNREACH npm error request to https://registry.npmjs.org/bmad-method failed, reason:  npm error A complete log of this run can be found in: /tmp/pj-suite-home-fhWhQL/.npm/_logs/2026-11-19T09_53_01_651Z-debug-0.log
++ actual - expected
+
++ undefined
+- '6.12.1'
+
+    at file:///home/delorenj/code/33GOD/pjangler/.worktrees/PJAN-103-regressions/tests/pjan-166-bmad-setup-scripts-regressions.mjs:28:8 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: undefined,
+  expected: '6.12.1',
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v26.5.0
+
+COMMAND: node tests/pjan-166-bmad-setup-scripts-regressions.mjs with npm registry access (no board calls)
+EXIT: 0
+✔ PJAN-166: pinned installer provenance, preview no-write, apply from package, repeat convergence (1273.259432ms)
+✔ PJAN-166: missing one script restores only that script, preserving operator data (4.435647ms)
+✔ PJAN-166: a foreign symlink refuses before mutation; a manifest that attests other bytes withholds only that script (5.909774ms)
+✔ PJAN-166: same-byte foreign inode survives rollback after later publish fails (2.98833ms)
+✔ PJAN-166: EEXIST on a foreign hard link to staged inode preserves that collision (3.058292ms)
+✔ PJAN-166: exception after link leaves ambiguous output, rolling back confirmed links only (3.139656ms)
+✔ PJAN-166: swapped script directory never redirects publication or rollback into symlink target (5.656768ms)
+✔ PJAN-166: swapped new directory reports retained directory honestly (3.352366ms)
+✔ PJAN-166: parent swap never removes foreign staging content and retains owned stage honestly (2.672976ms)
+✔ PJAN-166: foreign additions in owned stage survive cleanup with incomplete recovery reported (2.443324ms)
+✔ PJAN-166: replaced stage pathname never deletes foreign stage or follows its contents (2.486875ms)
+✔ PJAN-166: replaced staged entry is never published; owned outputs roll back and foreign stage survives (2.720486ms)
+✔ PJAN-166: same-inode staged content mutation is refused, with truthful retention (3.146228ms)
+✔ PJAN-166: mutation of already published inode blocks success and does not erase it (2.687764ms)
+✔ PJAN-166: foreign stage addition after last publish invalidates success and rolls back outputs (2.743069ms)
+✔ PJAN-166: failed publish leaves no partial scripts or staging and retains foreign files (2.707712ms)
+✔ PJAN-166: every pinned sha256 is the real package's, for each pinned version and every script (0.180841ms)
+✔ PJAN-166: the inspection decides from the disk alone, by the pinned bytes, and restorable means attested (1.11982ms)
+✔ PJAN-166: manifest rows that are not exactly the installer's attestation decline that script, never restore it (10.049144ms)
+✔ PJAN-166: an install whose manifest.yaml names the pinned version and whose scripts are missing fails fixably, lists the paths, and migrates to a pass (512.154763ms)
+✔ PJAN-166: restorability is the manifest row's bytes, not the manifest.yaml version label (1993.063147ms)
+✔ PJAN-166: `pj migrate --all --dry-run` (the built CLI) reports bmad.setup-scripts applied for a manifest-labelled pinned install, never blocked (2614.37304ms)
+✔ PJAN-166: the real install used below really is the shape the review measured (21.940107ms)
+✔ PJAN-166: healthy real installs are present at any mode, version or manifest, and never resolve the package (18.535393ms)
+✔ PJAN-166: `pj audit` on real installs is ok, runs no npx, and never reports a fail (1542.022421ms)
+✔ PJAN-166: a missing memlog.py on a real install at another version skips with a remedy that is not the no-op bmad.version, resolving and writing nothing (21.022038ms)
+✔ PJAN-166: a real install at another version missing every script restores the four it can attest and declines memlog.py, with the reason and the remedy (850.305514ms)
+✔ PJAN-166: an install whose manifest has no row for a missing script skips without a probe, and is told the remedy that works for its shape (perth and alpha) (10.675534ms)
+✔ PJAN-166: a declined script that bmad.scaffold needs is never called optional, while the other scripts are still restored (265.810084ms)
+✔ PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary) (1878.727238ms)
+✔ PJAN-166: a manifest that attests other bytes than the pinned package skips with the remedy, never fails (5.231106ms)
+✔ PJAN-166: a malformed manifest is a visible failure decided from the disk, never a decline or a write (90.753599ms)
+✔ PJAN-166: an unreachable pinned package is a skip naming the network remedy, never a fail (real npx, offline, cold cache) (885.818444ms)
+✔ PJAN-166: the resolver keeps its 180s default, honours a given timeout, and reads only an exact version from the npx cache (6.221161ms)
+✔ PJAN-166: the audit waits at most the probe cap for the package, and a migrate waits the resolver's default (608.009082ms)
+✔ PJAN-166: with npx hung, the audit skips at its cap naming the network remedy, and migrate declines the same way (hermetic: a local shim, killed fast) (1204.209106ms)
+✔ PJAN-166: a migrate handed the audit's give-up finding retries with its own wait, and restores (1083.010045ms)
+✔ PJAN-166: each package-side decline names its own remedy, and only a resolver failure suggests waiting for npm (184.114261ms)
+✔ PJAN-166: a mistyped or non-package PJ_BMAD_INSTALLER skips and says to fix or unset it (1.596138ms)
+✔ PJAN-166: a pre-manifest install (no files-manifest.csv) skips with the install remedy, never fails or writes (0.816679ms)
+✔ PJAN-166: scripts and manifest both missing skips, says the scripts are missing, and names the install remedy (19.497336ms)
+✔ PJAN-166: a g33-enabled project is pointed at bmad.scaffold, never at a bare installer run, and told the g33 prerequisite while its adapter is unavailable (82.857593ms)
+✔ PJAN-166: a dangling or live symlinked _config is a visible refusal naming the path and the missing scripts, not an absent manifest (32.710079ms)
+✔ PJAN-166: scripts that appear while the package is being resolved (a concurrent installer) read as present, never a decline or a double write (16.820061ms)
+✔ PJAN-166: a symlink, directory or symlinked directory where a script belongs stays a visible refusal (55.0133ms)
+ℹ tests 45
+ℹ suites 0
+ℹ pass 45
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 15353.954986
