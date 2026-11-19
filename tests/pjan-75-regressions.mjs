@@ -49,23 +49,25 @@ process.env.GIT_CEILING_DIRECTORIES = workspace;
 // these assertions can be proven against the PRE-fix tree — a regression test
 // that has never been watched to fail is only evidence that it compiles:
 //
-//   git archive main src | tar -x -C /tmp/pre-fix
-//   PJAN75_CLI_SRC=/tmp/pre-fix/src/index.ts node tests/pjan-75-regressions.mjs
+//   git archive main src | tar -x -C "$TMPDIR/pre-fix"
+//   PJAN75_CLI_SRC="$TMPDIR/pre-fix/src/index.ts" node tests/pjan-75-regressions.mjs
 //
-const cli = join(root, ".pjan-75-cli.mjs");
+const cli = process.env.PJAN75_CLI_BUILT || join(root, ".pjan-75-cli.mjs");
 const entry = process.env.PJAN75_CLI_SRC || join(root, "src", "index.ts");
-const built = spawnSync(
-  join(root, "node_modules", ".bin", "esbuild"),
-  [entry, "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${cli}`],
-  { encoding: "utf8", env: hermeticEnv() },
-);
-if (built.status !== 0) {
-  console.error(`failed to bundle the CLI:\n${built.stderr}`);
-  process.exit(1);
+if (!process.env.PJAN75_CLI_BUILT) {
+  const built = spawnSync(
+    join(root, "node_modules", ".bin", "esbuild"),
+    [entry, "--bundle", "--packages=external", "--platform=node", "--format=esm", `--outfile=${cli}`],
+    { encoding: "utf8", env: hermeticEnv() },
+  );
+  if (built.status !== 0) {
+    console.error(`failed to bundle the CLI:\n${built.stderr}`);
+    process.exit(1);
+  }
 }
 
 function cleanup() {
-  rmSync(cli, { force: true });
+  if (!process.env.PJAN75_CLI_BUILT) rmSync(cli, { force: true });
   rmSync(workspace, { recursive: true, force: true });
 }
 process.on("exit", cleanup);
@@ -76,16 +78,12 @@ process.on("exit", cleanup);
  * directory exists with its launcher and scripts — and `role.yaml`, the
  * identity SSOT, is absent. That is a half-provisioned role, not junk.
  *
- * The manifest must carry NO other parity drift. `sot.project-json` reports
- * fixable/non-fixable for the whole rule, and it is fixable when at least one
- * of its findings is something migrate can actually write. So any unrelated
- * drift in here — a legacy key, a wrong repo_path — flips the rule to fixable
- * for a reason that has nothing to do with the declaration, and the check below
- * stops testing what it names. PJAN-80 renamed the canonical key
- * `project_slug` -> `project_id` and swept the other suites' fixtures; this one
- * was missed, which is exactly how that happened once already.
+ * The manifest must carry NO other parity drift unless `fixableDrift` is
+ * requested for a selected migration. That flag intentionally makes
+ * `sot.project-json` fixable for an unrelated repo_path write, ensuring the
+ * declaration is preserved while the rule actually writes the manifest.
  */
-function unprovisionedRoleRepo(name) {
+function unprovisionedRoleRepo(name, { emptyRoleYaml = false, fixableDrift = false } = {}) {
   const repo = join(workspace, name);
   const home = join(repo, "home");
   mkdirSync(join(repo, "repo", "agents", "hermes", "pm", ".scripts"), { recursive: true });
@@ -99,6 +97,7 @@ function unprovisionedRoleRepo(name) {
   );
 
   const repoRoot = join(repo, "repo");
+  if (emptyRoleYaml) writeFileSync(join(repoRoot, "agents", "hermes", "pm", "role.yaml"), "", "utf8");
   writeFileSync(
     join(repoRoot, ".project.json"),
     `${JSON.stringify(
@@ -106,9 +105,9 @@ function unprovisionedRoleRepo(name) {
         project_name: "Heyma",
         project_description: "",
         project_id: "heyma",
-        repo_path: repoRoot,
+        repo_path: fixableDrift ? "/wrong/repo/path" : repoRoot,
         ticket_provider: { type: "plane", workspace: "33god", identifier: "heyma", board_id: "b", state: "linked" },
-        agents: { "heyma-pm": { role: "pm", role_dir: "agents/hermes/pm", provisioning_state: "provisioned" } },
+        agents: { "heyma-operator-pm": { role: "pm", role_dir: "agents/hermes/pm", provisioning_state: "provisioned", provisioning: { source: "operator", steps: ["pending", "restore"] } } },
       },
       null,
       2,
@@ -119,17 +118,17 @@ function unprovisionedRoleRepo(name) {
     join(home, ".hermes", "agents-registry.yaml"),
     [
       "agents:",
-      "  heyma-pm:",
+      "  heyma-operator-pm:",
       "    role: pm",
       `    role_dir: ${join(repoRoot, "agents", "hermes", "pm")}`,
       `    project_path: ${repoRoot}`,
-      "    profile_name: heyma-pm",
+      "    profile_name: heyma-operator-pm",
       "    bloodbank:",
       "      enabled: false",
       "      gateway_scope: fleet",
-      "      target_agent_id: heyma-pm",
+      "      target_agent_id: heyma-operator-pm",
       "    systemd:",
-      "      gateway_unit: hermes-heyma-pm-gateway.service",
+      "      gateway_unit: hermes-heyma-operator-pm-gateway.service",
       "",
     ].join("\n"),
     "utf8",
@@ -229,7 +228,9 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
   assert.equal(rule.fixable, false, "nothing remains that migrate can automate");
   assert.ok(rule.details.some((detail) => /E_LEGACY_FIELD/.test(detail)), "legacy declaration mappings require explicit Skillex migration");
 
-  const migration = json(["migrate", "skills.project-manifest", repoRoot], { home });
+  const beforeSkill = readFileSync(join(repoRoot, ".agents", "skills", "my-committed-skill", "SKILL.md"), "utf8");
+  const beforeManifest = readFileSync(join(repoRoot, ".agents", "skills.json"), "utf8");
+  const migration = json(["migrate", "skills.project-manifest", repoRoot], { home, expectOk: false });
   const after = json(["audit", repoRoot], { home });
   const result = outcome(migration, "skills.project-manifest");
 
@@ -242,6 +243,8 @@ check("migrate cannot claim a rule succeeded while its audit still fails", () =>
   assert.equal(result.status, "partial");
   assert.equal(migration.ok, false, "`migrate` must not exit 0 while `audit` on the same repo exits 1");
   assert.equal(migration.ok, after.ok, "migrate and audit must not disagree about parity");
+  assert.equal(readFileSync(join(repoRoot, ".agents", "skills", "my-committed-skill", "SKILL.md"), "utf8"), beforeSkill);
+  assert.equal(readFileSync(join(repoRoot, ".agents", "skills.json"), "utf8"), beforeManifest);
   assert.ok(
     result.details.some((detail) => detail.includes("pj skills migrate --project")),
     "the operator must be told how to finish the migration",
@@ -267,7 +270,50 @@ check("an unprovisioned agent's declaration survives migrate", () => {
     before.agents,
     "migrate deleted the declaration of an agent whose role.yaml is missing",
   );
-  assert.equal(after.agents["heyma-pm"].provisioning_state, "provisioned", "declaration extras were dropped");
+  assert.equal(after.agents["heyma-operator-pm"].provisioning_state, "provisioned", "declaration extras were dropped");
+});
+
+// Selecting the rule explicitly must exercise a real write, not the --all
+// non-fixable skip. Both missing and empty role.yaml lack identity authority.
+for (const emptyRoleYaml of [false, true]) {
+  const variant = emptyRoleYaml ? "empty" : "missing";
+  check(`selected sot.project-json preserves declared identity on ${variant} role.yaml during a real write`, () => {
+    const { repoRoot, home } = unprovisionedRoleRepo(`selected-${variant}`, { emptyRoleYaml, fixableDrift: true });
+    const manifest = join(repoRoot, ".project.json");
+    const beforeText = readFileSync(manifest, "utf8");
+    const before = JSON.parse(beforeText);
+    const audit = json(["audit", repoRoot], { home });
+    assert.equal(findings(audit, "sot.project-json").fixable, true, "unrelated repo_path drift is fixable");
+
+    const migration = json(["migrate", "sot.project-json", repoRoot], { home, expectOk: false });
+    const result = outcome(migration, "sot.project-json");
+    assert.ok(["partial", "blocked"].includes(result.status), `unresolved identity returned ${result.status}`);
+    assert.ok(result.details.some((detail) => detail.includes("heyma-operator-pm") && /provision or restore/.test(detail)));
+    const afterText = readFileSync(manifest, "utf8");
+    const after = JSON.parse(afterText);
+    assert.deepEqual(after.agents, before.agents, "selected migration lost the non-default ID or provisioning extras");
+    assert.ok(result.changedFiles.includes(manifest), "selected migration did not exercise the permitted manifest write");
+    assert.notEqual(afterText, beforeText, "claimed write was not a real write");
+    assert.equal(after.repo_path, repoRoot, "permitted repo_path repair did not occur");
+    const again = json(["migrate", "sot.project-json", repoRoot], { home, expectOk: false });
+    assert.deepEqual(JSON.parse(readFileSync(manifest, "utf8")).agents, before.agents);
+    assert.ok(!outcome(again, "sot.project-json").changedFiles.includes(manifest), "repeat migration was unstable");
+    const afterAudit = json(["audit", repoRoot], { home });
+    assert.equal(findings(afterAudit, "sot.project-json").status, "fail");
+    assert.ok(findings(afterAudit, "sot.project-json").details.some((detail) => /provision or restore/.test(detail)));
+  });
+}
+
+check("dry-run without mise.toml reports a plan without writing project files", () => {
+  const { repoRoot, home } = unprovisionedRoleRepo("dry-run", { emptyRoleYaml: true, fixableDrift: true });
+  const manifest = join(repoRoot, ".project.json");
+  const before = readFileSync(manifest, "utf8");
+  const migration = json(["migrate", "sot.project-json", repoRoot, "--dry-run"], { home, expectOk: true });
+  assert.equal(migration.dryRun, true);
+  assert.ok(outcome(migration, "sot.project-json").changedFiles.includes(manifest), "dry-run omitted the planned repair");
+  assert.ok(outcome(migration, "sot.project-json").details.some((detail) => /provision or restore/.test(detail)));
+  assert.ok(!outcome(migration, "sot.project-json").summary.includes("migrate threw"));
+  assert.equal(readFileSync(manifest, "utf8"), before);
 });
 
 // ---------------------------------------------------------------------------
@@ -277,20 +323,22 @@ check("an unprovisioned agent's declaration survives migrate", () => {
 // an operator's job, so the rule has to say so and stay non-fixable.
 // ---------------------------------------------------------------------------
 check("sot.project-json refuses to prune an unprovisioned role", () => {
-  const { repoRoot, home } = unprovisionedRoleRepo("agreement");
-  const audit = json(["audit", repoRoot], { home });
-  const projectJson = findings(audit, "sot.project-json");
+  for (const emptyRoleYaml of [false, true]) {
+    const { repoRoot, home } = unprovisionedRoleRepo(`agreement-${emptyRoleYaml ? "empty" : "missing"}`, { emptyRoleYaml });
+    const audit = json(["audit", repoRoot], { home });
+    const projectJson = findings(audit, "sot.project-json");
 
-  assert.equal(projectJson.status, "fail", "sot.project-json must report the unprovisioned role");
-  assert.equal(
-    projectJson.fixable,
-    false,
-    "sot.project-json must not advertise a fix for a role only an operator can provision",
-  );
-  assert.ok(
-    projectJson.details.some((detail) => detail.includes("do not delete its declaration")),
-    `sot.project-json must tell the operator to restore the role, got: ${JSON.stringify(projectJson.details)}`,
-  );
+    assert.equal(projectJson.status, "fail", "sot.project-json must report the unprovisioned role");
+    assert.equal(
+      projectJson.fixable,
+      false,
+      "sot.project-json must not advertise a fix for a role only an operator can provision",
+    );
+    assert.ok(
+      projectJson.details.some((detail) => detail.includes("do not delete its declaration")),
+      `sot.project-json must tell the operator to restore the role, got: ${JSON.stringify(projectJson.details)}`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -462,6 +462,10 @@ function discoverRoles(repoRoot: string): RoleMeta[] {
       const roleYamlPath = join(roleDir, "role.yaml");
       if (!existsSync(roleYamlPath)) return null;
       const text = readText(roleYamlPath);
+      // A present but empty/incomplete YAML file cannot authorize a guessed
+      // `${project_id}-${role}` identity. Keep the manifest declaration until
+      // role.yaml actually supplies both identity fields.
+      if (!yamlGet(text, "role") || !yamlGet(text, "agent_id")) return null;
       const runtimeRepoRaw = yamlGet(text, "runtime.github_repo");
       return {
         role: yamlGet(text, "role") || entry.name,
@@ -1425,13 +1429,13 @@ function readRoleYamlAt(roleDir: string): { role: string; agentId: string; provi
  * only repo-local record of an agent's identity AND still left the audit
  * failing, because the fleet registry entry it could not see survived.
  *
- * An empty/missing role_dir counts as unprovisioned for the same reason: there
- * is nothing on disk to recover the identity from, so the declaration is all
- * that is left of it.
+ * A missing role.yaml or one without both identity fields counts as
+ * unprovisioned: no guessed replacement may supersede the declaration.
  */
 function declaredRoleIsUnprovisioned(repoRoot: string, roleDir: string | undefined): boolean {
   if (!roleDir) return true;
-  return !existsSync(join(resolve(repoRoot, roleDir), "role.yaml"));
+  const roleYaml = readRoleYamlAt(resolve(repoRoot, roleDir));
+  return !roleYaml?.role || !roleYaml.agentId;
 }
 
 
@@ -3810,7 +3814,7 @@ return [
       for (const agentId of canonical.unprovisioned) {
         const roleDir = ((existing.agents as Record<string, Record<string, unknown>> | undefined)?.[agentId]?.role_dir);
         preservedDetails.push(
-          `preserved unprovisioned declared agent: ${agentId}${typeof roleDir === "string" && roleDir ? ` (${roleDir} has no role.yaml)` : " (no role_dir)"}; provision or restore the role, do not delete its declaration`
+          `preserved unprovisioned declared agent: ${agentId}${typeof roleDir === "string" && roleDir ? ` (${roleDir} has no usable role.yaml identity)` : " (no role_dir)"}; provision or restore the role, do not delete its declaration`
         );
       }
       for (const agentId of canonical.dropped) {
