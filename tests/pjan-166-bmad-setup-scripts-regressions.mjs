@@ -841,9 +841,9 @@ test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that
     const dir = join(resolved.root, "src", "scripts");
     return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".py")) : [];
   };
-  // Full `npm view ... versions` occasionally returns an incomplete cached index
-  // under the suite's short-lived HOME. Query the exact releases instead: the
-  // package resolver below checks their actual source, not a metadata list.
+  // The broad `npm view ... versions` list proved not to be a reliable oracle
+  // in the failing run, so query the exact releases instead: the package
+  // resolver below checks their actual source, not a metadata list.
   const predecessor = "6.3.1-next.12";
   assert.equal(BMAD_FIRST_SCRIPTS_RELEASE, "6.3.1-next.13", "update the predecessor when moving the boundary");
   for (const version of [predecessor, BMAD_FIRST_SCRIPTS_RELEASE]) {
