@@ -2,7 +2,7 @@
 title: 'PJAN-76 provenance-safe retired BMAD links'
 type: 'bugfix'
 created: '2026-11-18'
-status: 'in-review'
+status: 'reviewed'
 baseline_commit: '9a332e3e39fa7faa6af537d201550b6cf2af8577'
 review_loop_iteration: 0
 context: []
@@ -41,7 +41,7 @@ context: []
 - Independent SPEC and QUALITY review repros found that preserving a selected activation without blocking the installer overwrote its catalog bytes, and that a symlinked intermediate `packs/bmad` component spoofed retired provenance. The repair blocks both before installer or eviction. Keep legitimate absolute, relative, and dangling retired projections, seven CLI roots, and cold-cache init behavior.
 - QUALITY round 2 reproduced a parent-directory registry escape and raw `alias/../catalog/...` normalization spoof through both scaffold and version. The repair requires actual relative containment and checks raw path components before applying `..`; only the registries-cache parent allows one checkout component. KEEP legitimate physical `..` traversal, relative/dangling projections, current-activation protection, no partial eviction, seven CLI roots, and cold-cache init. Parent scope clarification accepts conservative refusal for all current `bmad-*` links (including `bmad-html-workspace`); no emitted-name inventory/downloading architecture is part of this repair.
 ## Verification
-**Prior repair record (not a fresh round-2 certification):** `npm run build`, `npm run typecheck`, `node tests/pjan-76-regressions.mjs`, `node tests/parity-migrate-regressions.mjs`, `node tests/pjan-135-skill-roots-safety-regressions.mjs` (28/28), `node tests/pjan-176-bmad-installer-skills-regressions.mjs` (10/10), and `node tests/bmad-version-surface-regressions.mjs` were previously reported passed. The round-2 results below supersede those gate claims for this environment. External reviewer approval remains pending.
+**Prior repair record (not a fresh round-2 certification):** `npm run build`, `npm run typecheck`, `node tests/pjan-76-regressions.mjs`, `node tests/parity-migrate-regressions.mjs`, `node tests/pjan-135-skill-roots-safety-regressions.mjs` (28/28), `node tests/pjan-176-bmad-installer-skills-regressions.mjs` (10/10), and `node tests/bmad-version-surface-regressions.mjs` were previously reported passed. The round-2 results below supersede those gate claims for the isolated scratch environment; the final worktree rerun and independent review below establish the candidate gate.
 
 ### Round-2 repair evidence
 
@@ -67,9 +67,13 @@ The independent boundary script was copied and adapted from the supplied QUALITY
 - `node tests/parity-migrate-regressions.mjs`: exit 1 at `preserve-hooks`; mise template execution invokes the real `op read`, which refuses with canonical service-account token unavailable (exit 78). No token was read or supplied; do not fabricate one to turn this gate green.
 - `node scripts/check-hermetic-test-env.mjs`: exit 1 with the same pre-existing `tests/pjan-75-regressions.mjs:55` ungranted `PJAN75_CLI_BUILT` finding.
 
-Logs are under the active profile scratch directory: `pjan76-round2-final-{build,typecheck,regressions,f14,installer-skills}.log`, `pjan76-round2-{currency,real-installer,safety,parity,baseline-regressions}.log`, `pjan76-round2-prior-{safety,parity,hermetic}.log`, and `pjan76-round2-quality-boundaries-output.json`. Independent re-review remains required; this is implementation/test evidence, not reviewer approval.
+Logs are under the active profile scratch directory: `pjan76-round2-final-{build,typecheck,regressions,f14,installer-skills}.log`, `pjan76-round2-{currency,real-installer,safety,parity,baseline-regressions}.log`, `pjan76-round2-prior-{safety,parity,hermetic}.log`, and `pjan76-round2-quality-boundaries-output.json`. These are implementation/test evidence, not the independent review verdict recorded below.
 
 Final hash identity (worktree source equals exercised scratch source):
 - `src/parity/rules.ts`: SHA-256 `82caaece7044f0a2bed3ee7415df7f4ec0242488a9d024db07e1c9a330a35c1c`
 - `tests/pjan-76-regressions.mjs`: SHA-256 `f5d98c6804e9257650917bc12f6bc1c1af00e99dd790a3d14eca85bd39368243`
 - exercised `dist/index.js`: SHA-256 `d1d781139a28ea710981ebd3f87bc301e036c91fef4cd4f4ed92630219640300`
+
+### Final candidate review and worktree gates
+- Independent final reviewer: **PASS**, no findings, on `9ad4f2705d55ab625af209901adc0c35b00278d3`. The reviewer checked committed source against the exercised bundle, ran 36/36 real-CLI boundary probes for provenance escapes/refusals, confirmed selected activation protection, and observed the PJAN-76 suite's 51 passing checks.
+- Parent independently reran in the actual PJAN-76 worktree: `npm run build && npm run typecheck && node tests/pjan-76-regressions.mjs && node tests/parity-migrate-regressions.mjs` — each exited 0. The isolated scratch parity failure involving the unavailable service-account token was **not** reproduced in the real worktree. No whole-suite or deployment claim is made.
