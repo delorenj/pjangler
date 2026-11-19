@@ -64,6 +64,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
     const logs: string[] = [];
     const errors: string[] = [];
     const changedFiles: string[] = [];
+    let failed = false;
 
     for (const CommandClass of this.ingredientTypes) {
       const command = new CommandClass(ctx);
@@ -72,16 +73,21 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
       const phaseChangedFiles = status === "changed" && result.filePath
         ? [resolve(ctx.targetDir, result.filePath)]
         : [];
-      phases.push({ id: CommandClass.name, status, changedFiles: phaseChangedFiles, message: result.message || undefined });
-      if (result.message) logs.push(result.message);
+      const message = result.message || `${CommandClass.name} ${status}`;
+      phases.push({ id: CommandClass.name, status, changedFiles: phaseChangedFiles, message: ctx.mcpCapture ? (ctx.mcpCapture.logs.append(message) ?? undefined) : result.message || undefined });
+      if (result.message && !ctx.mcpCapture) logs.push(result.message);
       changedFiles.push(...phaseChangedFiles);
-      if (status === "failed" || status === "cancelled") errors.push(result.message || `${CommandClass.name} ${status}`);
-      if (status === "failed" || status === "cancelled") break;
+      if (status === "failed" || status === "cancelled") {
+        failed = true;
+        if (ctx.mcpCapture) ctx.mcpCapture.errors.append(message);
+        else errors.push(message);
+        break;
+      }
     }
 
     return {
       recipeId: this.metadata.id,
-      ok: errors.length === 0,
+      ok: !failed && errors.length === 0,
       dryRun: Boolean(ctx.dryRun),
       changedFiles: [...new Set(changedFiles)].sort(),
       logs,
@@ -96,16 +102,33 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
     const logs: string[] = [];
     const errors: string[] = [];
     const changedFiles: string[] = [];
+    let failed = false;
+    const log = (message: string) => {
+      if (ctx.mcpCapture) ctx.mcpCapture.logs.append(message);
+      else logs.push(message);
+    };
+    const fail = (message: string) => {
+      failed = true;
+      if (ctx.mcpCapture) ctx.mcpCapture.errors.append(message);
+      else errors.push(message);
+    };
+    const failFinding = (finding: { id: string; summary: string; details: readonly string[] }) => {
+      if (!ctx.mcpCapture) { fail(describeFinding(finding)); return; }
+      fail(`${finding.id}: ${finding.summary}`);
+      for (const detail of finding.details.slice(0, 20)) ctx.mcpCapture.errors.append(`\n      - ${detail}`);
+      if (finding.details.length > 20) ctx.mcpCapture.errors.append(`\n      - (+${finding.details.length - 20} more details)`);
+    };
+    const phaseMessage = (message: string) => ctx.mcpCapture ? ctx.mcpCapture.logs.append(message) : message;
 
     for (const check of checks) {
       const finding = await check.audit(ctx);
       if (finding.status === "pass" || finding.status === "skip") {
-        phases.push({ id: check.id, status: finding.status === "skip" ? "skipped" : "unchanged", changedFiles: [], message: finding.summary });
+        phases.push({ id: check.id, status: finding.status === "skip" ? "skipped" : "unchanged", changedFiles: [], message: phaseMessage(finding.summary) });
         continue;
       }
       if (!finding.fixable) {
-        phases.push({ id: check.id, status: "failed", changedFiles: [], message: finding.summary });
-        errors.push(describeFinding({ id: check.id, summary: finding.summary, details: finding.details }));
+        phases.push({ id: check.id, status: "failed", changedFiles: [], message: phaseMessage(finding.summary) });
+        failFinding({ id: check.id, summary: finding.summary, details: finding.details });
         break;
       }
       const migrated = await check.migrate(ctx, finding);
@@ -117,19 +140,22 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
             ? "skipped"
             : "failed";
       const actualChanges = status === "changed" ? migrated.changedFiles : [];
-      phases.push({ id: check.id, status, changedFiles: actualChanges, message: migrated.summary });
-      logs.push(`${check.id}: ${migrated.summary}`);
+      phases.push({ id: check.id, status, changedFiles: actualChanges, message: phaseMessage(migrated.summary) });
+      log(`${check.id}: ${migrated.summary}`);
       changedFiles.push(...actualChanges);
       if (status === "failed") {
-        errors.push(describeFinding({ id: check.id, summary: migrated.summary, details: migrated.details }));
+        failFinding({ id: check.id, summary: migrated.summary, details: migrated.details });
         break;
       }
       if (!ctx.dryRun) {
         const postcondition = await check.audit(ctx);
         if (postcondition.status !== "pass" && postcondition.status !== "skip") {
-          const detail = postcondition.details.length ? ` (${postcondition.details.join("; ")})` : "";
-          errors.push(`${check.id}: init postcondition failed: ${postcondition.summary}${detail}`);
-          phases.push({ id: `${check.id}:postcondition`, status: "failed", changedFiles: [], message: postcondition.summary });
+          if (ctx.mcpCapture) failFinding({ id: check.id, summary: `init postcondition failed: ${postcondition.summary}`, details: postcondition.details });
+          else {
+            const detail = postcondition.details.length ? ` (${postcondition.details.join("; ")})` : "";
+            fail(`${check.id}: init postcondition failed: ${postcondition.summary}${detail}`);
+          }
+          phases.push({ id: `${check.id}:postcondition`, status: "failed", changedFiles: [], message: phaseMessage(postcondition.summary) });
           break;
         }
       }
@@ -137,7 +163,7 @@ export abstract class Recipe<TInput = unknown> implements LifecycleRecipe<TInput
 
     return {
       recipeId: this.metadata.id,
-      ok: errors.length === 0,
+      ok: !failed && errors.length === 0,
       dryRun: Boolean(ctx.dryRun),
       changedFiles: [...new Set(changedFiles)].sort(),
       logs,

@@ -44,16 +44,19 @@ export class BmadRecipe extends Recipe {
     const required = await this.initializeOwnedChecks(ctx, checks);
     if (!required.ok) return { ...required, ...(companions.length ? { bmadCompanion: companions.at(-1) } : {}) };
     const companion = companions.at(-1) ?? await runG33Companion(ctx.repoRoot, ctx.dryRun);
+    const companionLogs = companionDetails(companion);
+    if (ctx.mcpCapture) for (const message of companionLogs) ctx.mcpCapture.logs.append(message);
+    const phaseMessage = `Optional g33 (${companion.status}): ${companion.summary}`;
     return {
       ...required,
       bmadCompanion: companion,
       changedFiles: [...new Set([...required.changedFiles, ...companion.changedFiles])].sort(),
-      logs: [...required.logs, ...companionDetails(companion)],
+      logs: ctx.mcpCapture ? [] : [...required.logs, ...companionLogs],
       phases: [...required.phases, {
         id: "bmad.g33-companion",
         status: companion.status === "planned" ? "planned" : companion.status === "changed" ? "changed"
           : companion.status === "unchanged" ? "unchanged" : "skipped",
-        message: `Optional g33 (${companion.status}): ${companion.summary}`,
+        message: ctx.mcpCapture ? ctx.mcpCapture.logs.append(phaseMessage) : phaseMessage,
         changedFiles: companion.changedFiles,
       }],
     };

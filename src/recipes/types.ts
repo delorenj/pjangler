@@ -1,5 +1,6 @@
 import type { CommandContext } from "../commands/Command";
 import type { NotebookObservationV1, NotebookPlanV1 } from "../notebook/observation";
+import type { BoundedCapture } from "../mcp-bounds";
 
 export type RecipeId = string;
 export type RuleId = string;
@@ -45,6 +46,8 @@ export interface LifecycleContext extends CommandContext {
   notebookManifestBinding?: Readonly<Record<string, unknown>> | null;
   notebookObservation?: Readonly<NotebookObservationV1>;
   notebookStateRoot?: string;
+  /** MCP-only collector shared across dependency dispatch; CLI remains unchanged. */
+  mcpCapture?: { logs: BoundedCapture; errors: BoundedCapture };
 }
 
 export interface RecipeMetadata {

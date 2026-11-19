@@ -26,6 +26,7 @@ import {
 import type { ProjectRecipeInput, ProjectRecipeResult } from "./recipes/ProjectRecipe";
 import type { LifecycleContext } from "./recipes/types";
 import { preflightMcpLifecycle, type TrustedCopierIdentity } from "./lifecycle/preflight";
+import { BoundedCapture, boundedPayload, MCP_CAPTURE_BYTES, MCP_OUTPUT_BYTES, MCP_PAGE_SIZE, MCP_MAX_PAGE_SIZE, paginate } from "./mcp-bounds";
 
 const server = new McpServer({
   name: "pjangler-mcp",
@@ -194,8 +195,14 @@ const CAPABILITIES_OUTPUT = z.object({
   skillSynergy: GUIDANCE,
 }).passthrough();
 const PARITY_RULES_OUTPUT = z.object({ parityRules: RULES, guidance: GUIDANCE }).passthrough();
+const PAGE_META = z.object({ limit: z.number().int(), truncated: z.boolean(), omittedCount: z.number().int(), nextCursor: z.string().optional() });
+const PAGE_INPUT = {
+  limit: z.number().int().positive().max(MCP_MAX_PAGE_SIZE).optional().describe(`Page size (default ${MCP_PAGE_SIZE}, maximum ${MCP_MAX_PAGE_SIZE}).`),
+  cursor: z.string().min(1).optional().describe("Opaque continuation from nextCursor; invalid or stale cursors are errors."),
+};
 const AUDIT_OUTPUT = AUDIT_REPORT.extend({
   summary: z.object({ counts: z.record(z.string(), z.number()), nextActions: RULES }), guidance: GUIDANCE,
+  page: PAGE_META,
 }).passthrough();
 const MIGRATION_OUTPUT = MIGRATION_REPORT.extend({
   summary: z.object({ counts: z.record(z.string(), z.number()), changedFileCount: z.number() }),
@@ -222,7 +229,7 @@ const INFO_OUTPUT = z.object({
   manifest: z.object({ project_id: z.string() }).passthrough(),
   registry: z.object({ location: z.string(), status: z.enum(["indexed", "not-indexed", "unavailable", "stale"]), message: z.string().optional() }).passthrough(),
 }).passthrough();
-const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: z.record(z.string(), PROJECT) }).passthrough();
+const PROJECT_LIST_OUTPUT = z.object({ schema_version: z.number(), projects: z.record(z.string(), PROJECT), page: PAGE_META }).passthrough();
 const PROJECT_SHOW_OUTPUT = PROJECT;
 const CAPTURE_ADMISSION = z.object({
   unresolved_count: z.number().nullable(), unresolved_count_lower_bound: z.number(),
@@ -287,6 +294,7 @@ const RECIPE_INFO_OUTPUT = RECIPE_META;
 const RECIPE_RUN_OUTPUT = z.object({
   success: z.boolean(), recipe: z.string(), targetDir: z.string(),
   apply: z.boolean(), dryRun: z.boolean(), logs: RULES, errors: RULES,
+  capture: z.object({ logs: z.object({ retainedBytes: z.number(), omittedCount: z.number() }), errors: z.object({ retainedBytes: z.number(), omittedCount: z.number() }) }),
 }).passthrough();
 
 const LOCAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
@@ -295,9 +303,17 @@ const LOCAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint
 const EXTERNAL_WRITE = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
 
 function asResult<T extends object>(payload: T, text?: string) {
+  boundedPayload(payload);
+  // Formatted text comes only from the admitted payload; JSON text uses its
+  // bounded serialization, never the original dataset or uncaptured messages.
+  let readable = text ?? JSON.stringify(payload, null, 2);
+  if (Buffer.byteLength(readable, "utf8") > MCP_OUTPUT_BYTES && text === undefined) readable = JSON.stringify(payload);
+  if (Buffer.byteLength(readable, "utf8") > MCP_OUTPUT_BYTES) {
+    throw new Error("MCP readable output exceeds the 256 KiB budget");
+  }
   return {
     structuredContent: { ...payload } as Record<string, unknown>,
-    content: [{ type: "text" as const, text: text ?? JSON.stringify(payload, null, 2) }],
+    content: [{ type: "text" as const, text: readable }],
   };
 }
 
@@ -475,22 +491,21 @@ function parityGuidance() {
   };
 }
 
-async function runRecipeWithCapture(recipeName: string, context: CommandContext): Promise<{ success: boolean; logs: string[]; errors: string[] }> {
+async function runRecipeWithCapture(recipeName: string, context: CommandContext) {
+  const shared = { serializedBytes: 0, maxSerializedBytes: MCP_OUTPUT_BYTES - 4096 };
+  const logs = new BoundedCapture(MCP_CAPTURE_BYTES, shared);
+  const errors = new BoundedCapture(MCP_CAPTURE_BYTES, shared);
   if (!recipeRegistry.get(recipeName)) {
-    return {
-      success: false,
-      logs: [],
-      errors: [`Unknown recipe: ${recipeName}. Available: ${getRecipeNames().join(", ")}`],
-    };
+    errors.append(`Unknown recipe: ${recipeName}. Available: ${getRecipeNames().join(", ")}`);
+    return { success: false, logs, errors };
   }
   try {
-    // MCP owns stdout. Force every registry dispatch into capture/silent mode;
-    // callers cannot weaken this by supplying a context value.
-    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, { ...context, quiet: true });
+    const ctx = lifecycleContext(context.targetDir, Boolean(context.dryRun), false, { ...context, quiet: true, mcpCapture: { logs, errors } });
     const result = await recipeRegistry.initRecipe(recipeName, ctx, {});
-    return { success: result.ok, logs: result.logs, errors: result.errors };
+    return { success: result.ok, logs, errors };
   } catch (err) {
-    return { success: false, logs: [], errors: [err instanceof Error ? err.message : String(err)] };
+    errors.append(err instanceof Error ? err.message : String(err));
+    return { success: false, logs, errors };
   }
 }
 
@@ -544,20 +559,27 @@ server.registerTool(
   "pjangler_audit_project",
   {
     title: "Audit project parity",
-    description: "Runs pjangler parity audit for a project and returns structured findings with summary counts and next actions.",
+    description: "Runs parity audit; findings ordered by id (code-point order), with original index as stable tie-breaker. Default 100, maximum 500; page.omittedCount counts findings not yet returned, nextCursor resumes the first unreturned finding. Unchanged datasets traverse exactly once.",
     inputSchema: z.strictObject({
       targetDir: z.string().optional(),
       json: z.boolean().optional(),
+      ...PAGE_INPUT,
     }),
     outputSchema: AUDIT_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ targetDir, json }) => {
+  async ({ targetDir, json, limit, cursor }) => {
     try {
       const resolvedTarget = resolveTargetDir(targetDir);
       const report = await runAudit(resolvedTarget);
-      const payload = { ...report, summary: auditSummary(report), guidance: parityGuidance() };
-      return asResult(payload, json === false ? formatAuditReport(report) : undefined);
+      const sorted = report.rules.map((rule, index) => ({ rule, index }))
+        .sort((a, b) => a.rule.id < b.rule.id ? -1 : a.rule.id > b.rule.id ? 1 : a.index - b.index);
+      const result = paginate(sorted, ({ rule }) => JSON.stringify(rule), limit, cursor, (items, page) => {
+        const partial = { ...report, rules: items.map(({ rule }) => rule) };
+        return { ...partial, summary: auditSummary(partial), guidance: parityGuidance(), page };
+      }, json === false ? (payload) => formatAuditReport(payload as Awaited<ReturnType<typeof runAudit>>) : (payload) => JSON.stringify(payload, null, 2));
+      const payload = result.payload as Awaited<ReturnType<typeof runAudit>> & { page: typeof result.meta; summary: ReturnType<typeof auditSummary>; guidance: ReturnType<typeof parityGuidance> };
+      return asResult(payload, json === false ? formatAuditReport({ ...report, rules: payload.rules }) : JSON.stringify(payload, null, 2));
     } catch (err) {
       return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
     }
@@ -832,14 +854,26 @@ server.registerTool(
   "pjangler_project_list",
   {
     title: "List pjangler registry projects",
-    description: "Return projects from the pjangler central registry.",
+    description: "Return registry projects ordered by slug (code-point order), with original index as stable tie-breaker. Default 100, maximum 500; page.omittedCount counts records not yet returned, nextCursor resumes the first unreturned record. Unchanged datasets traverse exactly once.",
     inputSchema: z.strictObject({
       registryPath: z.string().optional(),
+      ...PAGE_INPUT,
     }),
     outputSchema: PROJECT_LIST_OUTPUT,
     annotations: EXTERNAL_READ,
   },
-  async ({ registryPath }) => asResult(loadProjectRegistry(registryPath ?? projectRegistryPath()))
+  async ({ registryPath, limit, cursor }) => {
+    try {
+      const registry = loadProjectRegistry(registryPath ?? projectRegistryPath());
+      const entries = Object.entries(registry.projects).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+      const result = paginate(entries, ([slug, record]) => JSON.stringify([slug, record]), limit, cursor,
+        (items, page) => ({ schema_version: registry.schema_version, projects: Object.fromEntries(items), page }),
+        (payload) => JSON.stringify(payload, null, 2));
+      return asResult(result.payload, JSON.stringify(result.payload, null, 2));
+    } catch (err) {
+      return { isError: true, content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
 );
 
 server.registerTool(
@@ -922,7 +956,7 @@ server.registerTool(
   "pjangler_run_recipe",
   {
     title: "Run recipe",
-    description: "Preview or apply a non-interactive pjangler recipe against an explicit target directory. Preview is the default; writes require apply=true.",
+    description: `Preview or apply a non-interactive recipe. Logs and errors each retain at most ${MCP_CAPTURE_BYTES} UTF-8 bytes during collection; capture.omittedCount counts discarded message fragments. Complete structured output is capped at ${MCP_OUTPUT_BYTES} bytes. Preview is the default; writes require apply=true.`,
     inputSchema: z.strictObject({
       recipe: z.enum(GENERIC_RECIPE_NAMES as [string, ...string[]]),
       targetDir: EXPLICIT_TARGET_DIR_SCHEMA,
@@ -952,8 +986,12 @@ server.registerTool(
           targetDir: resolvedTarget,
           apply: shouldApply,
           dryRun: !shouldApply,
-          logs: result.logs,
-          errors: result.errors,
+          logs: result.logs.entries,
+          errors: result.errors.entries,
+          capture: {
+            logs: { retainedBytes: result.logs.bytes, omittedCount: result.logs.omittedCount },
+            errors: { retainedBytes: result.errors.bytes, omittedCount: result.errors.omittedCount },
+          },
         }),
       };
     } catch (err) {

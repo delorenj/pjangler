@@ -165,10 +165,10 @@ export class RecipeRegistry {
       recipeId,
       ok: results.every((result) => result.ok),
       changedFiles: [...new Set(results.flatMap((result) => result.changedFiles))].sort(),
-      logs: results.flatMap((result) => result.logs),
-      errors: results.flatMap((result) => result.errors),
+      logs: ctx.mcpCapture ? [] : results.flatMap((result) => result.logs),
+      errors: ctx.mcpCapture ? [] : results.flatMap((result) => result.errors),
       phases: results.flatMap((result) => result.phases),
-      dependencyResults: results.slice(0, -1),
+      ...(ctx.mcpCapture ? { dependencyResults: [] } : { dependencyResults: results.slice(0, -1) }),
     };
   }
 
