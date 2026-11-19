@@ -62,7 +62,7 @@ writeFileSync(join(bin, "curl"), fakeCurl, { mode: 0o755 });
 const stateFile = join(scratch, "states.json");
 writeFileSync(stateFile, JSON.stringify({ results: states }));
 let checks = 0;
-function run({ map, role = "", catalog = states, readback = "todo", op = "transition", target = "unstarted" } = {}) {
+function run({ map, role = "", roleScalar, catalog = states, readback = "todo", op = "transition", target = "unstarted" } = {}) {
   const dir = mkdtempSync(join(scratch, "case-"));
   const adapter = join(dir, ".tp", "adapters", "plane.sh");
   mkdirSync(dirname(adapter), { recursive: true });
@@ -71,7 +71,7 @@ function run({ map, role = "", catalog = states, readback = "todo", op = "transi
   const tp = { type: "plane", workspace, board_id: board };
   if (map !== undefined) tp.state_map = map;
   writeFileSync(join(dir, ".project.json"), JSON.stringify({ ticket_provider: tp }));
-  if (role) writeFileSync(join(dir, "role.yaml"), `ticket_provider:\n  unstarted: "${role}"   # rendered role override\n`);
+  if (role || roleScalar !== undefined) writeFileSync(join(dir, "role.yaml"), `ticket_provider: # legacy role block\n  unstarted: ${roleScalar ?? JSON.stringify(role)}   # rendered role override\nother:\n  unstarted: Missing\n`);
   const log = join(dir, "requests.jsonl");
   const catalogFile = join(dir, "states.json");
   writeFileSync(catalogFile, JSON.stringify({ results: catalog }));
@@ -87,7 +87,7 @@ function run({ map, role = "", catalog = states, readback = "todo", op = "transi
 }
 function check(label, fn) { fn(); checks++; console.log(`ok ${checks} - ${label}`); }
 try {
-  check("stock board chooses Todo from two unstarted states, one PATCH and same-issue read-back", () => {
+  check("stock default chooses Todo from two unstarted states, one PATCH and same-issue read-back", () => {
     const r = run();
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /ok 103/);
@@ -130,15 +130,49 @@ try {
     assert.match(r.stderr, /invalid .project.json ticket_provider.state_map.*unstarted must be a string/);
     assert.deepEqual(r.requests, []);
   });
+  check("unknown project map key refuses before requests rather than silently using Todo", () => {
+    const r = run({ map: { unstartd: "Ready for Implementation" } });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /unsupported state_map keys: unstartd/);
+    assert.deepEqual(r.requests, []);
+  });
+  for (const [name, scalar] of [
+    ['Ready "for" Implementation', String.raw`"Ready \"for\" Implementation"`],
+    ["Ready 'for' Implementation", "'Ready ''for'' Implementation'"],
+    ["Ready # Implementation", '"Ready # Implementation"'],
+    ["Ready Implementation", String.raw`"Ready\u0020Implementation"`],
+    ["Ready for Implementation", "'Ready for Implementation'"],
+    ["Ready for Implementation", "Ready for Implementation"],
+  ]) {
+    check(`YAML scalar decodes ${scalar} and trailing comment`, () => {
+      const r = run({ roleScalar: scalar, catalog: [...states, { id: "quoted", name, group: "unstarted" }].filter(s => s.id !== "ready"), readback: "quoted" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.requests.find(x => x.method === "PATCH").body).state, "quoted");
+    });
+  }
+  for (const scalar of ['"Ready for Implementation', String.raw`"Ready\q"`, "'Ready' garbage"]) {
+    check(`malformed YAML scalar ${scalar} refuses before requests`, () => {
+      const r = run({ roleScalar: scalar });
+      assert.notEqual(r.status, 0);
+      assert.match(r.stderr, /invalid role.yaml ticket_provider.unstarted/);
+      assert.deepEqual(r.requests, []);
+    });
+  }
   check("a different read-back state cannot certify the single PATCH", () => {
     const r = run({ readback: "ready" });
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /concurrent divergence suspected/);
     assert.deepEqual(r.requests.map(x => x.method), ["GET", "PATCH", "GET"]);
   });
-  check("five standard lanes resolve without role overrides", () => {
+  check("true stock board has exactly five states and every standard lane resolves", () => {
+    const stock = states.filter(s => s.id !== "ready");
+    assert.equal(stock.length, 5);
+    const transition = run({ catalog: stock });
+    assert.equal(transition.status, 0, transition.stderr);
+    assert.deepEqual(transition.requests.map(x => x.method), ["GET", "PATCH", "GET"]);
+    assert.equal(JSON.parse(transition.requests[1].body).state, "todo");
     for (const [lane, state] of [["backlog", "Backlog"], ["unstarted", "Todo"], ["started", "In Progress"], ["completed", "Done"], ["cancelled", "Cancelled"]]) {
-      const r = run({ op: "resolve_state", target: lane });
+      const r = run({ catalog: stock, op: "resolve_state", target: lane });
       assert.equal(r.status, 0, `${lane}: ${r.stderr}`);
       assert.equal(JSON.parse(r.stdout).state, state);
       assert.deepEqual(r.requests.map(x => x.method), ["GET"]);
