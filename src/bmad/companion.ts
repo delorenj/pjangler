@@ -251,7 +251,13 @@ export async function runG33Companion(
     };
     const observed = await invoke("observe");
     const tolerated = new Set<string>(options.tolerateObserve ?? []);
-    if (["unavailable", "conflict", "error"].includes(observed.status) && !tolerated.has(observed.status)) return { ...result, ...observed };
+    // For explicit repair, tolerate "conflict" so the owner can plan the repair.
+    // The owner adapter's "conflict" on observe with reason="repair" means it detected
+    // a repairable state (e.g., missing override) and can produce a plan to fix it.
+    const isRepair = reason === "repair";
+    if (["unavailable", "conflict", "error"].includes(observed.status) && !tolerated.has(observed.status) && !(isRepair && observed.status === "conflict")) {
+      return { ...result, ...observed };
+    }
     // A tolerated observation the owner could not make (as opposed to one it made and found `missing`).
     const observationGap = observed.status === "unavailable" || observed.status === "conflict";
     const plan = await invoke("plan");
@@ -619,15 +625,13 @@ export function captureProtectedBmadState(
           }
         }
         if (!customized && !moduleDir && !claudeSkillsIsRealDir) {
-          const text = entry.bytes.toString("utf8").replace(/\r\n/g, "\n");
-          if (
-            relInSkill !== "SKILL.md"
-            || !text.startsWith(`---\nname: ${skill}\n`)
-            || (entry.mode !== 0o644 && entry.mode !== 0o664)
-          ) {
-            customized = true;
-          }
-        }
+                // No trustworthy source baseline (skill-manifest.csv or .claude/skills) to
+                // prove this native BMAD skill is unmodified. A canonical frontmatter
+                // header and standard mode are not content provenance — an operator can
+                // edit the body while keeping both. Treat as customized to preserve
+                // unknown-baseline content per acceptance criterion 3.
+                customized = true;
+              }
       }
       if (customized) {
         operatorNativeSkills.set(rel, entry);
@@ -795,6 +799,31 @@ export async function runBmadUpdateWithCompanionPreservation(
 
 /** The pre-PJAN-180 path, unchanged except for the scope detail. */
 async function runWholeTreeBmadUpdate(root: string, options: BmadUpdateOptions, reason: string): Promise<BmadUpdateWithPreservationResult> {
+  // Acceptance criterion 4: refuse before any installer or eviction writes when
+  // a skills-root symlink points outside the project. The whole-tree rollback
+  // cannot capture external link targets, so we fail closed here.
+  if (reason.includes("resolves outside the repo")) {
+    return {
+      ok: false,
+      error: "BMAD update refused: installer surface contains a symlink that resolves outside the repository",
+      details: [
+        reason,
+        "No installer, eviction, or companion apply was attempted. External symlink targets cannot be safely captured or restored by whole-tree rollback.",
+        "Resolve the symlink to point inside the repository, or remove it, before retrying the update."
+      ],
+      changedFiles: [],
+      companion: {
+        schemaVersion: 1,
+        moduleId: "g33",
+        optional: true,
+        status: "conflict",
+        summary: "BMAD update withheld: external symlink in installer surface",
+        details: [reason],
+        evidence: [],
+        changedFiles: [],
+      },
+    };
+  }
   const scopeNote = `rollback scope: whole-tree (${reason})`;
   const preflight = await runG33PreUpdateCompanion(root);
   if (!["planned", "unchanged"].includes(preflight.status)) {

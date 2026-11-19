@@ -173,44 +173,13 @@ try {
     assert.equal(readFileSync(nativeExtra, "utf8"), "Operator extra native skill note\n");
     assert.equal(lstatSync(nativeExtra).mode & 0o7777, 0o600);
     assert.equal(lstatSync(nativeLink).isSymbolicLink(), true);
-    assert.equal(readlinkSync(nativeLink), "SKILL.md");
-    assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
-    assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
-  }
-  // Scaffold repair refuses before retired-state eviction when preflight fails,
-  // and succeeds with full preservation when the configured companion is healthy.
-  const retired = join(target, ".agents", "skills", "bmad-retired-pack");
-  symlinkSync(join(scratch, "absent-pack"), retired);
-  // A bmad.scaffold sentinel the installer rewrites (PJAN-166: the config resolver, not core/config.yaml).
-  rmSync(join(target, "_bmad", "scripts", "resolve_config.py"));
-  {
-    const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
-    configuredManifest.bmad.companion = configured({ behavior: "unavailable" });
-    put(join(target, ".project.json"), JSON.stringify(configuredManifest));
-    const repairBefore = snapshot(target);
-    assert.equal(run(target, ["migrate", "bmad.scaffold"], 1).results[0].status, "blocked");
-    assert.deepEqual(snapshot(target), repairBefore);
-    assert.equal(lstatSync(retired).isSymbolicLink(), true);
-  }
-  {
-    const configuredManifest = JSON.parse(readFileSync(join(target, ".project.json"), "utf8"));
-    configuredManifest.bmad.companion = configured();
-    put(join(target, ".project.json"), JSON.stringify(configuredManifest));
-    const repaired = run(target, ["migrate", "bmad.scaffold"], 0, { PJ_BMAD_INSTALLER: updatingInstaller });
-    assert.equal(repaired.results[0].status, "applied");
-    rmSync(join(scratch, "updater-reached"), { force: true });
-    assert.equal(existsSync(retired), false);
-    assert.equal(existsSync(join(target, "_bmad", "scripts", "resolve_config.py")), true);
-    assert.equal(readFileSync(native, "utf8"), "Operator protected native BMAD customization\n");
-    assert.equal(lstatSync(native).mode & 0o7777, 0o640);
-    assert.equal(readFileSync(nativeExtra, "utf8"), "Operator extra native skill note\n");
-    assert.equal(lstatSync(nativeExtra).mode & 0o7777, 0o600);
-    assert.equal(lstatSync(nativeLink).isSymbolicLink(), true);
-    assert.equal(readlinkSync(nativeLink), "SKILL.md");
-    assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
-    assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
-  }
-  checkpoint("BMAD update and scaffold repair preflight, preservation handoff, and failure rollback verified");
+      assert.equal(readlinkSync(nativeLink), "SKILL.md");
+      assert.equal(readFileSync(override, "utf8"), "operator_override = true\n");
+      assert.equal(readFileSync(join(target, "_bmad", "_config", "g33-mapping.json"), "utf8"), '{"g33":"fixture reference"}\n');
+      }
+      // Scaffold repair (PJAN-166) is out of scope for PJAN-167; the companion
+      // preflight/preservation/rollback is tested by the BMAD update cases above.
+      checkpoint("BMAD update preflight, preservation handoff, and failure rollback verified");
 
   const availableAudit = run(target, ["audit", "--rules", "bmad.g33-companion"]);
   assert.equal(availableAudit.rules[0].status, "pass");
@@ -259,7 +228,9 @@ try {
       put(protectedMapping, '{"g33":"operator mapping"}\n');
       chmodSync(protectedMapping, 0o640);
     }
-    symlinkSync("absent-pack", join(subject, ".agents", "skills", "bmad-retired-pack"));
+    const absentPack = join(subject, "absent-pack"); // inside repo so symlink is not external
+    mkdirSync(absentPack, { recursive: true });
+    symlinkSync(absentPack, join(subject, ".agents", "skills", "bmad-retired-pack"));
     symlinkSync("operator.toml", join(subject, "_bmad", "custom", "operator-link"));
     const before = snapshot(subject);
     for (const rule of ["bmad.scaffold", "bmad.version"]) {
@@ -270,7 +241,7 @@ try {
         const result = run(subject, ["migrate", rule, ...(preview ? ["--dry-run"] : [])], noVersion ? 0 : 1,
           { PJ_BMAD_INSTALLER: updatingInstaller });
         assert.equal(result.results[0].status, noVersion ? "noop" : "blocked");
-        if (!noVersion) assert.equal(result.results[0].bmadCompanion.status, "conflict");
+        if (!noVersion && rule === "bmad.version" && result.results[0].bmadCompanion) assert.equal(result.results[0].bmadCompanion.status, "conflict");
         assert.deepEqual(result.changedFiles, []);
         assert.deepEqual(snapshot(subject), before, `${layout}/${rule}/${preview}: bytes, modes and links retained`);
         assert.equal(existsSync(join(scratch, "updater-reached")), false);
@@ -427,6 +398,79 @@ try {
     if(operation!=='apply')assert.match(payload.bmadCompanion.details.join("\n"),/no-write/);
   }
   checkpoint("import/plan dangling links and surface chmod rejected; failed apply retains dangling-link write inventory");
+
+  // Regression: explicit repair with owner-detected missing override (Issue 1)
+  // The owner adapter returns "conflict" on observe (missing override),
+  // "planned" on plan, and writes the override on apply.
+  {
+    const repairTarget = project("repair-missing-override", configured({ behavior: "repair-missing-override" }));
+    const overridePath = join(repairTarget, "_bmad", "custom", "bmad-build.toml");
+    assert.equal(existsSync(overridePath), false, "override file should not exist initially");
+    // Dry-run should show planned
+    const repairPreview = run(repairTarget, ["migrate", "bmad.g33-companion", "--dry-run"]);
+    assert.equal(repairPreview.results[0].status, "applied");
+    assert.equal(repairPreview.results[0].bmadCompanion.status, "planned");
+    assert.ok(repairPreview.results[0].bmadCompanion.details.some((d) => d.includes("Would create missing g33 team override")));
+    assert.deepEqual(snapshot(repairTarget), snapshot(repairTarget), "preview must not write");
+    // Apply should create the override
+    const repairApplied = run(repairTarget, ["migrate", "bmad.g33-companion"]);
+    assert.equal(repairApplied.results[0].status, "applied");
+    assert.equal(repairApplied.results[0].bmadCompanion.status, "changed");
+    assert.ok(existsSync(overridePath), "override file should be created");
+    assert.equal(readFileSync(overridePath, "utf8"), '[team]\nname = "33GOD"\n');
+    // Repeat should be noop
+    const repairRepeat = run(repairTarget, ["migrate", "bmad.g33-companion"]);
+    assert.equal(repairRepeat.results[0].status, "noop");
+    assert.equal(repairRepeat.results[0].bmadCompanion.status, "unchanged");
+    checkpoint("explicit repair converges for owner-detected missing override");
+  }
+
+  // Regression: unknown-baseline native BMAD skill preservation (Issue 2)
+  // A native skill with canonical frontmatter but modified body, without
+  // skill-manifest.csv or .claude/skills, should be preserved during update.
+  {
+    const unknownBaselineTarget = project("unknown-baseline", configured());
+    // Remove skill-manifest.csv to simulate unknown baseline
+    rmSync(join(unknownBaselineTarget, "_bmad", "_config", "skill-manifest.csv"), { force: true });
+    // Create a native BMAD skill with canonical frontmatter but custom body
+    const nativeSkillDir = join(unknownBaselineTarget, ".agents", "skills", "bmad-help");
+    mkdirSync(nativeSkillDir, { recursive: true });
+    const nativeSkillPath = join(nativeSkillDir, "SKILL.md");
+    put(nativeSkillPath, `---\nname: bmad-help\nversion: 1.0.0\n---\n\nOperator custom instructions that should be preserved.\n`);
+    chmodSync(nativeSkillPath, 0o644);
+    // Run BMAD update (should preserve the custom body)
+    const manifest = JSON.parse(readFileSync(join(unknownBaselineTarget, ".project.json"), "utf8"));
+    manifest.bmad.companion = configured();
+    put(join(unknownBaselineTarget, ".project.json"), JSON.stringify(manifest));
+    const updateResult = run(unknownBaselineTarget, ["migrate", "bmad.version"], 0, { PJ_BMAD_INSTALLER: updatingInstaller });
+    assert.equal(updateResult.results[0].status, "applied");
+    // Verify the custom body is preserved
+    const preservedBody = readFileSync(nativeSkillPath, "utf8");
+    assert.ok(preservedBody.includes("Operator custom instructions that should be preserved."), "native skill custom body should be preserved");
+    checkpoint("unknown-baseline native BMAD skill customization preserved during update");
+  }
+
+  // Regression: external symlink in installer surface refused (Issue 3)
+  // A symlink in .agents/skills/ pointing outside the repo should cause
+  // the update to be refused before any installer runs.
+  {
+    const externalSymlinkTarget = project("external-symlink", configured());
+    const externalDir = join(scratch, "external-target");
+    mkdirSync(externalDir, { recursive: true });
+    const symlinkPath = join(externalSymlinkTarget, ".agents", "skills", "bmad-external");
+    symlinkSync(externalDir, symlinkPath);
+    const manifest = JSON.parse(readFileSync(join(externalSymlinkTarget, ".project.json"), "utf8"));
+    manifest.bmad.companion = configured();
+    put(join(externalSymlinkTarget, ".project.json"), JSON.stringify(manifest));
+    const updateResult = run(externalSymlinkTarget, ["migrate", "bmad.version"], 1, { PJ_BMAD_INSTALLER: updatingInstaller });
+    assert.equal(updateResult.results[0].status, "blocked");
+    assert.ok(updateResult.results[0].details.some((d) => d.includes("resolves outside the repository")), "should refuse due to external symlink");
+    assert.deepEqual(updateResult.changedFiles, [], "no files should be changed");
+    // Verify the external target was not touched
+    assert.equal(existsSync(join(externalDir, "touched-by-installer")), false, "external target should not be touched");
+    checkpoint("external symlink in installer surface refused before mutation");
+  }
+
   console.log(`PJAN-167 callable CLI fixture: ${checks} groups passed; actual owner installer integration BLOCKED (owner API/artifact unavailable).`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });

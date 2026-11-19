@@ -22,6 +22,18 @@ export async function companion(request) {
   if(options.behavior==='throw')throw new Error('Owner fixture threw');
   if(options.behavior==='metadata')return result(operation==='observe'?'installed':'unchanged','Metadata-only claim');
   if(options.behavior==='false-convergence')return result(operation==='observe'?'missing':'unchanged','False convergence',['metadata exists']);
+  // Repair behavior: owner detects missing override on observe (conflict),
+  // plans the repair on plan (planned), and writes it on apply (changed).
+  if(options.behavior==='repair-missing-override') {
+    if(operation==='observe')return result('conflict','Missing g33 team override in bmad-build.toml');
+    if(operation==='plan')return result('planned','Would create missing g33 team override');
+    if(operation==='apply'){
+      const overridePath=join(projectRoot,'_bmad','custom','bmad-build.toml');
+      mkdirSync(dirname(overridePath),{recursive:true});
+      writeFileSync(overridePath,'[team]\\nname = "33GOD"\\n');
+      return result('changed','Created missing g33 team override');
+    }
+  }
   if(operation==='observe')return result(valid?'installed':'missing',valid?'Content and mappings observed':'Missing content or mapping',valid?['Exact companion bytes verified','Exact mapping bytes verified']:[]);
   if(operation==='plan')return result(valid?'unchanged':'planned',valid?'Companion converged':'Would reconcile fixture companion');
   if(operation!=='apply')throw new Error('unexpected operation');
