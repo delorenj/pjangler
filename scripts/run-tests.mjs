@@ -148,6 +148,7 @@ const SUITES = [
   "tests/pjan-84-registry-flag-regressions.mjs",
   "tests/pjan-84-finding-scope-regressions.mjs",
   "tests/pjan-84-orphan-adoption-regressions.mjs",
+  "tests/pjan-115-init-registry-audits-regressions.mjs",
   "tests/pjan-130-init-target-regressions.mjs",
   "tests/pjan-209-init-bootstrap-regressions.mjs",
   "tests/pjan-210-hub-versioning-regressions.mjs",

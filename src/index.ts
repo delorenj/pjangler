@@ -822,7 +822,11 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
         cwd: process.cwd(),
         scaffold: !target.syncMode,
       });
-      const preAudit = target.syncMode ? await runAudit(target.targetDir) : undefined;
+      // PJAN-115: the sync pre-audit must judge against the registry the
+      // operator chose. runAudit's second parameter is the --registry
+      // override; without it the plan wrote registry A while this audit
+      // judged the repo against the default registry.
+      const preAudit = target.syncMode ? await runAudit(target.targetDir, options.registry) : undefined;
       const selection = await selectProjectInitOperations({
         plan,
         auditRules: preAudit?.rules ?? [],
@@ -881,10 +885,16 @@ async function runProjectInit(name: string | undefined, options: ProjectInitCliO
       };
       const result = await recipeRegistry.initRecipe(
         "project",
+        // PJAN-115: the eligibility and postcondition audits run inside this
+        // context (ProjectRecipe spreads it into every auditRecipes call).
+        // Carrying the --registry override here is what keeps them from
+        // judging the transaction against the default registry while the
+        // plan itself writes the override.
         lifecycleContext(target.targetDir, false, false, {
           force: options.force ?? false,
           live: options.live ?? false,
           quiet: Boolean(options.json),
+          registryPath: options.registry,
         }),
         projectInput,
       ) as ProjectRecipeResult;
