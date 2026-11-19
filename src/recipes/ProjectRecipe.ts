@@ -723,6 +723,7 @@ export class ProjectRecipe extends Recipe<ProjectRecipeInput | ProjectInitPlan> 
       if (error instanceof OperationStopped || currentOperation()?.stopReason()) {
         rollbackEligible = false;
         registryFinalizerEligible = false;
+        throw error instanceof OperationStopped ? error : new OperationStopped(currentOperation()!.stopReason()!);
       }
       errors.push(`project transaction failed: ${error instanceof Error ? error.message : String(error)}`);
       phases.push({

@@ -1,3 +1,4 @@
+import { assertOperationActive, runChild } from "../lifecycle/operation";
 import { createHash } from "node:crypto";
 import {
   chmodSync, closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync,
@@ -666,6 +667,18 @@ export const BMAD_UPDATE_LOCK_MAX_AGE_MS = 6 * 3600_000;
  * An opaque id for the process that is `pid` (its start time), or undefined when the host cannot say. A
  * recycled pid has a different one, so a stale lock cannot pin a repo to an unrelated process.
  */
+export async function processStartIdAsync(pid: number): Promise<string | undefined> {
+  try {
+    if (existsSync("/proc/self/stat")) {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] || undefined;
+    }
+  } catch { return undefined; }
+  const run = await runChild("ps", ["-o", "lstart=", "-p", String(pid)], { timeoutMs: 2_000 });
+  const text = run.status === 0 ? run.stdout.trim().replace(/\s+/g, "_") : "";
+  return text || undefined;
+}
+
 export function processStartId(pid: number): string | undefined {
   try {
     if (existsSync("/proc/self/stat")) {
@@ -707,6 +720,46 @@ function parseLockToken(text: string): { pid: number; start?: string } {
  * a different process, or that is older than BMAD_UPDATE_LOCK_MAX_AGE_MS is taken over. A state dir that
  * cannot be used is host state, not a repo problem: the lock degrades to an advisory and the update runs.
  */
+export async function acquireBmadUpdateLockAsync(projectRoot: string): Promise<BmadUpdateLock | { ok: false; error: string }> {
+  const dir = join(stateBase(projectRoot), "pjangler", "bmad-update");
+  const path = join(dir, `${repoKey(projectRoot)}.lock`);
+  const unavailable = (error: unknown): BmadUpdateLock => ({
+    ok: true, path: "", release: () => {},
+    advisory: `pj BMAD update lock unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)}); concurrent updates of this repo are not serialized`,
+  });
+  assertOperationActive();
+  try { mkdirSync(dir, { recursive: true }); } catch (error) { return unavailable(error); }
+  const start = await processStartIdAsync(process.pid);
+  const token = start ? `${process.pid}:${start}` : String(process.pid);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    assertOperationActive();
+    try {
+      const fd = openSync(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644);
+      try { writeSync(fd, token); }
+      catch (error) { try { closeSync(fd); } catch {} try { unlinkSync(path); } catch {} return unavailable(error); }
+      closeSync(fd);
+      return { ok: true, path, release: () => { try { if (readFileSync(path, "utf8").trim() === token) unlinkSync(path); } catch {} } };
+    } catch (error) { if (errno(error) !== "EEXIST") return unavailable(error); }
+    let text: string;
+    try { text = readFileSync(path, "utf8"); } catch { continue; }
+    const holder = parseLockToken(text);
+    if (Number.isInteger(holder.pid) && holder.pid > 0) {
+      let age = 0;
+      try { age = Date.now() - statSync(path).mtimeMs; } catch { continue; }
+      const current = holder.start === undefined ? undefined : await processStartIdAsync(holder.pid);
+      const recycled = holder.start !== undefined && current !== undefined && current !== holder.start;
+      if (pidAlive(holder.pid) && !recycled && age < BMAD_UPDATE_LOCK_MAX_AGE_MS) return { ok: false, error: `another pj BMAD update is running on this repo (pid ${holder.pid})` };
+    } else {
+      let age = 0;
+      try { age = Date.now() - statSync(path).mtimeMs; } catch { continue; }
+      if (age < 60_000) return { ok: false, error: "another pj BMAD update is running on this repo (pid unknown)" };
+    }
+    assertOperationActive();
+    try { unlinkSync(path); } catch {}
+  }
+  return { ok: false, error: "could not take the pj BMAD update lock for this repo" };
+}
+
 export function acquireBmadUpdateLock(projectRoot: string): BmadUpdateLock | { ok: false; error: string } {
   const dir = join(stateBase(projectRoot), "pjangler", "bmad-update");
   const path = join(dir, `${repoKey(projectRoot)}.lock`);

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { currentOperation, runChild, assertOperationActive } from "../lifecycle/operation";
+import { currentOperation, runChild, assertOperationActive } from "../lifecycle/operation.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Synchronous configuration readers consume one request-local snapshot. MCP

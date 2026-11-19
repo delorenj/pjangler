@@ -1737,11 +1737,7 @@ export async function executeProjectInitPlan(
         copierEnv.PYTHONSAFEPATH = "1";
       }
       copierEnv.MISE_YES = "1";
-      const result = currentOperation()
-        ? await runChild(copierExecutable, action.command.slice(1), { cwd: action.cwd, env: copierEnv })
-        : spawnSync(copierExecutable, action.command.slice(1), {
-            encoding: "utf8", cwd: action.cwd, env: copierEnv,
-          });
+      const result = await runChild(copierExecutable, action.command.slice(1), { cwd: action.cwd, env: copierEnv, timeoutMs: 180_000 });
       assertOperationActive();
       const copierChanges = changedTreePaths(action.targetDir, before, snapshotTree(action.targetDir));
       changedFiles.push(...copierChanges);

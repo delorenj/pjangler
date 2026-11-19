@@ -9,8 +9,10 @@ export const MCP_CHILD_MAX_BYTES = 16 * 1024 * 1024;
 
 export type StopReason = "cancelled" | "deadline-exceeded";
 export class OperationStopped extends Error {
-  constructor(readonly reason: StopReason, options?: ErrorOptions) {
+  readonly reason: StopReason;
+  constructor(reason: StopReason, options?: ErrorOptions) {
     super(`MCP operation ${reason}${options?.cause instanceof Error ? `: ${options.cause.message}` : ""}`, options);
+    this.reason = reason;
     this.name = "OperationStopped";
   }
 }

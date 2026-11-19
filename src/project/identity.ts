@@ -17,6 +17,7 @@
 // The repo-local `.project.json` owns the board binding. Applied repairs
 // persist changed fields there through the registry service, then refresh its index.
 
+import { assertOperationActive } from "../lifecycle/operation";
 import { isDeepStrictEqual } from "node:util";
 import {
   closeSync,
@@ -229,6 +230,7 @@ export async function fetchPlaneBoards(
   const boards = new Map<string, PlaneBoardFacts>();
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
+    assertOperationActive();
     const url = new URL(`${base}/api/v1/workspaces/${encodeURIComponent(workspace)}/projects/`);
     url.searchParams.set("per_page", String(PAGE_SIZE));
     if (cursor) url.searchParams.set("cursor", cursor);

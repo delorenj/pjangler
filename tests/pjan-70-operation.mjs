@@ -16,7 +16,7 @@ import { writeFileSync } from 'node:fs';
 const [ready, late, pidFile, mode] = process.argv.slice(2);
 const child = spawn(process.execPath, ['-e', \
   'process.on("SIGTERM",()=>{}); setTimeout(()=>require("node:fs").writeFileSync(process.argv[1],"late"),1700)', late],
-  { stdio: 'ignore' });
+  { stdio: mode === 'stdio' ? ['ignore', process.stdout, 'ignore'] : 'ignore' });
 writeFileSync(pidFile, String(child.pid));
 writeFileSync(ready, 'ready');
 if (mode === 'graceful') { process.on('SIGTERM', () => process.exit(0)); }
@@ -44,7 +44,7 @@ setTimeout(() => writeFileSync(late, 'parent-late'), 1700);
   pre.close();
   assert.equal(existsSync(preMarker), false);
 
-  for (const [mode, reason] of [["graceful", "cancelled"], ["force", "cancelled"], ["force", "deadline-exceeded"]]) {
+  for (const [mode, reason] of [["graceful", "cancelled"], ["force", "cancelled"], ["force", "deadline-exceeded"], ["stdio", "cancelled"]]) {
     const ready = join(scratch, `${mode}-${reason}.ready`);
     const late = join(scratch, `${mode}-${reason}.late`);
     const pidFile = join(scratch, `${mode}-${reason}.pid`);
@@ -59,6 +59,13 @@ setTimeout(() => writeFileSync(late, 'parent-late'), 1700);
     operation.close();
     await checkNoLateWrites(late, pidFile);
   }
+  const overflow = await runChild(process.execPath, ["-e", "process.stdout.write('x'.repeat(2048))"], { maxBuffer: 64 });
+  assert.match(overflow.error?.message ?? "", /output exceeded 64 bytes/);
+  const normal = createOperation(new AbortController().signal, 5_000);
+  const completed = await withOperation(normal, () => runChild(process.execPath, ["-e", "process.stdout.write('normal')"]));
+  normal.close();
+  assert.equal(completed.stdout, "normal");
+  assert.equal(completed.status, 0);
   const subsequent = await runChild(process.execPath, ["-e", "process.stdout.write('stdio-ok')"]);
   assert.equal(subsequent.stdout, "stdio-ok");
   assert.equal(subsequent.status, 0);

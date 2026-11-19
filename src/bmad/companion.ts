@@ -1,11 +1,11 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
-import { runChild, assertOperationActive, rethrowOperationStopped } from "../lifecycle/operation";
+import { runChild, currentOperation, assertOperationActive, rethrowOperationStopped } from "../lifecycle/operation";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changedTreePaths, snapshotTree, type TreeSnapshot } from "../utils/tree-diff";
 import { captureTreeBackup, restoreSingleEntry, restoreTreeBackup, type TreeBackup, type TreeBackupEntry } from "../utils/tree-restore";
 import {
-  acquireBmadUpdateLock, captureScopedBackup, restoreScopedBackup, scopedChangedFiles, UnreadableSurfaceError,
+  acquireBmadUpdateLock, acquireBmadUpdateLockAsync, captureScopedBackup, restoreScopedBackup, scopedChangedFiles, UnreadableSurfaceError,
   type BmadUpdateScope, type ScopedBackup,
 } from "./update-scope";
 import { enableSelection, PROJECT_CLI_ALIASES, readSelectionManifest, showSkill } from "@delorenj/skillex";
@@ -901,8 +901,9 @@ async function runDeclaredBmadUpdate(root: string, options: BmadUpdateOptions, s
   let scopeNote = `rollback scope: declared (${scope.reason})`;
   let lock: ReturnType<typeof acquireBmadUpdateLock>;
   // An unusable state dir is host state, not a repo problem: the lock degrades to an advisory and the update runs.
-  try { lock = acquireBmadUpdateLock(root); }
+  try { lock = currentOperation() ? await acquireBmadUpdateLockAsync(root) : acquireBmadUpdateLock(root); }
   catch (error) {
+    rethrowOperationStopped(error);
     lock = { ok: true, path: "", release: () => {}, advisory: `pj BMAD update lock unavailable (${error instanceof Error ? error.message : String(error)}); concurrent updates of this repo are not serialized` };
   }
   if (!lock.ok) {
