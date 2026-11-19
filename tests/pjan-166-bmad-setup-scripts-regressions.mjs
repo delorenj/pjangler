@@ -845,9 +845,9 @@ test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that
   // The release published right before the constant, read from the registry, so a constant moved later cannot pass.
   const listed = realSpawnSync("npm", ["view", "bmad-method", "versions", "--json", "--prefer-online"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
   assert.equal(listed.status, 0, `npm view failed: ${listed.stderr}`);
-  const versions = JSON.parse(listed.stdout);
+  const versions = JSON.parse(listed.stdout).flat(); // npm may wrap the versions array in an outer array for multi-field queries.
   const at = versions.indexOf(BMAD_FIRST_SCRIPTS_RELEASE);
-  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release (received ${versions.length} releases; raw=${listed.stdout.slice(0, 600)}; stderr=${listed.stderr.slice(0, 300)})`);
+  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release`);
   assert.deepEqual(await shipped(versions[at - 1]), [], `${versions[at - 1]}, the release before the boundary, ships no _bmad/scripts source`);
   assert.notDeepEqual(await shipped(BMAD_FIRST_SCRIPTS_RELEASE), [], "the boundary release ships one");
 });
