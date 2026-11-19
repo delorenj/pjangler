@@ -351,7 +351,11 @@ export class RecipeRegistry {
    */
   async migrateAll(ctx: LifecycleContext): Promise<LifecycleMigrationReport> {
     const audit = await this.auditRecipes(ctx);
-    const failing = audit.rules.filter((rule) => rule.status === "fail" || rule.status === "warn");
+    const failing = audit.rules.filter((rule) => (rule.status === "fail" || rule.status === "warn") && !isHostScoped(rule));
+    // Host findings are informational in a repository bulk run. Keep them in
+    // the result stream, but never select their migration or count them as
+    // project blockers; the focused owner handles shared HOME repairs.
+    const host = audit.rules.filter((rule) => isHostScoped(rule) && (rule.status === "fail" || rule.status === "warn"));
     const report = await this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
 
     const unblocked: RuleId[] = [];
@@ -383,8 +387,18 @@ export class RecipeRegistry {
       });
     }
     const second = unblocked.length ? await this.migrateRules(ctx, unblocked) : undefined;
-    if (!second && !manual.length) return report;
-    const results = [...report.results, ...(second?.results ?? []), ...manual];
+    const hostResults: LifecycleMigrationResult[] = host.map((rule) => ({
+      id: rule.id,
+      recipeId: rule.recipeId,
+      title: rule.title,
+      scope: "host",
+      status: "skipped",
+      summary: rule.summary,
+      changedFiles: [],
+      details: [...rule.details, "Host-owned: run pj notebook migrate --apply to repair this machine; repo bulk migration does not write shared host state"],
+    }));
+    if (!second && !manual.length && !hostResults.length) return report;
+    const results = [...report.results, ...(second?.results ?? []), ...manual, ...hostResults];
     return {
       ...report,
       ok: report.ok && (second?.ok ?? true) && !manual.length,

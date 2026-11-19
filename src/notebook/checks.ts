@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LifecycleAuditFinding, LifecycleContext, LifecycleMigrationResult, RecipeCheck } from "../recipes/types";
-import { loadEffectiveNotebookConfig } from "./config";
+import { loadEffectiveNotebookConfig, persistProjectNotebookBinding, resolveEffectiveNotebookConfig, resolveNotebookProject } from "./config";
 import { canonicalJson } from "./notes";
 import { normalizeNotebookError } from "./output";
 import { captureAdmissionSummary, currentRetentionPressure, listCaptureReceipts, notebookStateRoot, pruneNotebookState } from "./state";
@@ -130,7 +130,7 @@ function bindingAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   if (!config) return finding("notebook.binding", "Notebook binding", "fail", "Notebook binding could not be resolved");
   if (config.binding.state === "disabled") return finding("notebook.binding", "Notebook binding", "skip", "Project Notebook binding is disabled");
   if (config.binding.state === "linked" && (!config.binding.notebook_id || !config.binding.overview_note_id)) {
-    return finding("notebook.binding", "Notebook binding", "fail", "Linked binding is missing its notebook or Overview stable ID", [], true);
+    return finding("notebook.binding", "Notebook binding", "fail", "Linked binding is missing its notebook or Overview stable ID", ["Run pj notebook migrate --apply --live to reconcile the missing remote IDs; local projection cannot invent them"]);
   }
   const projected = ctx.notebookManifestBinding !== undefined
     ? bindingProjection(ctx.notebookManifestBinding)
@@ -273,6 +273,17 @@ function captureAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   }
 }
 
+function bindingMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
+  if (ctx.dryRun) return result(current, "applied", "Would project the authoritative Registry binding into .project.json");
+  try {
+    const resolved = resolveNotebookProject(ctx.repoRoot, ctx.registryPath);
+    const files = persistProjectNotebookBinding(resolved, resolveEffectiveNotebookConfig(resolved).binding);
+    return result(current, files.length ? "applied" : "noop", files.length ? "Projected the authoritative Registry binding into .project.json" : "Registry and Manifest binding projection already match", files);
+  } catch (error) {
+    return result(current, "blocked", normalizeNotebookError(error).message);
+  }
+}
+
 function overviewMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
   if (ctx.dryRun) return result(current, "applied", "Would reconcile drifted Project Overview note");
   if (!ctx.live) return result(current, "blocked", "Reconciling the remote Overview note requires --live");
@@ -293,7 +304,7 @@ function overviewMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding):
 export function createNotebookChecks(): readonly RecipeCheck[] {
   return [
     new NotebookCheck("notebook.configuration", "Notebook configuration", configurationAudit),
-    new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit),
+    new NotebookCheck("notebook.binding", "Notebook binding", bindingAudit, bindingMigrate),
     new NotebookCheck("notebook.remote-notebook", "Remote notebook", remoteAudit),
     new NotebookCheck("notebook.overview-note", "Overview note", overviewAudit, overviewMigrate),
     // PJAN-84: host-scoped. These describe $HOME/.agents/skills and

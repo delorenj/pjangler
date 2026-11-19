@@ -92,6 +92,8 @@ export interface LifecycleAuditFinding {
 export interface LifecycleMigrationResult {
   id: RuleId;
   title: string;
+  /** A host-only informational result from repository bulk migration. */
+  scope?: LifecycleScope;
   status: MigrationStatus;
   summary: string;
   changedFiles: string[];
