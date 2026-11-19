@@ -362,6 +362,130 @@ check("an init on a cold cache installs BMAD and emits only supported CLI roots"
   }
 });
 
+function snapshot(path) {
+  let stat;
+  try { stat = lstatSync(path); } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) return { link: readlinkSync(path) };
+  if (stat.isDirectory()) return Object.fromEntries(readdirSync(path).sort().map((name) => [name, snapshot(join(path, name))]));
+  return { bytes: readFileSync(path).toString("base64") };
+}
+
+// Exercise both shared planner callers, including a cached version response so
+// bmad.version reaches the preflight without touching the network or real HOME.
+for (const ruleId of ["bmad.scaffold", "bmad.version"]) {
+  for (const linkKind of ["absolute", "relative"]) {
+    for (const scenario of [
+      "outside-parent", "prefix-sibling", "configured-checkout", "legacy-checkout",
+      "cache-parent-escape", "cancelled-alias", "direct-source-alias", "current-noncolliding",
+      "retired-live", "retired-dangling", "physical-dotdot", "cache-checkout",
+    ]) {
+      check(`${ruleId} ${linkKind} ${scenario} preserves the provenance boundary`, () => {
+        const base = join(workspace, ruleId, linkKind, scenario);
+        const project = join(base, "project"), home = join(base, "home"), catalog = join(base, "catalog");
+        const skills = join(project, ".agents", "skills");
+        const name = scenario === "current-noncolliding" ? "bmad-html-workspace" : "bmad-help";
+        const link = join(skills, name);
+        const packSuffix = ["packs", "bmad", "6.0.0", "skills", name];
+        mkdirSync(skills, { recursive: true });
+        for (const dir of [home, ...["all-skills", "sets", "packs"].map((name) => join(catalog, name))]) mkdirSync(dir, { recursive: true });
+        writeFileSync(join(project, ".project.json"), JSON.stringify({ project_name: "project", bmad: { companion: { enabled: false } } }));
+        writeFileSync(join(project, ".agents", "skills.json"), JSON.stringify({ inherit_global: false, skills: scenario === "current-noncolliding" ? [name] : [] }));
+        if (ruleId === "bmad.version") {
+          mkdirSync(join(project, "_bmad", "_config"), { recursive: true });
+          writeFileSync(join(project, "_bmad", "_config", "manifest.yaml"), "installation:\n  version: 1.0.0\nmodules:\n  - name: core\n");
+          mkdirSync(join(home, ".cache", "pjangler"), { recursive: true });
+          writeFileSync(join(home, ".cache", "pjangler", "bmad-dist-tags.json"), JSON.stringify({ fetchedAt: Date.now(), distTags: { latest: "6.13.0", next: "6.13.0" } }));
+        }
+        let source = join(catalog, ...packSuffix), raw = source;
+        if (scenario === "outside-parent") source = raw = join(base, ...packSuffix);
+        if (scenario === "prefix-sibling") source = raw = join(`${catalog}-sibling`, ...packSuffix);
+        if (scenario === "configured-checkout") source = raw = join(catalog, "unrelated", ...packSuffix);
+        if (scenario === "legacy-checkout") source = raw = join(home, "code", "skillex", "unrelated", ...packSuffix);
+        if (scenario === "cache-parent-escape") source = raw = join(home, ".agents", ".cache", ...packSuffix);
+        if (scenario === "cache-checkout") source = raw = join(home, ".agents", ".cache", "registries", "checkout", ...packSuffix);
+        if (scenario === "current-noncolliding") source = raw = join(catalog, "all-skills", name);
+        if (scenario === "cancelled-alias") {
+          mkdirSync(join(base, "private", "nested"), { recursive: true });
+          symlinkSync(join(base, "private", "nested"), join(base, "alias"));
+          source = join(base, "private", "catalog", ...packSuffix);
+          raw = `${base}/alias/../catalog/${packSuffix.join("/")}`;
+          // The normalized trusted path also exists, but is NOT the raw target.
+          mkdirSync(join(catalog, ...packSuffix), { recursive: true });
+          writeFileSync(join(catalog, ...packSuffix, "SKILL.md"), "TRUSTED DECOY\n");
+        }
+        if (scenario === "direct-source-alias") {
+          symlinkSync(join(base, "private"), join(catalog, "packs", "bmad"));
+          source = join(base, "private", "6.0.0", "skills", name);
+        }
+        if (scenario === "physical-dotdot") {
+          mkdirSync(join(base, "physical"), { recursive: true });
+          raw = `${base}/physical/../catalog/${packSuffix.join("/")}`;
+        }
+        if (scenario !== "retired-dangling") {
+          mkdirSync(source, { recursive: true });
+          writeFileSync(join(source, "SKILL.md"), "USER SOURCE BYTES\n");
+        }
+        // relative() normalizes alias/.. away; relativize only the prefix.
+        const text = linkKind === "absolute" ? raw : `${relative(skills, base)}/${raw.slice(base.length + 1)}`;
+        symlinkSync(text, link);
+        if (scenario !== "retired-dangling") assert.equal(readFileSync(join(link, "SKILL.md"), "utf8"), "USER SOURCE BYTES\n");
+        const allowed = ["retired-live", "retired-dangling", "physical-dotdot", "cache-checkout"].includes(scenario);
+        // A valid sibling must not be evicted if any conflict is found later.
+        const pending = join(skills, "bmad-aaa-pending");
+        const pendingTarget = join(catalog, "packs", "bmad", "6.0.0", "skills", "bmad-aaa-pending");
+        symlinkSync(pendingTarget, pending);
+        const before = snapshot(project), sourceBefore = snapshot(source), catalogBefore = snapshot(catalog);
+        const env = hermeticEnv({
+          HOME: home, XDG_CACHE_HOME: join(home, ".cache"), XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, ".state"),
+          TMPDIR: base, PJ_SKILLS_REGISTRY_ROOT: catalog, PJ_BMAD_INSTALLER: bmadInstaller,
+          PJ_PROJECT_REGISTRY: join(base, "registry.yaml"), GIT_CEILING_DIRECTORIES: workspace,
+        });
+        for (const [run, dryRun] of [true, false, false].entries()) {
+          const result = spawnSync(process.execPath, [join(root, "dist", "index.js"), "migrate", ruleId, project, "--json", ...(dryRun ? ["--dry-run"] : [])], {
+            cwd: base, encoding: "utf8", env, timeout: 120_000,
+          });
+          assert.equal(result.error, undefined);
+          const report = JSON.parse(result.stdout);
+          const finding = report.results.find((entry) => entry.id === ruleId);
+          assert.ok(finding, result.stdout);
+          if (!allowed) {
+            assert.equal(result.status, 1, result.stdout);
+            assert.equal(finding.status, "blocked", result.stdout);
+            assert.deepEqual(finding.changedFiles, []);
+            assert.match(JSON.stringify(finding), new RegExp(`\\.agents/skills/${name}`));
+            assert.match(JSON.stringify(finding), /review and relocate .*link before retrying/);
+            assert.doesNotMatch(JSON.stringify(finding), /retired BMAD pack symlink/);
+            assert.equal(readlinkSync(link), text);
+            assert.equal(readlinkSync(pending), pendingTarget);
+            assert.deepEqual(snapshot(project), before, "refusal mutated project");
+            assert.equal(readFileSync(join(link, "SKILL.md"), "utf8"), "USER SOURCE BYTES\n");
+          } else {
+            assert.equal(result.status, 0, result.stdout);
+            if (run < 2) {
+              assert.ok(finding.changedFiles.includes(link), result.stdout);
+              assert.match(finding.details.join("\n"), /retired BMAD pack symlink \.agents\/skills\/bmad-help/);
+            } else {
+              assert.doesNotMatch(finding.details.join("\n"), /retired BMAD pack symlink/);
+            }
+            if (dryRun) {
+              assert.equal(readlinkSync(link), text);
+              assert.deepEqual(snapshot(project), before, "preview mutated project");
+            } else {
+              assert.equal(lstatSync(link).isSymbolicLink(), false, "installer must replace retired activation with its own directory");
+              assert.equal(existsSync(pending), false);
+            }
+          }
+          assert.deepEqual(snapshot(source), sourceBefore, "source bytes changed");
+          assert.deepEqual(snapshot(catalog), catalogBefore, "catalog bytes changed");
+        }
+      });
+    }
+  }
+}
+
 if (failures.length) {
   console.error(`\npjan-76: ${failures.length} check(s) failed: ${failures.join(", ")}`);
   process.exit(1);
