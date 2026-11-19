@@ -7,7 +7,7 @@ import "./helpers/hermetic-suite.mjs";
 // asserted about.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -435,6 +435,51 @@ test("board on a headless host prints a link rather than launching", () => {
   assert.ok(r.stdout.includes("https://plane.delo.sh/33god/browse/PJAN-67"), r.stdout);
   assert.match(r.stdout, /no display/);
 });
+
+const boardLink = osc8("https://plane.delo.sh/33god/browse/PJAN-67");
+const launcherBin = join(workspace, "launcher-bin");
+mkdirSync(launcherBin);
+const launcherCalls = join(workspace, "launcher-calls");
+const fakeLauncher = join(launcherBin, "xdg-open");
+writeFileSync(fakeLauncher, `#!/bin/sh\nprintf '%s\\n' "$1" >> "$CALLS"\n`, { mode: 0o755 });
+
+for (const bin of [cliBundle, join(root, "dist", "index.js")]) {
+  const surface = bin === cliBundle ? "source bundle" : "shipped dist";
+  for (const [situation, variables] of [
+    ["no display", { DISPLAY: "", WAYLAND_DISPLAY: "", SSH_CONNECTION: "" }],
+    ["ssh with display", { DISPLAY: ":9", WAYLAND_DISPLAY: "", SSH_CONNECTION: "remote 1 local 22" }],
+  ]) {
+    test(`${surface} board ${situation} emits OSC 8 without a launcher`, () => {
+      rmSync(launcherCalls, { force: true });
+      const r = run(bin, ["board"], live, { ...variables, PATH: launcherBin, CALLS: launcherCalls });
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(r.stdout.includes(boardLink), JSON.stringify(r.stdout));
+      assert.match(r.stdout, /no display/);
+      assert.equal(existsSync(launcherCalls), false, "browser launcher was invoked");
+    });
+  }
+  test(`${surface} board handles missing xdg-open without a stack`, () => {
+    const emptyBin = join(workspace, "empty-bin");
+    mkdirSync(emptyBin, { recursive: true });
+    const r = run(bin, ["board"], live, {
+      DISPLAY: ":9", WAYLAND_DISPLAY: "", SSH_CONNECTION: "", PATH: emptyBin,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes(boardLink), JSON.stringify(r.stdout));
+    assert.match(r.stdout, /could not launch xdg-open:/);
+    assert.doesNotMatch(r.stderr, /Error:|stack|Unhandled|ENOENT/);
+  });
+  test(`${surface} board still hands off to a present launcher`, () => {
+    rmSync(launcherCalls, { force: true });
+    const r = run(bin, ["board"], live, {
+      DISPLAY: ":9", WAYLAND_DISPLAY: "", SSH_CONNECTION: "", PATH: launcherBin, CALLS: launcherCalls,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes(boardLink), JSON.stringify(r.stdout));
+    assert.doesNotMatch(r.stdout, /could not launch|no display/);
+    assert.equal(readFileSync(launcherCalls, "utf8").trim(), "https://plane.delo.sh/33god/browse/PJAN-67");
+  });
+}
 
 // --------------------------------------------------------------------------
 rmSync(workspace, { recursive: true, force: true });
