@@ -335,7 +335,10 @@ function boundedError(err: unknown) {
   const stopped = currentOperation()?.stopReason();
   if (stopped || err instanceof OperationStopped) {
     const reason = stopped ?? (err as OperationStopped).reason;
-    return { isError: true, content: [{ type: "text" as const, text: `MCP operation ${reason}${err instanceof Error && !(err instanceof OperationStopped) ? `: ${err.message}` : ""}` }] };
+    const detail = err instanceof OperationStopped ? err.cause instanceof Error ? err.cause.message : "" : err instanceof Error ? err.message : "";
+    const capture = new BoundedCapture(MCP_OUTPUT_BYTES - 128);
+    capture.append(detail);
+    return { isError: true, content: [{ type: "text" as const, text: `MCP operation ${reason}${detail ? `: ${capture.entries.join("")}${capture.omittedCount ? "… [truncated]" : ""}` : ""}` }] };
   }
   const message = err instanceof Error ? err.message : String(err);
   const marker = "… [truncated to MCP 256 KiB]";

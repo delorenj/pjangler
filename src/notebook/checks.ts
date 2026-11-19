@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runChild, assertOperationActive } from "../lifecycle/operation";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LifecycleAuditFinding, LifecycleContext, LifecycleMigrationResult, RecipeCheck } from "../recipes/types";
@@ -82,13 +82,13 @@ class NotebookCheck implements RecipeCheck {
   constructor(
     readonly id: string,
     readonly title: string,
-    private readonly auditFn: (ctx: LifecycleContext) => LifecycleAuditFinding,
-    private readonly migrateFn?: (ctx: LifecycleContext, finding: LifecycleAuditFinding) => LifecycleMigrationResult,
+    private readonly auditFn: (ctx: LifecycleContext) => LifecycleAuditFinding | Promise<LifecycleAuditFinding>,
+    private readonly migrateFn?: (ctx: LifecycleContext, finding: LifecycleAuditFinding) => LifecycleMigrationResult | Promise<LifecycleMigrationResult>,
     /** PJAN-84: "host" for the two rules about $HOME. Absent means "project". */
     readonly scope?: "project" | "host",
   ) {}
-  audit(ctx: LifecycleContext): LifecycleAuditFinding { return this.auditFn(ctx); }
-  migrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
+  audit(ctx: LifecycleContext): LifecycleAuditFinding | Promise<LifecycleAuditFinding> { return this.auditFn(ctx); }
+  migrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult | Promise<LifecycleMigrationResult> {
     return this.migrateFn?.(ctx, current) ?? result(current, "blocked", `${this.id} requires an explicit owned migration path`);
   }
 }
@@ -273,20 +273,20 @@ function captureAudit(ctx: LifecycleContext): LifecycleAuditFinding {
   }
 }
 
-function overviewMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding): LifecycleMigrationResult {
+async function overviewMigrate(ctx: LifecycleContext, current: LifecycleAuditFinding): Promise<LifecycleMigrationResult> {
   if (ctx.dryRun) return result(current, "applied", "Would reconcile drifted Project Overview note");
   if (!ctx.live) return result(current, "blocked", "Reconciling the remote Overview note requires --live");
   const pjanglerEntry = ctx.pjanglerRoot ? join(ctx.pjanglerRoot, "dist", "index.js") : null;
   const entry = pjanglerEntry && existsSync(pjanglerEntry) ? pjanglerEntry : "pj";
   const cmd = entry === "pj" ? ["pj"] : [process.execPath, entry];
-  const spawned = spawnSync(cmd[0]!, [...cmd.slice(1), "notebook", "overview", ctx.repoRoot], {
-    encoding: "utf8",
-    timeout: 10_000,
+  const spawned = await runChild(cmd[0]!, [...cmd.slice(1), "notebook", "overview", ctx.repoRoot], {
+    timeoutMs: 10_000,
     env: { ...process.env, ...(ctx.registryPath ? { PJ_PROJECT_REGISTRY: ctx.registryPath } : {}) },
   });
   if (spawned.status !== 0) {
     return result(current, "blocked", `Overview reconciliation failed: ${spawned.stderr || spawned.stdout || "unknown error"}`);
   }
+  assertOperationActive();
   return result(current, "applied", "Reconciled Project Overview note with current project references");
 }
 

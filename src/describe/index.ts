@@ -25,7 +25,8 @@ import {
   projectRegistryPath,
   type ProjectRecord,
 } from "../project/index";
-import { computeRepoActivity, gitLine, isGitRepo, type RepoActivity } from "./activity";
+import { computeRepoActivity, computeRepoActivityAsync, gitLine, gitLineAsync, isGitRepo, isGitRepoAsync, type RepoActivity } from "./activity";
+import { currentOperation } from "../lifecycle/operation";
 import { loadEffectiveNotebookConfig } from "../notebook/config";
 import { captureAdmissionSummary, notebookStateRoot } from "../notebook/state";
 import type { CaptureAdmissionSummaryV1, NotebookBindingState } from "../notebook/types";
@@ -270,6 +271,16 @@ function readJson(path: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+async function describeGitAsync(repo: string, activity: RepoActivity): Promise<DescribeGit> {
+  if (!await isGitRepoAsync(repo)) return { isRepo: false };
+  const [branch, head, remote] = await Promise.all([
+    gitLineAsync(repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    gitLineAsync(repo, ["rev-parse", "--short", "HEAD"]),
+    gitLineAsync(repo, ["remote", "get-url", "origin"]),
+  ]);
+  return { isRepo: true, branch, head, remote, dirtyFiles: activity.scanned.dirtyFiles };
 }
 
 function describeGit(repo: string, activity: RepoActivity): DescribeGit {
@@ -637,11 +648,12 @@ export async function describeProject(input: DescribeInput = {}): Promise<Projec
   const counts: Record<LifecycleStatus, number> = { pass: 0, fail: 0, warn: 0, skip: 0 };
   for (const finding of findings) counts[finding.status] += 1;
 
-  const activity = computeRepoActivity(repo, { now: input.now });
+  const activity = currentOperation() ? await computeRepoActivityAsync(repo, { now: input.now }) : computeRepoActivity(repo, { now: input.now });
+  const git = currentOperation() ? await describeGitAsync(repo, activity) : describeGit(repo, activity);
   const partial = {
     repo,
     describedAt: report.auditedAt,
-    git: describeGit(repo, activity),
+    git,
     activity,
     type: describeType(repo),
     identity: describeIdentity(repo, registryPath),

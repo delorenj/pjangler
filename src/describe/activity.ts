@@ -33,6 +33,7 @@
 // The tricky part is the parsing, and keeping it pure means it is unit
 // testable without constructing a repo for every edge case.
 
+import { currentOperation, runChild, rethrowOperationStopped } from "../lifecycle/operation";
 import { spawn, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
@@ -90,7 +91,11 @@ export function git(repo: string, args: string[]): string | undefined {
 }
 
 /** Async twin of `git`, so a registry scan can run repos concurrently. */
-export function gitAsync(repo: string, args: string[]): Promise<string | undefined> {
+export async function gitAsync(repo: string, args: string[]): Promise<string | undefined> {
+  if (currentOperation()) {
+    const result = await runChild("git", ["-C", repo, ...args], { timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
+    return result.status === 0 ? result.stdout : undefined;
+  }
   return new Promise((resolve) => {
     const child = spawn("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
@@ -137,6 +142,14 @@ function trimmed(raw: string | undefined): string | undefined {
 /** Run a git subcommand and trim; undefined for failure or empty output. */
 export function gitLine(repo: string, args: string[]): string | undefined {
   return trimmed(git(repo, args));
+}
+
+export async function gitLineAsync(repo: string, args: string[]): Promise<string | undefined> {
+  return trimmed(await gitAsync(repo, args));
+}
+
+export async function isGitRepoAsync(repo: string): Promise<boolean> {
+  return await gitLineAsync(repo, ["rev-parse", "--is-inside-work-tree"]) === "true";
 }
 
 export function isGitRepo(repo: string): boolean {
@@ -446,7 +459,8 @@ export async function computeRepoActivityBatch(
       const repo = unique[cursor++]!;
       try {
         results.set(repo, await computeRepoActivityAsync(repo, options));
-      } catch {
+      } catch (error) {
+        rethrowOperationStopped(error);
         results.set(repo, emptyActivity());
       }
     }
