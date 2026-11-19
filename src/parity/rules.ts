@@ -335,7 +335,9 @@ function ensureParent(path: string): void {
 
 
 function writeText(path: string, content: string): void {
+  assertOperationActive();
   ensureParent(path);
+  assertOperationActive();
   writeFileSync(path, content);
 }
 
@@ -2122,6 +2124,7 @@ function evictLegacyBmadPackState(ctx: Context, changedFiles: string[], activati
       continue;
     }
     for (const name of names) {
+      assertOperationActive();
       if (!name.startsWith(BMAD_SKILL_NAME_PREFIX)) continue;
       const path = join(dir, name);
       if (!lstatIfPresent(path)?.isSymbolicLink()) continue;
@@ -4689,6 +4692,7 @@ return ([
       const reserved = installedBmad ? evictReservedModuleEntries(ctx.repoRoot, false) : undefined;
       if (reserved) evicted.unshift(...reserved.details);
       const install = await runBmadInstall(ctx.repoRoot, selectedModules, BMAD_INSTALLER_VERSION, channelArgs);
+      assertOperationActive();
       if (!install.ok && reserved?.original !== undefined) {
         writeFileSync(reserved.changedFiles[0]!, reserved.original, "utf8");
         evicted.push("restored _bmad/_config/manifest.yaml after the failed install");
@@ -4747,6 +4751,7 @@ return ([
       const id = "bmad.setup-scripts", title = "BMAD ignored installer setup scripts";
       if (!isInstalledBmadProject(ctx.repoRoot)) return { id, title, status: "skipped", summary: NO_INSTALLED_BMAD, details: [], changedFiles: [] };
       const state = await bmadSetupScriptsState(ctx.repoRoot);
+      assertOperationActive();
       if (state.kind === "decline") return { id, title, status: "skipped", summary: state.summary, details: [], changedFiles: [] };
       if (state.kind === "refuse") return { id, title, status: "blocked", summary: state.error, details: [state.error], changedFiles: [] };
       if (state.kind === "present") return { id, title, status: "noop", summary: "BMAD installer scripts already present", details: [], changedFiles: [] };
@@ -5030,6 +5035,7 @@ return ([
       const beforeInstall = snapshotTree(ctx.repoRoot, { tolerateUnreadable: true, tolerateVanished: true });
       const reserved = evictReservedModuleEntries(ctx.repoRoot, false);
       const install = await runBmadInstall(ctx.repoRoot, selectedModules, available ?? BMAD_TARGET_CHANNEL, channelArgs);
+      assertOperationActive();
       if (!install.ok) {
         if (reserved.original !== undefined) writeFileSync(reserved.changedFiles[0]!, reserved.original, "utf8");
         const damaged = changedTreePaths(ctx.repoRoot, beforeInstall, snapshotTree(ctx.repoRoot, { tolerateUnreadable: true, tolerateVanished: true }))
@@ -5127,7 +5133,7 @@ return ([
       }
       const gitignoreChanges = ensureSupportedCliGitignore(ctx);
       const removedRoots = attestations.map((entry) => join(ctx.repoRoot, entry.name));
-      if (!ctx.dryRun) for (const path of removedRoots) rmSync(path, { recursive: true, force: true });
+      if (!ctx.dryRun) for (const path of removedRoots) { assertOperationActive(); rmSync(path, { recursive: true, force: true }); }
       const changedFiles = [...new Set([...projectionResult.changedFiles, ...gitignoreChanges, ...removedRoots])].sort();
       return {
         id: finding.id,

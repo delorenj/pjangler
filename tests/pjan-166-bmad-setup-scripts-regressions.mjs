@@ -19,12 +19,13 @@ import { hermeticEnv } from "./helpers/hermetic-env.mjs";
 // recording `npx` shim or spawnSync stub; the one black-hole case is bounded to
 // seconds and never reaches a real host.
 const realSpawnSync = childProcess.spawnSync;
+const realSpawn = childProcess.spawn;
 const root = resolve(import.meta.dirname, "..");
 const bundle = join(root, "node_modules", ".cache", `pjan-166-${process.pid}.mjs`);
 buildSync({ stdin: { contents: 'export {planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts, PINNED_SETUP_SCRIPT_SHA256, REQUIRED_BMAD_SETUP_SCRIPTS} from "./src/bmad/setup-scripts"; export {resolveBmadInstallerPackage, readInstalledBmadVersion, BMAD_INSTALLER_VERSION, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, createBmadChecks, BMAD_FIRST_SCRIPTS_RELEASE} from "./src/parity/rules";', resolveDir: root }, outfile: bundle, bundle: true, packages: "external", platform: "node", format: "esm" });
 const { planBmadSetupScripts, applyBmadSetupScripts, inspectBmadSetupScripts, PINNED_SETUP_SCRIPT_SHA256, REQUIRED_BMAD_SETUP_SCRIPTS, resolveBmadInstallerPackage, readInstalledBmadVersion, BMAD_INSTALLER_VERSION, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, createBmadChecks, BMAD_FIRST_SCRIPTS_RELEASE } = await import(pathToFileURL(bundle));
 rmSync(bundle);
-const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+const pkg = await resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
 assert.equal(pkg.version, BMAD_INSTALLER_VERSION, `real pinned package unavailable: ${pkg.reason}`);
 const scripts = [...REQUIRED_BMAD_SETUP_SCRIPTS].sort();
 const source = join(pkg.root, "src", "scripts");
@@ -486,22 +487,22 @@ const withNpxShim = async (body, { script = "exit 1" } = {}) => {
   finally { process.env.PATH = savedPath; rmSync(bin, { recursive: true, force: true }); }
 };
 
-/**
- * Record every spawnSync the production code makes (command, args, and the
- * options it passed: timeout and env), then run the REAL spawnSync, optionally
- * with the timeout clamped so a deliberately hung npx shim is killed in a blink.
- * The recorded timeout is what production asked for, not the clamp.
- */
+/** Record real async child launches, preserving their configured budget. Clamp only the deliberate hung shim. */
 const withSpawnSpy = async (body, { clampMs } = {}) => {
   const calls = [];
-  childProcess.spawnSync = (command, args, options) => {
+  const timeoutCalls = [];
+  const realSetTimeout = globalThis.setTimeout;
+  childProcess.spawn = (command, args, options) => {
     calls.push({ command, args, options });
-    // The env production passed is already the suite's hermetic one (plus its own npm_config_* pins); hermeticEnv() re-states it as the child's complete env.
-    return realSpawnSync(command, args, { encoding: options?.encoding, cwd: options?.cwd, timeout: clampMs && options?.timeout ? Math.min(options.timeout, clampMs) : options?.timeout, env: hermeticEnv({ ...options?.env }) });
+    return realSpawn(command, args, { ...options, env: hermeticEnv(options?.env) });
+  };
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay >= 1000) timeoutCalls.push(delay);
+    return realSetTimeout(callback, clampMs && delay >= 1000 ? clampMs : delay, ...args);
   };
   syncBuiltinESMExports();
-  try { return await body(() => calls.filter((call) => call.command === "npx")); }
-  finally { childProcess.spawnSync = realSpawnSync; syncBuiltinESMExports(); }
+  try { return await body(() => calls.filter((call) => call.command === "npx"), () => timeoutCalls); }
+  finally { globalThis.setTimeout = realSetTimeout; childProcess.spawn = realSpawn; syncBuiltinESMExports(); }
 };
 
 const withEnv = async (vars, body) => {
@@ -834,21 +835,21 @@ test("PJAN-166: a declined script that bmad.scaffold needs is never called optio
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
 
-test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary)", () => {
-  const shipped = (version) => {
-    const resolved = resolveBmadInstallerPackage(version, { timeoutMs: 120_000 });
+test("PJAN-166: BMAD_FIRST_SCRIPTS_RELEASE is the first bmad-method release that ships src/scripts (real packages, both sides of the boundary)", async () => {
+  const shipped = async (version) => {
+    const resolved = await resolveBmadInstallerPackage(version, { timeoutMs: 120_000 });
     assert.equal(resolved.version, version, `real bmad-method@${version} unavailable: ${resolved.reason}`);
     const dir = join(resolved.root, "src", "scripts");
     return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".py")) : [];
   };
   // The release published right before the constant, read from the registry, so a constant moved later cannot pass.
-  const listed = realSpawnSync("npm", ["view", "bmad-method", "versions", "--json"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
+  const listed = realSpawnSync("npm", ["view", "bmad-method", "versions", "--json", "--prefer-online"], { encoding: "utf8", env: hermeticEnv({ HOME: process.env.HOME }, { pass: SUITE_GRANTS }), timeout: 60_000 });
   assert.equal(listed.status, 0, `npm view failed: ${listed.stderr}`);
   const versions = JSON.parse(listed.stdout);
   const at = versions.indexOf(BMAD_FIRST_SCRIPTS_RELEASE);
-  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release`);
-  assert.deepEqual(shipped(versions[at - 1]), [], `${versions[at - 1]}, the release before the boundary, ships no _bmad/scripts source`);
-  assert.notDeepEqual(shipped(BMAD_FIRST_SCRIPTS_RELEASE), [], "the boundary release ships one");
+  assert.ok(at > 0, `${BMAD_FIRST_SCRIPTS_RELEASE} is not a published bmad-method release (received ${versions.length} releases; raw=${listed.stdout.slice(0, 600)}; stderr=${listed.stderr.slice(0, 300)})`);
+  assert.deepEqual(await shipped(versions[at - 1]), [], `${versions[at - 1]}, the release before the boundary, ships no _bmad/scripts source`);
+  assert.notDeepEqual(await shipped(BMAD_FIRST_SCRIPTS_RELEASE), [], "the boundary release ships one");
 });
 
 test("PJAN-166: a manifest that attests other bytes than the pinned package skips with the remedy, never fails", async () => {
@@ -920,15 +921,16 @@ test("PJAN-166: an unreachable pinned package is a skip naming the network remed
 
 test("PJAN-166: the resolver keeps its 180s default, honours a given timeout, and reads only an exact version from the npx cache", async () => {
   assert.equal(BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, 180_000, "bmad.scaffold and bmad.version migrate rely on this default");
-  await withNpxShim(async () => withSpawnSpy(async (npxCalls) => {
-    resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
-    resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION, { timeoutMs: 1234 });
-    resolveBmadInstallerPackage("latest");
-    resolveBmadInstallerPackage("6.13.0-next.1");
+  await withNpxShim(async () => withSpawnSpy(async (npxCalls, timeoutCalls) => {
+    await resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+    await resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION, { timeoutMs: 1234 });
+    await resolveBmadInstallerPackage("latest");
+    await resolveBmadInstallerPackage("6.13.0-next.1");
     const [bare, given, tag, prerelease] = npxCalls();
-    assert.equal(bare.options.timeout, 180_000, "no options keeps the 180s default");
-    assert.equal(given.options.timeout, 1234);
+    assert.equal(npxCalls().length, 4);
+    assert.deepEqual(timeoutCalls(), [180_000, 1234, 180_000, 180_000]);
     assert.equal(bare.options.env.npm_config_prefer_offline, "true", "an exact version is immutable, so the cached copy is as good as a fresh one");
+    assert.equal(given.options.env.npm_config_prefer_offline, "true");
     assert.equal(prerelease.options.env.npm_config_prefer_offline, "true");
     assert.equal(tag.options.env.npm_config_prefer_offline, undefined, "a dist-tag moves; it is never read from a stale cache");
     assert.deepEqual(bare.args.slice(0, 3), ["-y", "-p", `bmad-method@${BMAD_INSTALLER_VERSION}`]);
@@ -939,15 +941,14 @@ test("PJAN-166: the audit waits at most the probe cap for the package, and a mig
   assert.equal(BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, 10_000);
   const project = fixture({ installedVersion: BMAD_INSTALLER_VERSION });
   try {
-    await withSpawnSpy(async (npxCalls) => {
+    await withSpawnSpy(async (npxCalls, timeoutCalls) => {
       const finding = await setup.audit(ctx(project, true));
       assert.equal(finding.status, "fail", JSON.stringify(finding));
       const preview = await setup.migrate(ctx(project, true), finding);
       assert.equal(preview.status, "applied", JSON.stringify(preview));
       const [audit, migrate] = npxCalls();
       assert.equal(npxCalls().length, 2);
-      assert.equal(audit.options.timeout, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, "the audit never rides out npm's retries");
-      assert.equal(migrate.options.timeout, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, "a migrate is an explicit request to repair");
+      assert.deepEqual(timeoutCalls(), [BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS]);
       for (const call of [audit, migrate]) assert.equal(call.options.env.npm_config_prefer_offline, "true");
     });
   } finally { rmSync(project, { recursive: true, force: true }); }
@@ -956,7 +957,7 @@ test("PJAN-166: the audit waits at most the probe cap for the package, and a mig
 test("PJAN-166: with npx hung, the audit skips at its cap naming the network remedy, and migrate declines the same way (hermetic: a local shim, killed fast)", async () => {
   const project = fixture();
   try {
-    await withNpxShim(async ({ calls }) => withSpawnSpy(async (npxCalls) => {
+    await withNpxShim(async ({ calls }) => withSpawnSpy(async (npxCalls, timeoutCalls) => {
       const started = Date.now();
       const finding = await setup.audit(ctx(project, false));
       assert.equal(finding.status, "skip", JSON.stringify(finding));
@@ -966,9 +967,8 @@ test("PJAN-166: with npx hung, the audit skips at its cap naming the network rem
       for (const name of scripts) assert.ok(finding.summary.includes(name), `${name} named in: ${finding.summary}`);
       await assertMigrateDeclines(project, finding);
       assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started}ms`);
-      const [audit, ...migrates] = npxCalls();
-      assert.equal(audit.options.timeout, BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS);
-      assert.deepEqual(migrates.map((call) => call.options.timeout), [BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS]);
+      assert.equal(npxCalls().length, 3);
+      assert.deepEqual(timeoutCalls(), [BMAD_SETUP_SCRIPTS_PROBE_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS, BMAD_RESOLVE_DEFAULT_TIMEOUT_MS]);
       assert.match(calls(), new RegExp(`-y -p bmad-method@${escapeRe(BMAD_INSTALLER_VERSION)}`));
     }, { clampMs: 400 }), { script: "exec sleep 30" });
     assert.equal(existsSync(join(project, "_bmad", "scripts")), false);

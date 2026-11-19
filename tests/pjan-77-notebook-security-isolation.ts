@@ -54,7 +54,7 @@ try {
   git(repo, ["add", "README.md", "secret.md", "large.md"]);
   git(repo, ["commit", "-qm", "evidence"]);
   const overviewConfig = config(repo, { policy: { enabled: true, session_start_enabled: false, session_capture_enabled: false, overview_max_chars: 120, documentation_globs: ["**/*.md"], overview_references: ["README.md", "secret.md", "large.md", "linked.md"] }, limits: { ...DEFAULT_NOTEBOOK_LIMITS, source_file_max_bytes: 1_000 } });
-  const artifact = compileOverviewArtifact({ config: overviewConfig, projectName: "Alpha", purpose: "Fixture" });
+  const artifact = await compileOverviewArtifact({ config: overviewConfig, projectName: "Alpha", purpose: "Fixture" });
   assert.equal(artifact.descriptor.references.find((item) => item.path === "README.md")?.status, "present");
   assert.equal(artifact.descriptor.references.find((item) => item.path === "secret.md")?.reason, "secret-like");
   assert.equal(artifact.descriptor.references.find((item) => item.path === "large.md")?.reason, "oversize");

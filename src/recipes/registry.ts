@@ -373,6 +373,7 @@ export class RecipeRegistry {
         try {
           current = await auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx, rule.recipeId);
         } catch {
+          assertOperationActive();
           // Keep the pre-migration finding rather than dropping the rule.
         }
       }

@@ -449,7 +449,7 @@ async function resolvePinnedPackage() {
   });
   try {
     const { REQUIRED_BMAD_SETUP_SCRIPTS, resolveBmadInstallerPackage, BMAD_INSTALLER_VERSION } = await import(pathToFileURL(bundle));
-    const pkg = resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
+    const pkg = await resolveBmadInstallerPackage(BMAD_INSTALLER_VERSION);
     assert.equal(pkg.version, BMAD_INSTALLER_VERSION, `the real pinned bmad-method@${BMAD_INSTALLER_VERSION} package is unavailable (it needs the npm registry or a warm npx cache): ${pkg.reason}`);
     return { pkg, scripts: [...REQUIRED_BMAD_SETUP_SCRIPTS].sort() };
   } finally { rmSync(bundle, { force: true }); }

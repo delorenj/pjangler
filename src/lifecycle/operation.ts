@@ -100,7 +100,7 @@ export async function runChild(command: string, args: readonly string[], options
       clearTimeout(timeout); clearTimeout(grace); clearTimeout(forceWait);
       operation?.signal.removeEventListener("abort", aborted);
       child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy();
-      const reason = operation?.stopReason() ?? (stopped === "output-overflow" ? undefined : stopped);
+      const reason = operation?.stopReason() ?? (stopped === "output-overflow" || !operation ? undefined : stopped);
       if (reason) reject(new OperationStopped(reason, error ? { cause: error } : undefined));
       else if (error?.message.startsWith("Subprocess group ")) reject(error);
       else resolve({ status, stdout, stderr, error });
@@ -108,7 +108,10 @@ export async function runChild(command: string, args: readonly string[], options
     const stop = (reason: StopReason | "output-overflow") => {
       if (stopped || settled) return;
       stopped = reason;
-      if (reason === "deadline-exceeded") operation?.stop("deadline-exceeded");
+      if (reason === "deadline-exceeded") {
+        if (operation) operation.stop("deadline-exceeded");
+        else error = Object.assign(new Error(`Subprocess timed out after ${budget}ms`), { code: "ETIMEDOUT" });
+      }
       signalGroup("SIGTERM");
       grace = setTimeout(() => {
         signalGroup("SIGKILL");
