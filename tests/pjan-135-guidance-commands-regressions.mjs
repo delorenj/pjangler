@@ -9,12 +9,18 @@ import "./helpers/hermetic-suite.mjs";
 // every `pj …` / `pjangler …` / `skillex …` command named in pjangler's own
 // strings and in the skillex fix text pjangler relays, and resolves each one
 // against the REAL CLI (src/index.ts bundled into a /tmp dir, never the repo's
-// dist/) and the REAL bundled @delorenj/skillex, option by option.
+// dist/) and the REAL skillex CLI, option by option.
+//
+// Story 7.1 AC5 (one skillex): `pj skills` runs the skillex CLI SKILLEX_BIN,
+// PATH or the mise shim names, never a copy inside pjangler. The suite pins
+// SKILLEX_BIN to the skillex release pjangler's lockfile holds (the same bytes
+// the in-process audit runs), so CI, which has no skillex on PATH, and this
+// host, which has one, resolve the same CLI.
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawn, spawnSync } from "node:child_process";
 import { hermeticEnv } from "./helpers/hermetic-env.mjs";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,8 +31,7 @@ const root = resolve(import.meta.dirname, "..");
 const work = mkdtempSync("/tmp/pjan135-guidance-");
 after(() => rmSync(work, { recursive: true, force: true }));
 // Bare imports (commander, @delorenj/skillex) resolve through this link exactly
-// as they do for the installed CLI, and createRequire(import.meta.url) inside
-// `pj skills` finds the package pjangler actually depends on.
+// as they do for the installed CLI.
 symlinkSync(join(root, "node_modules"), join(work, "node_modules"));
 const common = { bundle: true, packages: "external", platform: "node", format: "esm", logLevel: "warning" };
 buildSync({ ...common, entryPoints: [join(root, "src", "index.ts")], outfile: join(work, "pj.mjs") });
@@ -35,13 +40,21 @@ buildSync({
   stdin: {
     contents: [
       'export { migrationGuidance, relaySkillexCommands, PJ_SKILLS } from "./src/parity/skills";',
-      'export { bundledSkillex, skillsPassthroughArgs } from "./src/skills/cli";',
+      'export { resolveSkillex, skillsPassthroughArgs } from "./src/skills/cli";',
     ].join("\n"),
     resolveDir: root,
   },
   outfile: join(work, "lib.mjs"),
 });
 const lib = await import(pathToFileURL(join(work, "lib.mjs")).href);
+
+/** The skillex release pjangler's lockfile installs: its version and real bin path. */
+const lockedSkillex = (() => {
+  const manifestPath = createRequire(join(root, "package.json")).resolve("@delorenj/skillex/package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin.skillex;
+  return { version: manifest.version, bin: realpathSync(resolve(dirname(manifestPath), bin)) };
+})();
 
 const home = join(work, "home");
 mkdirSync(home);
@@ -50,6 +63,7 @@ const env = hermeticEnv({
   XDG_CONFIG_HOME: join(home, ".config"),
   XDG_STATE_HOME: join(work, "state"),
   XDG_CACHE_HOME: join(work, "cache"),
+  SKILLEX_BIN: lockedSkillex.bin,
 });
 function pj(args, options = {}) {
   return spawnSync(process.execPath, [join(work, "pj.mjs"), ...args], { encoding: "utf8", cwd: work, ...options, env });
@@ -148,7 +162,7 @@ function unresolved(mention, show = help) {
   if (shown.status !== 0) return `\`${mention.text}\`: \`pj ${words.join(" ")} --help\` exited ${shown.status}: ${shown.stderr}`;
   if (!shown.path.length || shown.path[0] !== words[0]) return `\`${mention.text}\`: "${words[0]}" is not a pj command`;
   if (words[0] === "skills" && words.length > 1 && shown.path[1] !== words[1]) {
-    return `\`${mention.text}\`: "${words[1]}" is not a command of the bundled skillex`;
+    return `\`${mention.text}\`: "${words[1]}" is not a command of skillex`;
   }
   const depth = shown.path.length;
   if (shown.path.some((word, index) => words[index] !== word)) {
@@ -166,7 +180,7 @@ function unresolved(mention, show = help) {
   return null;
 }
 
-/** The real skillex subcommands, from the real bundled CLI's own help. */
+/** The real skillex subcommands, from the real CLI's own help. */
 function skillexCommands() {
   const text = help(["skills"]).text;
   const section = text.slice(text.indexOf("\nCommands:\n"));
@@ -199,12 +213,11 @@ function stringLiterals() {
   return out;
 }
 
-test("pj skills is the bundled skillex, at the version pjangler depends on, argv untouched", () => {
+test("pj skills runs the skillex CLI SKILLEX_BIN names, argv untouched", () => {
   const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const pinned = manifest.dependencies["@delorenj/skillex"];
-  const installed = JSON.parse(readFileSync(createRequire(join(root, "package.json")).resolve("@delorenj/skillex/package.json"), "utf8"));
-  assert.equal(installed.version, pinned, "node_modules must hold exactly the pinned skillex");
-  assert.equal(lib.bundledSkillex().version, pinned);
+  assert.equal(lockedSkillex.version, pinned, "node_modules must hold exactly the skillex library pjangler depends on");
+  assert.deepEqual(lib.resolveSkillex(env), { bin: lockedSkillex.bin, source: "SKILLEX_BIN" });
 
   const version = pj(["skills", "--version"]);
   assert.equal(version.status, 0, version.stderr);
@@ -229,7 +242,50 @@ test("pj skills is the bundled skillex, at the version pjangler depends on, argv
   const dashdash = pj(["skills", "--", "--version"]);
   assert.equal(dashdash.status, 2, "skillex received the literal `--`, so --version is an operand");
   // pjangler's own program options still work before the subcommand.
-  assert.match(pj(["--help"]).stdout, /^ {2}skills \[args\.\.\.\] +Run the bundled Skillex/m);
+  assert.match(pj(["--help"]).stdout, /^ {2}skills \[args\.\.\.\] +Run the Skillex CLI on PATH/m);
+});
+
+// Story 7.1 AC5: one skillex. Resolution is SKILLEX_BIN, then PATH, then the
+// mise shim, then `mise which`, and nothing found is a clear failure, never a
+// silent fallback to some other copy.
+test("pj skills resolves skillex as SKILLEX_BIN, PATH, then the mise shim, and fails clearly when none exists", () => {
+  const box = mkdtempSync(join(work, "resolve-"));
+  const fake = (dir, label) => {
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "skillex");
+    writeFileSync(path, `#!/bin/sh\necho ${label} "$@"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+  const onPath = fake(join(box, "bin"), "path-skillex");
+  const shim = fake(join(box, "data", "mise", "shims"), "shim-skillex");
+  const explicit = fake(join(box, "explicit"), "explicit-skillex");
+  const noMise = join(box, "empty");
+  mkdirSync(noMise);
+  const sys = "/usr/bin:/bin";
+  const base = { HOME: join(box, "home"), XDG_DATA_HOME: join(box, "data") };
+
+  assert.deepEqual(lib.resolveSkillex({ ...base, PATH: `${join(box, "bin")}:${sys}`, SKILLEX_BIN: explicit }), { bin: explicit, source: "SKILLEX_BIN" });
+  assert.deepEqual(lib.resolveSkillex({ ...base, PATH: `${join(box, "bin")}:${sys}` }), { bin: onPath, source: "PATH" });
+  assert.deepEqual(lib.resolveSkillex({ ...base, PATH: `${noMise}` }), { bin: shim, source: "mise shim" });
+  assert.throws(() => lib.resolveSkillex({ HOME: join(box, "home"), PATH: noMise }), /no skillex CLI found \(set SKILLEX_BIN/);
+  assert.throws(() => lib.resolveSkillex({ ...base, PATH: sys, SKILLEX_BIN: join(box, "missing") }), /SKILLEX_BIN=.* is not an executable file/);
+
+  // End to end: the PATH skillex runs with argv untouched; a missing one exits 1
+  // with the error on stderr, and pj never falls back to a bundled copy.
+  // pj() pins the suite env (with SKILLEX_BIN), so these two build their own,
+  // without SKILLEX_BIN, from the same hermetic allowlist.
+  const pjWith = (args, fixture) => spawnSync(process.execPath, [join(work, "pj.mjs"), ...args], {
+    encoding: "utf8",
+    cwd: work,
+    env: hermeticEnv({ HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(work, "state"), XDG_CACHE_HOME: join(work, "cache"), ...fixture }),
+  });
+  const viaPath = pjWith(["skills", "status", "--json"], { PATH: `${join(box, "bin")}:${env.PATH}` });
+  assert.equal(viaPath.status, 0, viaPath.stderr);
+  assert.equal(viaPath.stdout.trim(), "path-skillex status --json");
+  const none = pjWith(["skills", "--version"], { PATH: noMise, HOME: join(box, "home") });
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /no skillex CLI found/);
 });
 
 // PJAN-135 review: `pj skills` blocked in spawnSync and installed no signal
@@ -237,10 +293,10 @@ test("pj skills is the bundled skillex, at the version pjangler depends on, argv
 // supervisor, execFile's timeout, a Python subprocess timeout — exactly how
 // the Hermes PM runs guidance commands) killed pj at once and orphaned skillex,
 // which kept running and writing while the caller saw 143 and assumed it had
-// stopped. The child here is the REAL bundled skillex, slowed only by a
+// stopped. The child here is the REAL skillex CLI, slowed only by a
 // preload that waits 3s before its CLI runs and records its pid.
 test("pj skills forwards termination signals to skillex, waits for it, and ends the way skillex ended", async () => {
-  const bin = lib.bundledSkillex().bin;
+  const bin = lockedSkillex.bin;
   const preload = join(work, "slow-skillex.mjs");
   writeFileSync(preload, [
     'import { writeFileSync } from "node:fs";',
@@ -366,7 +422,8 @@ test("the fix scan reads every literal of a fix expression, and misses no skille
   const { fixes, all } = coreLiterals();
   const texts = fixes.map((fix) => fix.text);
   // The two ternary-built fixes the regex scan skipped.
-  assert.ok(texts.some((text) => /^Run skillex normalize --dry-run to plan converting this manifest/.test(text)), "ternary branch of the manifest fix");
+  // skillex 0.4.10 reworded it ("to preview conversion"); the branch is what matters.
+  assert.ok(texts.some((text) => /^Run skillex normalize --dry-run to (?:plan converting this manifest|preview conversion)/.test(text)), "ternary branch of the manifest fix");
   assert.ok(texts.some((text) => /^Run skillex init for this scope/.test(text)), "ternary branch of the scope fix");
   // Completeness: every literal in the core that names a skillex subcommand is
   // fix text this suite relays and resolves. A new place the core puts such a

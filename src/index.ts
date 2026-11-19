@@ -1658,7 +1658,7 @@ program
   });
 
 // ============================================================================
-// SKILLS COMMAND (bundled Skillex CLI passthrough)
+// SKILLS COMMAND (Skillex CLI passthrough: the skillex on PATH)
 // ============================================================================
 
 // passThroughOptions needs positional options on the parent, so pjangler's own

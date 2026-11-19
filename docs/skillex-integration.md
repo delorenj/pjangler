@@ -1,7 +1,8 @@
 # Skillex integration (PJAN-127)
 
-PJangler requires Node 24 or newer and `@delorenj/skillex` 0.1.2. Its project
-bootstrap, parity audit and migration use the public Node core. The packaged
+PJangler requires Node 24 or newer. Its project bootstrap, parity audit and
+migration use the public Node core of `@delorenj/skillex`, a pinned library
+dependency; `pj skills` runs the skillex CLI on PATH instead (below). The packaged
 CommonProject template pins the same release.
 
 A generated project has one explicit task, run as `mise run skills:sync`:
@@ -49,12 +50,23 @@ owns it. Its subject is always a project root. Projecting skills into a Hermes
 profile is Flume's, along with the employee rules that inspect one — PJangler
 reads a role's profile *name* out of `role.yaml` and never opens its `skills/`.
 
-`pj skills [args...]` runs the Skillex CLI bundled with PJangler, the same
-version the audit used, with every argument passed through unchanged. It needs no
-PATH entry, mise install or network. Every Skillex command PJangler names in a
-finding or remedy is spelled `pj skills …` (including relayed core fix text), and
-tests/pjan-135-guidance-commands-regressions.mjs runs each named command against
-the real CLI.
+`pj skills [args...]` runs the ONE Skillex CLI on this machine, with every
+argument passed through unchanged and its exit status (or signal) relayed. It
+resolves the binary the way `scripts/hermes-skillex-resync.py` in the skillex
+repo does: `$SKILLEX_BIN`, then `skillex` on PATH, then the mise shim
+(`$MISE_DATA_DIR/shims`, `$XDG_DATA_HOME/mise/shims`, `~/.local/share/mise/shims`),
+then `mise which skillex`. If none exists it exits 1 naming every place it
+looked; it never falls back to another copy. The child runs with the Node that
+runs `pj` first on PATH, so a `#!/usr/bin/env node` launcher gets Node 24+.
+Install the CLI with the global mise config
+(`"npm:@delorenj/skillex" = { version = "latest", ... }`). Until Story 7.1
+(2026-11-19) this spawned a copy bundled in PJangler's node_modules, which froze
+`pj skills --version` at whatever release PJangler last depended on (0.4.4 while
+the PATH skillex was 0.4.8). The `@delorenj/skillex` dependency remains only as
+the library the audit calls in-process. Every Skillex command PJangler names in
+a finding or remedy is spelled `pj skills …` (including relayed core fix text),
+and tests/pjan-135-guidance-commands-regressions.mjs runs each named command
+against the real CLI.
 
 `pj migrate` relocates CLI-root skill entries (`.claude/skills` and the other
 supported roots) losslessly into `.agents/skills`, so each root can become the

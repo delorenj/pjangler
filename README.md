@@ -14,7 +14,8 @@ link. Existing Trello operations remain limited to what its adapter implements.
 
 ## Install
 
-Requires Node 24 or newer. Project skills use `@delorenj/skillex` 0.1.2; see
+Requires Node 24 or newer. `pj skills` runs the `skillex` CLI on PATH
+(`npm:@delorenj/skillex` via mise); see
 [the integration contract](docs/skillex-integration.md).
 
 ```bash

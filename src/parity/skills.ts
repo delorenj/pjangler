@@ -20,7 +20,7 @@ import type { AuditFinding, Context } from "./rules";
 import { planSkillRoots, repoOwnsPath, skillContentIdentical, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, type SkillRootIncoming } from "./skill-roots";
 import { shellQuotePath } from "../skills/cli";
 
-/** The bundled Skillex CLI, as an operator types it (src/skills/cli.ts). */
+/** The Skillex CLI passthrough, as an operator types it (src/skills/cli.ts). */
 export const PJ_SKILLS = "pj skills";
 
 /** Every caller supplies its subject; nested cwd never changes project selection. */
@@ -42,15 +42,15 @@ export function skillCoreOptions(ctx: Context): SyncOptions & { scope: "project"
  * PJAN-135: the core's fix text says "Run skillex <command>". On an operator
  * shell bare `skillex` may be the retired Python CLI (no `migrate`, and a
  * `sync` that runs the old reconciler) or nothing at all, so every skillex
- * command pjangler relays is renamed to the bundled passthrough, which is the
- * same version that produced the finding.
+ * command pjangler relays is renamed to the `pj skills` passthrough, which
+ * resolves the one skillex CLI (SKILLEX_BIN, PATH, mise shim).
  */
 export function relaySkillexCommands(text: string): string {
   return text.replace(SKILLEX_COMMAND, PJ_SKILLS);
 }
 
 /** `skillex <subcommand>` as a command, never a path (`state/skillex/`) or package (`@delorenj/skillex`). */
-const SKILLEX_COMMAND = /(?<![\w/@.:-])skillex(?=\s+(?:skill|set|pack|bmad|init|enable|disable|inherit|normalize|sync|status|explain|doctor|vendor|profile|migrate|integrations|clients|root)\b)/g;
+const SKILLEX_COMMAND = /(?<![\w/@.:-])skillex(?=\s+(?:skill|graph|set|pack|bmad|init|enable|disable|inherit|normalize|import|add|sync|status|explain|doctor|vendor|profile|migrate|integrations|clients|root|receipt)\b)/g;
 
 export function skillDiagnostics(findings: readonly Diagnostic[]): string[] {
   return findings.map((finding) =>

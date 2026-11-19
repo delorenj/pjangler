@@ -654,7 +654,8 @@ fs.writeFileSync(${JSON.stringify(done)},'1');`;
       process.env.PJ_BMAD_INSTALLER = fake;
       try {
         const resolved = resolveBmadInstallerPackage(version);
-        assert.deepEqual(resolved, { reason: "PJ_BMAD_INSTALLER is not a bmad-method package" });
+        // PJAN-166 (9b89ef7) classifies the decline: an unverifiable package, not a resolution miss.
+        assert.deepEqual(resolved, { reason: "PJ_BMAD_INSTALLER is not a bmad-method package", failure: "unverified" });
         const scope = deriveBmadUpdateScope(project("e7"), { tools: TOOLS, installer: resolved, companionSurfaces: G33_OWNED_SURFACES, verified });
         assert.equal(scope.mode, "whole-tree");
         process.env.PJ_BMAD_INSTALLER = pkg.entry;

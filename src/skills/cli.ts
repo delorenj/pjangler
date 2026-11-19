@@ -1,41 +1,118 @@
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
-import { constants } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { constants, homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Command } from "commander";
 
 /**
- * PJAN-135: `pj skills [args...]` is the Skillex CLI pjangler names in its own
- * guidance, at the exact version it audits with.
+ * PJAN-135, Story 7.1 AC5 (one skillex): `pj skills [args...]` is the Skillex
+ * CLI pjangler names in its own guidance, and it is the ONE skillex on this
+ * machine: the CLI on PATH, never a second copy bundled inside pjangler.
  *
- * The guidance used to say "run `skillex migrate`". On the operator's shell
- * `skillex` resolved to the retired Python CLI (no `migrate`), and the Node CLI
- * pinned by the generated mise task could not install at all behind mise's
- * 30-day minimumPackageAge gate. A remedy that depends on PATH, mise and the
- * npm age gate is not a remedy. The bundled `@delorenj/skillex` dependency is
- * the same package `inspectStatus`/`sync` ran in-process, so spawning its own
- * `bin` with this Node is guaranteed to exist and to agree with the audit.
+ * Until 2026-11-19 this spawned the `@delorenj/skillex` bin bundled in
+ * pjangler's node_modules, because on the operator's shell `skillex` resolved
+ * to the retired Python CLI (no `migrate`) and the mise-pinned Node CLI could
+ * not install behind mise's release-age gate. Both causes are gone (the Python
+ * CLI is retired; the global mise config tracks `latest` and exempts
+ * @delorenj/skillex from the age gate), and the bundled copy had become the
+ * problem: `pj skills --version` said 0.4.4 while `skillex --version` said
+ * 0.4.8. A pjangler release froze whatever skillex CLI it happened to depend on.
+ *
+ * pjangler still depends on `@delorenj/skillex` as a LIBRARY: the parity
+ * audit calls inspectStatus/sync/resolveSelection in-process. That is a code
+ * dependency with its own pin (moving it changes audit behaviour: 0.4.10
+ * refuses legacy `sets` manifests, which five suites still exercise); it is no
+ * longer a CLI anyone runs.
+ *
+ * Resolution order mirrors skillex's own hermes-skillex-resync.py, so every
+ * caller finds the same binary without interactive shell setup:
+ *   1. $SKILLEX_BIN, an explicit override that is never second-guessed;
+ *   2. `skillex` on PATH;
+ *   3. the mise shim ($MISE_DATA_DIR/shims, $XDG_DATA_HOME/mise/shims,
+ *      ~/.local/share/mise/shims);
+ *   4. `mise which skillex`.
+ * Nothing found is a clear error naming every place looked, never a fallback.
  */
-export interface BundledSkillex {
-  /** Absolute path of the package's `skillex` bin script. */
+export interface ResolvedSkillex {
+  /** Absolute path of the skillex executable that `pj skills` runs. */
   bin: string;
-  /** The package version, e.g. "0.1.1". */
-  version: string;
+  /** Where it was found: "SKILLEX_BIN", "PATH", "mise shim" or "mise which". */
+  source: "SKILLEX_BIN" | "PATH" | "mise shim" | "mise which";
 }
 
-export function bundledSkillex(): BundledSkillex {
-  const require = createRequire(import.meta.url);
-  const manifestPath = require.resolve("@delorenj/skillex/package.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: unknown; bin?: unknown };
-  const bin = typeof manifest.bin === "string"
-    ? manifest.bin
-    : manifest.bin && typeof manifest.bin === "object" ? (manifest.bin as Record<string, unknown>).skillex : undefined;
-  if (typeof bin !== "string" || !bin) throw new Error(`${manifestPath} declares no skillex bin`);
-  return { bin: resolve(dirname(manifestPath), bin), version: String(manifest.version ?? "unknown") };
+export class SkillexNotFoundError extends Error {
+  constructor(readonly tried: readonly string[]) {
+    super(`no skillex CLI found (set SKILLEX_BIN, or install @delorenj/skillex: mise use -g npm:@delorenj/skillex@latest); looked at: ${tried.join("; ")}`);
+    this.name = "SkillexNotFoundError";
+  }
 }
 
-/** How the bundled skillex ended: its exit status, or the signal that killed it. */
+function executableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The first executable `name` on `pathValue`, like `command -v`. */
+export function whichOnPath(name: string, pathValue: string | undefined): string | undefined {
+  for (const directory of (pathValue ?? "").split(delimiter)) {
+    if (!directory || !isAbsolute(directory)) continue;
+    const candidate = join(directory, name);
+    if (executableFile(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function resolveSkillex(env: NodeJS.ProcessEnv = process.env, home: string = env.HOME || homedir()): ResolvedSkillex {
+  const tried: string[] = [];
+  const explicit = env.SKILLEX_BIN?.trim();
+  if (explicit) {
+    const bin = explicit.includes(sep) ? resolve(explicit) : whichOnPath(explicit, env.PATH);
+    if (!bin || !executableFile(bin)) throw new SkillexNotFoundError([`SKILLEX_BIN=${explicit} is not an executable file`]);
+    return { bin, source: "SKILLEX_BIN" };
+  }
+  const onPath = whichOnPath("skillex", env.PATH);
+  if (onPath) return { bin: onPath, source: "PATH" };
+  tried.push(`PATH (${env.PATH ?? "unset"})`);
+  const shimDirs = [
+    env.MISE_DATA_DIR ? join(env.MISE_DATA_DIR, "shims") : undefined,
+    env.XDG_DATA_HOME ? join(env.XDG_DATA_HOME, "mise", "shims") : undefined,
+    join(home, ".local", "share", "mise", "shims"),
+  ].filter((dir): dir is string => Boolean(dir));
+  for (const dir of [...new Set(shimDirs)]) {
+    const shim = join(dir, "skillex");
+    if (executableFile(shim)) return { bin: shim, source: "mise shim" };
+    tried.push(`mise shim ${shim}`);
+  }
+  const mise = whichOnPath("mise", env.PATH) ?? [join(home, ".local", "bin", "mise")].find(executableFile);
+  if (mise) {
+    const ran = spawnSync(mise, ["which", "skillex"], { encoding: "utf8", env, timeout: 20_000 });
+    const found = ran.status === 0 ? ran.stdout.trim() : "";
+    if (found && executableFile(found)) return { bin: found, source: "mise which" };
+    tried.push(`mise which skillex (exit ${ran.status ?? ran.signal ?? "?"})`);
+  } else {
+    tried.push("mise (not on PATH or at ~/.local/bin/mise)");
+  }
+  throw new SkillexNotFoundError(tried);
+}
+
+/**
+ * The child's env: unchanged, except that the directory of the Node running
+ * pj goes first on PATH. A skillex launcher whose shebang is
+ * `#!/usr/bin/env node` then runs on pjangler's own Node (engines >=24)
+ * instead of whatever older node a minimal PATH finds first.
+ */
+export function skillexChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const nodeDir = dirname(process.execPath);
+  const rest = (env.PATH ?? "").split(delimiter).filter((dir) => dir && dir !== nodeDir);
+  return { ...env, PATH: [nodeDir, ...rest].join(delimiter) };
+}
+
+/** How skillex ended: its exit status, or the signal that killed it. */
 export type SkillexOutcome = { code: number } | { signal: NodeJS.Signals };
 
 /**
@@ -50,20 +127,20 @@ export type SkillexOutcome = { code: number } | { signal: NodeJS.Signals };
 export const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
 
 /**
- * Run the bundled CLI with `args` untouched, stdio inherited, relaying
+ * Run the skillex CLI with `args` untouched, stdio inherited, relaying
  * termination signals to it and waiting for it to end. Resolves with how it
  * ended, so a Ctrl-C is never reported as success.
  */
-export async function runBundledSkillex(args: readonly string[]): Promise<SkillexOutcome> {
-  let cli: BundledSkillex;
+export async function runSkillex(args: readonly string[]): Promise<SkillexOutcome> {
+  let cli: ResolvedSkillex;
   try {
-    cli = bundledSkillex();
+    cli = resolveSkillex();
   } catch (error) {
-    process.stderr.write(`pjangler install is missing its @delorenj/skillex dependency (${error instanceof Error ? error.message : String(error)}); reinstall @delorenj/pjangler\n`);
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return { code: 1 };
   }
   return await new Promise<SkillexOutcome>((resolveOutcome) => {
-    const child = spawn(process.execPath, [cli.bin, ...args], { stdio: "inherit" });
+    const child = spawn(cli.bin, [...args], { stdio: "inherit", env: skillexChildEnv() });
     const relay = (signal: NodeJS.Signals) => {
       try { child.kill(signal); } catch { /* already gone */ }
     };
@@ -76,7 +153,7 @@ export async function runBundledSkillex(args: readonly string[]): Promise<Skille
       resolveOutcome(outcome);
     };
     child.once("error", (error) => {
-      process.stderr.write(`could not start the bundled skillex ${cli.version}: ${error.message}\n`);
+      process.stderr.write(`could not start skillex (${cli.source}: ${cli.bin}): ${error.message}\n`);
       settle({ code: 1 });
     });
     child.once("exit", (code, signal) => settle(signal ? { signal } : { code: code ?? 1 }));
@@ -116,11 +193,9 @@ export function skillsPassthroughArgs(argv: readonly string[], parsed: readonly 
 }
 
 export function registerSkillsCli(program: Command, exit: (code: number) => Promise<never> | never): void {
-  let version = "";
-  try { version = ` ${bundledSkillex().version}`; } catch { /* reported when run */ }
   program
     .command("skills")
-    .description(`Run the bundled Skillex${version} CLI; every argument passes through (e.g. pj skills migrate --project <repo>)`)
+    .description("Run the Skillex CLI on PATH (SKILLEX_BIN, PATH, then the mise shim); every argument passes through (e.g. pj skills migrate --project <repo>)")
     .argument("[args...]", "skillex command and options, passed through unchanged")
     // Everything after `skills` belongs to skillex, including --help and
     // --version: `pj skills --help` is skillex's help, not a pjangler stub.
@@ -129,6 +204,6 @@ export function registerSkillsCli(program: Command, exit: (code: number) => Prom
     .allowExcessArguments()
     .passThroughOptions()
     .action(async (args: string[] | undefined) => {
-      await endLikeSkillex(await runBundledSkillex(skillsPassthroughArgs(process.argv.slice(2), args ?? [])), exit);
+      await endLikeSkillex(await runSkillex(skillsPassthroughArgs(process.argv.slice(2), args ?? [])), exit);
     });
 }

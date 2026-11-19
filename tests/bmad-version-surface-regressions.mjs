@@ -11,8 +11,9 @@ const repositories = [{ root, prefix: "" }];
 
 // Historical acceptance evidence is immutable and intentionally records the
 // pack that was current when PJAN-29 ran. Active code/config under agents/ is
-// deliberately not excluded.
-const historicalEvidence = /^_bmad-output\/implementation-artifacts\/issue-evidence\//;
+// deliberately not excluded. docs/evidence/ holds captured gate logs (PJAN-105
+// pytest output names the retired pack paths it skipped); it is history too.
+const historicalEvidence = /^(?:_bmad-output\/implementation-artifacts\/issue-evidence|docs\/evidence)\//;
 
 function trackedFiles(repository) {
   const result = spawnSync("git", ["ls-files", "-z"], {
