@@ -650,7 +650,6 @@ console.log("cli: provider and slug preserve bare lines and return JSON string s
   const cases = [
     [planeRepo, "plane", "pjangler"],
     [trelloRepo, "trello", "cards"],
-    [linearRepo, "linear", "old"],
     [canonicalRepo, "plane", "canonical-id"],
     [namelessRepo, null, "nameless-repo"],
     [brokenRepo, null, "broken-repo"],
@@ -682,10 +681,19 @@ console.log("cli: provider and slug preserve bare lines and return JSON string s
       assert.equal(JSON.parse(result.stdout), expected, "the nearest manifest wins");
     }
   }
+  assert.equal(run(["board", "slug"], linearRepo).stdout, "old\n", "slug remains a local manifest read for a retired provider");
+  const linearSlugJson = run(["board", "slug", "--json"], linearRepo);
+  assert.equal(linearSlugJson.status, 0, linearSlugJson.stderr);
+  assert.equal(linearSlugJson.stdout, '"old"\n');
+  assert.equal(JSON.parse(linearSlugJson.stdout), "old");
   for (const verb of ["provider", "slug"]) {
     const help = run(["board", verb, "--help"]);
     assert.equal(help.status, 0);
     assert.match(help.stdout, /--json/, `${verb} must advertise its JSON option`);
+    if (verb === "provider") {
+      assert.match(help.stdout, /plane\|trello/);
+      assert.doesNotMatch(help.stdout, /linear/i);
+    }
   }
 }
 
@@ -693,7 +701,8 @@ console.log("cli: invalid bindings fail without success output (plain and JSON)"
 {
   for (const [cwd, verb, message] of [
     [unboundRepo, "provider", /no ticket_provider\.type/],
-    [unknownRepo, "provider", /unsupported ticket_provider\.type "jira"/],
+    [unknownRepo, "provider", /unsupported ticket_provider\.type "jira".*plane, trello/],
+    [linearRepo, "provider", /unsupported ticket_provider\.type "linear".*plane, trello/],
     [brokenRepo, "provider", /no ticket_provider\.type/],
     [linearRepo, "status", /unsupported ticket_provider\.type "linear"/],
   ]) {
