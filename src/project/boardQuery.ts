@@ -228,12 +228,12 @@ export function resolveSecretValue(value: string): string {
 
 /** Environment variables consulted for a workspace, in precedence order. */
 export function planeApiKeyNames(workspace: string | undefined): string[] {
-  return ["PLANE_API_KEY", workspaceEnvKey(workspace)];
+  return [workspaceEnvKey(workspace), "PLANE_API_KEY"];
 }
 
 /**
- * The API key for a workspace: environment first, then the shared fleet
- * dotenv, with `op://` references resolved at the end.
+ * The API key for a workspace: workspace environment first, then ambient flat key,
+ * then the shared fleet dotenv, with `op://` references resolved at the end.
  */
 export function resolvePlaneApiKey(
   workspace: string | undefined,
@@ -243,9 +243,9 @@ export function resolvePlaneApiKey(
   const fleetEnv = env.HERMES_FLEET_ENV?.trim() || join(home, ".hermes", "fleet.env");
   const scoped = workspaceEnvKey(workspace);
   const candidates = [
-    env.PLANE_API_KEY,
     env[scoped],
     dotenvValue(fleetEnv, scoped),
+    env.PLANE_API_KEY,
     dotenvValue(fleetEnv, "PLANE_API_KEY"),
   ];
   for (const candidate of candidates) {

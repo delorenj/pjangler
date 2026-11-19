@@ -264,8 +264,8 @@ console.log("credentials: the fleet dotenv is read as inert data, never sourced"
   );
   assert.equal(
     resolvePlaneApiKey(WS, { ...env, PLANE_33GOD_API_KEY: "scoped-from-env", PLANE_API_KEY: "generic-from-env" }),
-    "generic-from-env",
-    "an explicit PLANE_API_KEY wins outright, as it does in plane.sh",
+    "scoped-from-env",
+    "the workspace key beats the ambient flat key",
   );
   assert.equal(resolvePlaneApiKey(WS, { HERMES_FLEET_ENV: join(workspace, "absent.env") }), undefined);
 }

@@ -255,11 +255,16 @@ MAX_PAGES="$(validated_uint PLANE_MAX_PAGES "${PLANE_MAX_PAGES:-1000}" 1 1000)"
 CONNECT_TIMEOUT="$(validated_uint PLANE_CONNECT_TIMEOUT "${PLANE_CONNECT_TIMEOUT:-10}" 1 300)"
 MAX_TIME="$(validated_uint PLANE_MAX_TIME "${PLANE_MAX_TIME:-60}" 1 3600)"
 
+# Try workspace-specific key first, then fall back to ambient flat key
+KEY="$(workspace_key "$WS")"
+PLANE_API_KEY="$(printenv "$KEY" 2>/dev/null || true)"
+if [ -z "${PLANE_API_KEY:-}" ] && [ -f "$FLEET_ENV" ]; then
+  PLANE_API_KEY="$(dotenv_value "$FLEET_ENV" "$KEY")"
+fi
+# Only fall back to ambient flat key if no workspace key was found
 if [ -z "${PLANE_API_KEY:-}" ]; then
-  KEY="$(workspace_key "$WS")"
-  PLANE_API_KEY="$(printenv "$KEY" 2>/dev/null || true)"
-  if [ -z "${PLANE_API_KEY:-}" ] && [ -f "$FLEET_ENV" ]; then
-    PLANE_API_KEY="$(dotenv_value "$FLEET_ENV" "$KEY")"
+  if [ -f "$FLEET_ENV" ]; then
+    PLANE_API_KEY="$(dotenv_value "$FLEET_ENV" "PLANE_API_KEY")"
   fi
 fi
 PLANE_API_KEY="$(resolve_secret_value "${PLANE_API_KEY:-}")"
