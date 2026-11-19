@@ -262,6 +262,7 @@ export class RecipeRegistry {
     try {
       postcondition = await auditCheck(owner.recipe.checks[owner.checkIndex]!, ctx);
     } catch (err) {
+      assertOperationActive();
       return {
         ...result,
         status: "partial",

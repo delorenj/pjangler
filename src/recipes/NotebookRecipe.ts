@@ -1,3 +1,4 @@
+import { assertOperationActive } from "../lifecycle/operation";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadProjectRegistry, type ProjectInitPlan, type ProjectManifest, type ProjectRecord } from "../project/index";
@@ -162,7 +163,7 @@ export class NotebookRecipe extends Recipe<NotebookRecipeInput> {
     try {
       const env = integrationEnvironment(this.module, ctx);
       ctx.notebookStateRoot = notebookStateRoot(env);
-      const applied = this.module.installIntegration(env);
+      const applied = await this.module.installIntegrationAsync(env);
       ctx.notebookObservation = Object.freeze(await prepareNotebookObservationResolved(this.module, resolvedForPlan(plan), notebookPlan.config, true, env));
       // PJAN-82: the global skill projection lives on the machine, not in this
       // repository. When it is owned elsewhere PJángler leaves it alone and says
@@ -190,6 +191,7 @@ export class NotebookRecipe extends Recipe<NotebookRecipeInput> {
         phases: [{ id: "notebook.local", status: applied.changedFiles.length ? "changed" : "unchanged", changedFiles: applied.changedFiles, message: "Canonical Project Notebook skill and hooks verified" }],
       };
     } catch (error) {
+      assertOperationActive();
       const message = error instanceof Error ? error.message : String(error);
       return { recipeId: this.metadata.id, ok: false, dryRun: false, changedFiles: [], logs: [], errors: [message], phases: [{ id: "notebook.local", status: "failed", changedFiles: [], message }] };
     }

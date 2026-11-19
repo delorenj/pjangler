@@ -13,7 +13,7 @@ import {
   renewCaptureReceiptLease,
   transitionCaptureReceipt,
 } from "./state";
-import { summarizeCapture } from "./summarizer";
+import { summarizeCapture, summarizeCaptureAsync } from "./summarizer";
 import {
   NOTEBOOK_POLICY_VERSION,
   NOTEBOOK_SCHEMA_VERSION,
@@ -201,14 +201,15 @@ async function processClaimed(module: NotebookModule, receipt: CaptureReceiptV1,
     remoteIds.push(note.id);
   }
 
-  const summary = summarizeCapture(linked.config, {
+  const summaryEvidence = {
     documents: evidence.documents,
     changedPaths: evidence.changed_paths,
     exclusions: evidence.exclusions,
     endRevision: evidence.end_revision,
     endStatusDigest: evidence.end_status_digest,
     baselineRef: baseline.git_head,
-  });
+  };
+  const summary = currentOperation() ? await summarizeCaptureAsync(linked.config, summaryEvidence) : summarizeCapture(linked.config, summaryEvidence);
   let captureEnvelope: PjanglerNoteEnvelopeV1 = {
     schema_version: NOTEBOOK_SCHEMA_VERSION,
     project_slug: active.project_slug,

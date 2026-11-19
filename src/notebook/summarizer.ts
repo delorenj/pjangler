@@ -1,3 +1,4 @@
+import { runChild } from "../lifecycle/operation";
 import { spawnSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { NotebookError, type EffectiveNotebookConfigV1 } from "./types";
@@ -116,6 +117,24 @@ function validateClaims(value: unknown, items: EvidenceItemV1[], noteMaxBytes: n
   }
   const result = rendered.join("\n");
   return Buffer.byteLength(result, "utf8") <= noteMaxBytes ? result : null;
+}
+
+export async function summarizeCaptureAsync(config: EffectiveNotebookConfigV1, evidence: CaptureSummaryEvidenceV1): Promise<CaptureSummaryV1> {
+  const fallbackSummary = fallback(evidence, config.limits.note_max_bytes);
+  if (!config.summarizer) return { schema_version: 1, mode: "deterministic-fallback", summary: fallbackSummary };
+  assertSummarizerConfig(config);
+  const items = evidenceItems(evidence);
+  const payload = JSON.stringify({ schema_version: 1, evidence: items });
+  if (Buffer.byteLength(payload, "utf8") > config.limits.request_max_bytes) return { schema_version: 1, mode: "deterministic-fallback", summary: fallbackSummary };
+  const result = await runChild(config.summarizer.executable, config.summarizer.args, {
+    cwd: config.repo_path, input: payload, timeoutMs: config.limits.overall_timeout_ms,
+    maxBuffer: config.limits.response_max_bytes, env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", LC_ALL: "C.UTF-8" },
+  });
+  if (result.status !== 0 || result.error || !result.stdout || Buffer.byteLength(result.stdout) > config.limits.response_max_bytes) return { schema_version: 1, mode: "deterministic-fallback", summary: fallbackSummary };
+  try {
+    const summary = validateClaims(JSON.parse(result.stdout) as unknown, items, config.limits.note_max_bytes);
+    return summary ? { schema_version: 1, mode: "configured", summary } : { schema_version: 1, mode: "deterministic-fallback", summary: fallbackSummary };
+  } catch { return { schema_version: 1, mode: "deterministic-fallback", summary: fallbackSummary }; }
 }
 
 export function summarizeCapture(config: EffectiveNotebookConfigV1, evidence: CaptureSummaryEvidenceV1): CaptureSummaryV1 {

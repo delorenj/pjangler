@@ -42,7 +42,8 @@ import { validateCommittedGitRef } from "./git-evidence";
 import { prepareNotebookObservation } from "./observation";
 import { createNotebookChecks } from "./checks";
 import { homedir } from "node:os";
-import { installProjectNotebookIntegration, repairProjectNotebookSkillProjection, type ProjectNotebookHostBlockV1, type ProjectNotebookSkillRepairV1 } from "./hooks";
+import { currentOperation } from "../lifecycle/operation";
+import { installProjectNotebookIntegration, installProjectNotebookIntegrationAsync, repairProjectNotebookSkillProjection, type ProjectNotebookHostBlockV1, type ProjectNotebookSkillRepairV1 } from "./hooks";
 import { reconcileNotebookEntropy, type EntropyReconciliationResultV1 } from "./entropy";
 import {
   NOTEBOOK_POLICY_VERSION,
@@ -153,6 +154,18 @@ export class NotebookModule {
     this.fetch = options.fetch;
     this.clientFactory = options.clientFactory;
     this.registryStore = options.registryStore;
+  }
+
+  async installIntegrationAsync(env: NodeJS.ProcessEnv = this.environment): Promise<{ changedFiles: string[]; blocked?: ProjectNotebookHostBlockV1 }> {
+    const installed = currentOperation() ? await installProjectNotebookIntegrationAsync({ env }) : installProjectNotebookIntegration({ env });
+    const home = env.HOME!;
+    return {
+      changedFiles: [
+        ...(installed.skill.installed ? [installed.skill.path] : []),
+        ...(installed.hooksChanged ? [resolve(env.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? `${home}/.claude/settings.json`)] : []),
+      ],
+      ...(installed.blocked ? { blocked: installed.blocked } : {}),
+    };
   }
 
   installIntegration(env: NodeJS.ProcessEnv = this.environment): { changedFiles: string[]; blocked?: ProjectNotebookHostBlockV1 } {

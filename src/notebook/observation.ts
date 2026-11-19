@@ -1,4 +1,4 @@
-import { rethrowOperationStopped } from "../lifecycle/operation";
+import { currentOperation, rethrowOperationStopped } from "../lifecycle/operation";
 import { parseNoteEnvelope } from "./notes";
 import { compileOverviewDescriptor, overviewDescriptorDrift } from "./overview";
 import type { NotebookModule } from "./module";
@@ -12,7 +12,7 @@ import type {
 import { normalizeNotebookError } from "./output";
 import { projectNotebookMarker } from "./reconcile";
 import { notebookDisplayName, type ResolvedNotebookProjectV1 } from "./config";
-import { inspectProjectNotebookIntegration, type ProjectNotebookHostBlockV1 } from "./hooks";
+import { inspectProjectNotebookIntegration, inspectProjectNotebookIntegrationAsync, type ProjectNotebookHostBlockV1 } from "./hooks";
 
 export interface NotebookObservationV1 {
   schema_version: 1;
@@ -58,7 +58,7 @@ export async function prepareNotebookObservation(module: NotebookModule, repo: s
 
 export async function prepareNotebookObservationResolved(module: NotebookModule, resolved: ResolvedNotebookProjectV1, config: EffectiveNotebookConfigV1, localOnly = false, integrationEnv: NodeJS.ProcessEnv = module.environment): Promise<NotebookObservationV1> {
   const local = { resolved, config };
-  const integration = inspectProjectNotebookIntegration(integrationEnv);
+  const integration = currentOperation() ? await inspectProjectNotebookIntegrationAsync(integrationEnv) : inspectProjectNotebookIntegration(integrationEnv);
   const base = {
     schema_version: 1 as const,
     fetched_at: new Date().toISOString(),

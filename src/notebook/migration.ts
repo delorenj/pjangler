@@ -66,7 +66,7 @@ export async function migrateNotebook(module: NotebookModule, repo: string, inpu
     }
     if (id === "notebook.skill-installed" || id === "notebook.hooks-projected") {
       if (!installed) {
-        const files = module.installIntegration().changedFiles;
+        const files = (await module.installIntegrationAsync()).changedFiles;
         changed.push(...files);
         installed = true;
         results.push({ id, status: files.length ? "applied" : "noop", summary: files.length ? "Installed the verified Project Notebook skill and projected canonical hooks" : "Verified Project Notebook skill and hook projection already match" });

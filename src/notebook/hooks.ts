@@ -1,3 +1,4 @@
+import { runChild, assertOperationActive } from "../lifecycle/operation";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -639,6 +640,34 @@ export interface ProjectNotebookIntegrationObservationV1 {
   blocked?: ProjectNotebookHostBlockV1;
 }
 
+export async function inspectProjectNotebookIntegrationAsync(env: NodeJS.ProcessEnv = process.env): Promise<ProjectNotebookIntegrationObservationV1> {
+  const home = env.HOME;
+  if (!home) return { skill_installed: false, hooks_projected: false, details: ["HOME is unavailable"] };
+  const skillsRoot = join(home, ".agents", "skills");
+  const link = join(skillsRoot, "project-notebook");
+  try {
+    const expected = expectedPackedSkill();
+    const dataRoot = resolve(env.XDG_DATA_HOME || join(home, ".local", "share"), "pjangler", "skills", "project-notebook");
+    const expectedPayload = join(dataRoot, `${PJANGLER_VERSION}-${expected.digest}`);
+    const probe = probeCanonicalSkillexRootProjection(skillsRoot, link);
+    if (probe.state === "declined") return { skill_installed: false, hooks_projected: false, details: probe.block.details, blocked: probe.block };
+    const stat = lstatSync(link);
+    if (!stat.isSymbolicLink()) return { skill_installed: false, hooks_projected: false, details: ["Project Notebook skill path is not an owned link"], blocked: { code: "projection-foreign", summary: `${link} is not a PJángler-owned link`, details: ["the path is a real file or directory"], repair: REPAIR_COMMAND } };
+    const source = realpathSync(link);
+    const packedPayloadMatches = existsSync(expectedPayload) && source === realpathSync(expectedPayload);
+    if (!packedPayloadMatches && !isVerifiedCanonicalSkillexProjection(source)) {
+      const details = isCanonicalSkillexProjectionPath(source) ? describeProjectNotebookSkillDrift(source) : [`the link targets ${source}, which is neither the version-pinned payload nor a canonical Skillex projection`];
+      return { skill_installed: false, hooks_projected: false, details, blocked: { code: isCanonicalSkillexProjectionPath(source) ? "projection-drift" : "projection-foreign", summary: `Project Notebook skill link targets a foreign or stale payload: ${source}`, details, repair: REPAIR_COMMAND } };
+    }
+    verifyProjectNotebookSkillExport(source);
+    const hooks = await checkProjectNotebookHooksAsync({ source, env });
+    return { skill_installed: true, hooks_projected: hooks.ok, details: hooks.findings.map((finding) => `${finding.kind}:${finding.event}:${finding.message}`).slice(0, 20) };
+  } catch (error) {
+    assertOperationActive();
+    return { skill_installed: false, hooks_projected: false, details: [boundedDiagnostic(error)] };
+  }
+}
+
 export function inspectProjectNotebookIntegration(env: NodeJS.ProcessEnv = process.env): ProjectNotebookIntegrationObservationV1 {
   const home = env.HOME;
   if (!home) return { skill_installed: false, hooks_projected: false, details: ["HOME is unavailable"] };
@@ -708,6 +737,23 @@ function projectorEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return result;
 }
 
+export async function checkProjectNotebookHooksAsync(input: { source?: string; env?: NodeJS.ProcessEnv; target?: string } = {}): Promise<ProjectNotebookHookCheckV1> {
+  const env = input.env ?? process.env;
+  const source = input.source ?? resolveProjectNotebookSkillSource(env);
+  if (!source) throw new NotebookError("NOT_CONFIGURED", "Project Notebook skill source is unavailable; reinstall or rebuild PJangler");
+  verifyProjectNotebookSkillExport(source);
+  const home = env.HOME;
+  if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to check Project Notebook hooks");
+  const target = resolve(input.target ?? env.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join(home, ".claude", "settings.json"));
+  const result = await runChild("/usr/bin/python3", ["-I", ...projectorArguments(source, "check", { target })], { env: projectorEnvironment(env), timeoutMs: 5_000, maxBuffer: 1_048_576 });
+  if (result.status !== 0 && result.status !== 1) throw new NotebookError("CONFLICT", (result.stderr || "Project Notebook projector check failed").trim().slice(0, 512));
+  try {
+    const parsed = JSON.parse(result.stdout) as ProjectNotebookHookCheckV1;
+    if (typeof parsed.ok !== "boolean" || !Array.isArray(parsed.findings)) throw new Error("shape");
+    return parsed;
+  } catch { throw new NotebookError("INTERNAL_ERROR", "Project Notebook projector returned invalid check JSON"); }
+}
+
 export function checkProjectNotebookHooks(input: { source?: string; env?: NodeJS.ProcessEnv; target?: string } = {}): ProjectNotebookHookCheckV1 {
   const env = input.env ?? process.env;
   const source = input.source ?? resolveProjectNotebookSkillSource(env);
@@ -725,6 +771,30 @@ export function checkProjectNotebookHooks(input: { source?: string; env?: NodeJS
   } catch {
     throw new NotebookError("INTERNAL_ERROR", "Project Notebook projector returned invalid check JSON");
   }
+}
+
+export async function installProjectNotebookIntegrationAsync(input: { source?: string; env?: NodeJS.ProcessEnv; target?: string } = {}): Promise<{ skill: ProjectNotebookSkillInstallV1; hooksChanged: boolean; blocked?: ProjectNotebookHostBlockV1 }> {
+  const env = input.env ?? process.env;
+  assertOperationActive();
+  const skill = installPackagedProjectNotebookSkill({ source: input.source, env });
+  if (skill.blocked) return { skill, hooksChanged: false, blocked: skill.blocked };
+  const source = realpathSync(skill.path);
+  const home = env.HOME;
+  if (!home) throw new NotebookError("NOT_CONFIGURED", "HOME is required to install Project Notebook hooks");
+  const target = resolve(input.target ?? env.PJ_PROJECT_NOTEBOOK_CLAUDE_SETTINGS ?? join(home, ".claude", "settings.json"));
+  const stateHome = resolve(env.XDG_STATE_HOME || join(home, ".local", "state"));
+  const result = await runChild("/usr/bin/python3", ["-I", ...projectorArguments(source, "install", { target, stateHome })], { env: projectorEnvironment(env), timeoutMs: 5_000, maxBuffer: 1_048_576 });
+  if (result.status !== 0) {
+    if (skill.installed) {
+      try {
+        const stat = lstatSync(skill.path);
+        if (stat.isSymbolicLink() && realpathSync(skill.path) === source) unlinkSync(skill.path);
+      } catch { /* Preserve the projector failure. */ }
+    }
+    throw new NotebookError("CONFLICT", (result.stderr || "Project Notebook hook installation failed").trim().slice(0, 512));
+  }
+  assertOperationActive();
+  return { skill, hooksChanged: /\bchanged\b/u.test(result.stdout) };
 }
 
 export function installProjectNotebookIntegration(input: { source?: string; env?: NodeJS.ProcessEnv; target?: string } = {}): { skill: ProjectNotebookSkillInstallV1; hooksChanged: boolean; blocked?: ProjectNotebookHostBlockV1 } {
