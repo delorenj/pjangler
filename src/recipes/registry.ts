@@ -350,12 +350,16 @@ export class RecipeRegistry {
    * auto-fixable" while fixable, and only a second `migrate --all` noticed.
    */
   async migrateAll(ctx: LifecycleContext): Promise<LifecycleMigrationReport> {
+    ctx.notebookBulkMigration = true;
     const audit = await this.auditRecipes(ctx);
     const failing = audit.rules.filter((rule) => (rule.status === "fail" || rule.status === "warn") && !isHostScoped(rule));
     // Host findings are informational in a repository bulk run. Keep them in
     // the result stream, but never select their migration or count them as
     // project blockers; the focused owner handles shared HOME repairs.
-    const host = audit.rules.filter((rule) => isHostScoped(rule) && (rule.status === "fail" || rule.status === "warn"));
+    const host = audit.rules.filter((rule) => isHostScoped(rule) && (
+      rule.status === "fail" || rule.status === "warn"
+      || (Boolean(ctx.notebookBulkHostObservation?.blocked) && rule.summary.startsWith("Host skill projection is owned outside PJángler"))
+    ));
     const report = await this.migrateRules(ctx, failing.filter((rule) => rule.fixable).map((rule) => rule.id));
 
     const unblocked: RuleId[] = [];

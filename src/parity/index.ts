@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recipeRegistry } from "../recipes/catalog";
+import { inspectProjectNotebookIntegration } from "../notebook/hooks";
 import { gatesProject, type LifecycleContext } from "../recipes/types";
 import type { AuditReport, MigrationReport } from "./rules";
 
@@ -118,6 +119,7 @@ export async function runMigration(
   registryPath?: string,
 ): Promise<MigrationReport> {
   const ctx = lifecycleContext(repoArg, dryRun, acceptRegistryMatches, registryPath ? { registryPath } : {});
+  if (all) ctx.notebookBulkHostObservation = inspectProjectNotebookIntegration({ ...process.env, HOME: ctx.homeDir });
   return publicMigration(await (all
     ? recipeRegistry.migrateAll(ctx)
     : recipeRegistry.migrateRules(ctx, selector ? [selector] : [])));
