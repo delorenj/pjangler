@@ -1436,7 +1436,7 @@ program
       const profile = options.profile as string | undefined;
       const live = (options.live as boolean | undefined) ?? false;
       if (profile === "momo-lifecycle-plane") {
-        const report = runMomoReadinessAudit(repo, live);
+        const report = await runMomoReadinessAudit(repo, live);
         if (options.json) {
           await writeStdout(`${JSON.stringify(report, null, 2)}\n`);
         } else {

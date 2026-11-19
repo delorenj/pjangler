@@ -1,3 +1,4 @@
+import { assertOperationActive } from "../lifecycle/operation";
 import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 
@@ -44,10 +45,12 @@ export abstract class Command {
       return;
     }
 
+    assertOperationActive();
     const fullPath = join(this.context.targetDir, filePath);
     const dir = dirname(fullPath);
 
     mkdirSync(dir, { recursive: true });
+    assertOperationActive();
     writeFileSync(fullPath, content);
   }
 
@@ -57,6 +60,7 @@ export abstract class Command {
       return;
     }
 
+    assertOperationActive();
     const fullPath = join(this.context.targetDir, dirPath);
     mkdirSync(fullPath, { recursive: true });
   }

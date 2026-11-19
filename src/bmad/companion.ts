@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { runChild, assertOperationActive, rethrowOperationStopped } from "../lifecycle/operation";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changedTreePaths, snapshotTree, type TreeSnapshot } from "../utils/tree-diff";
@@ -109,7 +109,7 @@ export function g33AdapterGap(projectRoot: string): string | undefined {
 }
 
 /** Resolve only; no package installation, export guesses, or owner code execution. */
-function resolveAdapter(projectRoot: string, module: string): string {
+async function resolveAdapter(projectRoot: string, module: string): Promise<string> {
   if (module.startsWith(".") || isAbsolute(module)) {
     const path = resolve(projectRoot, module);
     if (!existsSync(path)) throw new Error(`Configured g33 source is unavailable: ${module}`);
@@ -119,11 +119,11 @@ function resolveAdapter(projectRoot: string, module: string): string {
   // Node's second import.meta.resolve argument is flag-gated. A resolver-only
   // subprocess supplies that flag and project parent without writing a helper
   // into the target or importing owner code. Both attempts use ESM conditions.
-  const resolved = spawnSync(process.execPath, [
+  const resolved = await runChild(process.execPath, [
     "--experimental-import-meta-resolve", "--input-type=module", "--eval",
     "process.stdout.write(import.meta.resolve(process.argv[1], process.argv[2]))",
     "--", module, pathToFileURL(join(projectRoot, ".project.json")).href,
-  ], { encoding: "utf8", timeout: 10_000 });
+  ], { timeoutMs: 10_000 });
   if (resolved.status === 0 && resolved.stdout.trim()) return resolved.stdout.trim();
   const projectError = resolved.stderr.trim() || resolved.error?.message || `resolver exit ${resolved.status}`;
   try { return import.meta.resolve(module); }
@@ -235,8 +235,9 @@ export async function runG33Companion(
     };
     result.adapter = { module: selection.module, exportName: selection.exportName };
     let specifier: string;
-    try { specifier = resolveAdapter(projectRoot, selection.module); }
+    try { specifier = await resolveAdapter(projectRoot, selection.module); }
     catch (error) {
+      rethrowOperationStopped(error);
       return { ...result, status: "unavailable", summary: "Configured g33 adapter is unavailable", details: [...result.details, error instanceof Error ? error.message : String(error)] };
     }
     before = snapshotG33Surfaces(projectRoot);
@@ -245,7 +246,9 @@ export async function runG33Companion(
     const callable = exported[selection.exportName];
     if (typeof callable !== "function") throw new Error(`Configured g33 export ${selection.exportName} is not callable`);
     const invoke = async (operation: CompanionRequest["operation"]): Promise<CompanionReply> => {
+      assertOperationActive();
       const value = reply(await (callable as Callable)({ schemaVersion: 1, moduleId: "g33", operation, projectRoot, reason, options: selection.options }), operation);
+      assertOperationActive();
       if (operation !== "apply") assertNoWrite(operation, changedG33Surfaces(projectRoot, before!));
       return value;
     };
@@ -280,6 +283,7 @@ export async function runG33Companion(
     };
     return { ...result, ...verified, status: result.changedFiles.length ? "changed" : "unchanged" };
   } catch (error) {
+    rethrowOperationStopped(error);
     if (before) {
       try { result.changedFiles = [...new Set([...result.changedFiles, ...changedG33Surfaces(projectRoot, before)])].sort(); }
       catch (snapshotError) { result.details.push(`${G33_INVENTORY_FAILED}: ${String(snapshotError)}`); }

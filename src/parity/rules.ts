@@ -2736,16 +2736,16 @@ function firstMomoProvider(repoRoot: string): MomoProviderCandidate | undefined 
 }
 
 
-function checkProviderSyntax(candidate: MomoProviderCandidate): { ok: boolean; detail?: string } {
+async function checkProviderSyntax(candidate: MomoProviderCandidate): Promise<{ ok: boolean; detail?: string }> {
   if (candidate.kind === "python") {
-    const result = spawnSync("python3", ["-m", "py_compile", candidate.path], { encoding: "utf8" });
+    const result = await runChild("python3", ["-m", "py_compile", candidate.path]);
     if (result.status !== 0) {
       return { ok: false, detail: `python3 -m py_compile failed: ${result.stderr.trim() || result.stdout.trim() || "syntax error"}` };
     }
     return { ok: true };
   }
   if (candidate.kind === "shell") {
-    const result = spawnSync("bash", ["-n", candidate.path], { encoding: "utf8" });
+    const result = await runChild("bash", ["-n", candidate.path]);
     if (result.status !== 0) {
       return { ok: false, detail: `bash -n failed: ${result.stderr.trim() || result.stdout.trim() || "syntax error"}` };
     }
@@ -2755,8 +2755,8 @@ function checkProviderSyntax(candidate: MomoProviderCandidate): { ok: boolean; d
 }
 
 
-function runProviderLocalSmoke(repoRoot: string, candidate: MomoProviderCandidate): { ok: boolean; detail?: string } {
-  const result = spawnSync(candidate.path, ["--help"], { cwd: repoRoot, encoding: "utf8" });
+async function runProviderLocalSmoke(repoRoot: string, candidate: MomoProviderCandidate): Promise<{ ok: boolean; detail?: string }> {
+  const result = await runChild(candidate.path, ["--help"], { cwd: repoRoot });
   if (result.status !== 0) {
     return { ok: false, detail: `${relative(repoRoot, candidate.path)} --help exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}` };
   }
@@ -2776,8 +2776,8 @@ function attemptPlaneStateMapping(repoRoot: string): { ok: boolean; detail?: str
 }
 
 
-function attemptNestedAdapterSmoke(repoRoot: string, candidate: MomoProviderCandidate): { ok: boolean; detail?: string } {
-  const result = spawnSync(candidate.path, ["--smoke", "nested"], { cwd: repoRoot, encoding: "utf8" });
+async function attemptNestedAdapterSmoke(repoRoot: string, candidate: MomoProviderCandidate): Promise<{ ok: boolean; detail?: string }> {
+  const result = await runChild(candidate.path, ["--smoke", "nested"], { cwd: repoRoot });
   if (result.status !== 0) {
     return { ok: false, detail: `${relative(repoRoot, candidate.path)} --smoke nested exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}` };
   }
@@ -2989,12 +2989,12 @@ function auditExecutableProvider(repoRoot: string): MomoReadinessFinding {
 }
 
 
-function auditProviderSyntax(repoRoot: string): MomoReadinessFinding {
+async function auditProviderSyntax(repoRoot: string): Promise<MomoReadinessFinding> {
   const candidate = firstMomoProvider(repoRoot);
   if (!candidate) {
     return momoLifecycleFinding("provider-syntax", "skip", "no provider dispatcher to validate");
   }
-  const syntax = checkProviderSyntax(candidate);
+  const syntax = await checkProviderSyntax(candidate);
   if (!syntax.ok) {
     return momoLifecycleFinding("provider-syntax", "fail", `${relative(repoRoot, candidate.path)} has syntax errors`, [syntax.detail ?? "syntax check failed"]);
   }
@@ -3034,12 +3034,12 @@ function auditPlaneStateMapping(repoRoot: string, live: boolean): MomoReadinessF
 }
 
 
-function auditRootAdapterSmoke(repoRoot: string): MomoReadinessFinding {
+async function auditRootAdapterSmoke(repoRoot: string): Promise<MomoReadinessFinding> {
   const candidate = firstMomoProvider(repoRoot);
   if (!candidate) {
     return momoLifecycleFinding("root-adapter-smoke", "skip", "no provider dispatcher to smoke-test");
   }
-  const smoke = runProviderLocalSmoke(repoRoot, candidate);
+  const smoke = await runProviderLocalSmoke(repoRoot, candidate);
   if (!smoke.ok) {
     return momoLifecycleFinding("root-adapter-smoke", "fail", "root adapter smoke test failed", [smoke.detail ?? "unknown error"]);
   }
@@ -3047,7 +3047,7 @@ function auditRootAdapterSmoke(repoRoot: string): MomoReadinessFinding {
 }
 
 
-function auditNestedAdapterSmoke(repoRoot: string, live: boolean): MomoReadinessFinding {
+async function auditNestedAdapterSmoke(repoRoot: string, live: boolean): Promise<MomoReadinessFinding> {
   const candidate = firstMomoProvider(repoRoot);
   if (!candidate) {
     return momoLifecycleFinding("nested-adapter-smoke", "skip", "no provider dispatcher to smoke-test");
@@ -3055,7 +3055,7 @@ function auditNestedAdapterSmoke(repoRoot: string, live: boolean): MomoReadiness
   if (!live) {
     return momoLifecycleFinding("nested-adapter-smoke", "skip", "live check skipped (pass --live)", ["requires --live"]);
   }
-  const smoke = attemptNestedAdapterSmoke(repoRoot, candidate);
+  const smoke = await attemptNestedAdapterSmoke(repoRoot, candidate);
   if (!smoke.ok) {
     return momoLifecycleFinding("nested-adapter-smoke", "warn", "nested adapter smoke attempted but incomplete", [smoke.detail ?? "unknown error"]);
   }
@@ -3063,17 +3063,17 @@ function auditNestedAdapterSmoke(repoRoot: string, live: boolean): MomoReadiness
 }
 
 
-function runMomoLifecyclePlaneAudit(repoRoot: string, live = false): MomoReadinessReport {
+async function runMomoLifecyclePlaneAudit(repoRoot: string, live = false): Promise<MomoReadinessReport> {
   const findings: MomoReadinessFinding[] = [
     auditManifestRoleConsistency(repoRoot),
     auditLifecycleScripts(repoRoot),
     auditSentinelScripts(repoRoot),
     auditExecutableProvider(repoRoot),
-    auditProviderSyntax(repoRoot),
+    await auditProviderSyntax(repoRoot),
     auditPlaneBinding(repoRoot),
     auditPlaneStateMapping(repoRoot, live),
-    auditRootAdapterSmoke(repoRoot),
-    auditNestedAdapterSmoke(repoRoot, live),
+    await auditRootAdapterSmoke(repoRoot),
+    await auditNestedAdapterSmoke(repoRoot, live),
   ];
   const ready = findings.every((f) => f.status === "pass" || f.status === "skip");
   return {
@@ -3087,7 +3087,7 @@ function runMomoLifecyclePlaneAudit(repoRoot: string, live = false): MomoReadine
 }
 
 
-export function runMomoReadinessAudit(repoRoot?: string, live = false): MomoReadinessReport {
+export async function runMomoReadinessAudit(repoRoot?: string, live = false): Promise<MomoReadinessReport> {
   return runMomoLifecyclePlaneAudit(resolve(repoRoot ?? process.cwd()), live);
 }
 
@@ -5254,16 +5254,15 @@ function linkedPlaneBoard(ctx: Context): { boardId: string; workspace: string } 
 
 
 /** Run `px schema import` and parse its JSON. Never throws. */
-function runPx(args: string[], ctx: Context): { plan?: PxPlan; error?: string } {
-  const probe = spawnSync("which", ["px"], { encoding: "utf8" });
+async function runPx(args: string[], ctx: Context): Promise<{ plan?: PxPlan; error?: string }> {
+  const probe = await runChild("which", ["px"]);
   if (probe.status !== 0) {
     return { error: "px not found on PATH — install Pilot to manage board schemas" };
   }
-  const result = spawnSync("px", args, {
+  const result = await runChild("px", args, {
     cwd: ctx.repoRoot,
-    encoding: "utf8",
     shell: false,
-    timeout: 120_000,
+    timeoutMs: 120_000,
     maxBuffer: 4 * 1024 * 1024,
   });
   if (result.error) return { error: `px failed to run: ${result.error.message}` };
@@ -5300,11 +5299,11 @@ export function createBoardSchemaChecks(): RecipeOwnedCheck[] {
     {
       id: BOARD_SCHEMA_RULE_ID,
       title: BOARD_SCHEMA_TITLE,
-      audit: (ctx: Context): AuditFinding => {
+      audit: async (ctx: Context): Promise<AuditFinding> => {
         const board = linkedPlaneBoard(ctx);
         if ("skip" in board) return boardSchemaSkip(board.skip);
 
-        const { plan, error } = runPx(
+        const { plan, error } = await runPx(
           ["schema", "import", "--dry-run", "--json", "--board", board.boardId, "--workspace", board.workspace],
           ctx,
         );
@@ -5343,7 +5342,7 @@ export function createBoardSchemaChecks(): RecipeOwnedCheck[] {
           fixable: true,
         };
       },
-      migrate: (ctx: Context, finding: AuditFinding): MigrationRuleResult => {
+      migrate: async (ctx: Context, finding: AuditFinding): Promise<MigrationRuleResult> => {
         const base = { id: BOARD_SCHEMA_RULE_ID, title: BOARD_SCHEMA_TITLE, changedFiles: [] as string[] };
         const board = linkedPlaneBoard(ctx);
         if ("skip" in board) return { ...base, status: "skipped", summary: board.skip, details: [] };
@@ -5359,7 +5358,7 @@ export function createBoardSchemaChecks(): RecipeOwnedCheck[] {
 
         // Deliberately no --prune and no --adopt-default: an automated repair
         // may add and align, never delete a state or move where new tickets land.
-        const { plan, error } = runPx(
+        const { plan, error } = await runPx(
           ["schema", "import", "--json", "--board", board.boardId, "--workspace", board.workspace],
           ctx,
         );
