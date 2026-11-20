@@ -50,7 +50,7 @@
 // once with fake `npm` and `git` on PATH and once in real Git repositories with
 // only `npm` faked.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -243,6 +243,7 @@ function main(argv) {
       if (!dryRun) {
         const set = spawnSync("npm", ["version", republish.next, "--no-git-tag-version", "--allow-same-version"], { cwd: root, stdio: "inherit" });
         if (set.status !== 0) die(`npm version ${republish.next} failed`);
+        refreshUsageSnapshot(root);
       }
     }
     output(republish.next, republish.action);
@@ -268,6 +269,7 @@ function main(argv) {
     if (!dryRun) {
       const bump = spawnSync("npm", ["version", decision.next, "--no-git-tag-version"], { cwd: root, stdio: "inherit" });
       if (bump.status !== 0) die(`npm version ${decision.next} failed`);
+      refreshUsageSnapshot(root);
     }
     console.log(`${localVersion} is taken; bumped to ${decision.next}`);
   } else {
@@ -275,6 +277,18 @@ function main(argv) {
   }
 
   output(decision.next, "publish");
+}
+
+/**
+ * pj.usage.kdl embeds the package version, and tests/usage-portability.test.mjs holds it equal to the parser's
+ * output. A bump that leaves the snapshot behind turns the NEXT push red (it did, 1.5.61 -> 1.5.62), so the bump
+ * regenerates it and the release commit stages it (scripts/release-commit.mjs RELEASE_FILES).
+ */
+function refreshUsageSnapshot(root) {
+  // A package without a snapshot (the release tests' scratch repos) has nothing to keep in step.
+  if (!existsSync(resolve(root, "pj.usage.kdl")) || !existsSync(resolve(root, "scripts/export-usage.mjs"))) return;
+  const regen = spawnSync(process.execPath, ["scripts/export-usage.mjs"], { cwd: root, stdio: "inherit" });
+  if (regen.status !== 0) die("regenerating pj.usage.kdl for the new version failed");
 }
 
 const invokedDirectly = (() => {

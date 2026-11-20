@@ -61,15 +61,15 @@
 // package.json, the lock and the floor), main moved in the middle of the push,
 // and a transient push failure.
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REMOTE = "origin";
 const BRANCH = "main";
 
-/** What the release commit stages. The bump writes the first two; the ci job measured the third. */
-export const RELEASE_FILES = ["package.json", "package-lock.json", ".coverage-floor.json"];
+/** What the release commit stages. The bump writes package.json, the lock and the usage snapshot (it embeds the version); the ci job measured the floor. */
+export const RELEASE_FILES = ["package.json", "package-lock.json", "pj.usage.kdl", ".coverage-floor.json"];
 
 /** The identity GitHub shows for the Actions bot, for the commit and the tag. */
 export const BOT = {
@@ -139,7 +139,8 @@ function main() {
     die(`package.json says ${pkgVersion}, but npm accepted ${version}; the release commit must carry the published version`);
   }
 
-  gitOut(["add", "--", ...RELEASE_FILES], "staging the release files");
+  // A package without one of the optional files (no usage snapshot) stages the rest.
+  gitOut(["add", "--", ...RELEASE_FILES.filter((path) => existsSync(resolve(root, path)))], "staging the release files");
   // Hooks run as usual (there are none on a runner). --allow-empty: see the header.
   const commit = git(["commit", "--allow-empty", "--quiet", "-m", releaseSubject(version)], asBot);
   if (commit.status !== 0) die("git commit failed");
