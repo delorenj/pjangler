@@ -212,6 +212,22 @@ export function bindingName(identity: Pick<AgentIdentity, "cli" | "sessionId" | 
   return `crank-${cli}-${sid}-${identity.pid}`;
 }
 
+/** True when `name` is `base` or a later generation of it (`base-r2`, `base-r3`, …). */
+export function sameLineage(name: string, base: string): boolean {
+  return name === base || new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-r\\d+$`).test(name);
+}
+
+/**
+ * The first name in `base`'s lineage Candybar has never used. Candybar names are never reusable
+ * (CAND-54), so a binding that ended (falsely or not) while its agent lives on re-attaches as
+ * `base-r2`, `base-r3`, … instead of being refused until the agent restarts.
+ */
+export function freshGeneration(base: string, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let n = 2; ; n += 1) if (!used.has(`${base}-r${n}`)) return `${base}-r${n}`;
+}
+
 /** Candybar's own project tag for a directory: the main worktree's name (see candybar project.py). */
 export function candybarProjectName(root: string): string {
   const git = (...args: string[]) => {
@@ -266,6 +282,17 @@ export function manifestSpec(identity: AgentIdentity, policy: EffectiveCrankPoli
       CRANK_PROJECT: project.slug,
       CRANK_INTERVAL: policy.interval,
     },
+  };
+}
+
+/** The same spec under another generation's name (name, schedule jitter, fire argv, env). */
+function renamedSpec(spec: ManifestSpec, name: string): ManifestSpec {
+  return {
+    ...spec,
+    name,
+    schedule: intervalCron(spec.env.CRANK_INTERVAL || "5m", name),
+    argv: [...spec.argv.slice(0, -1), name],
+    env: { ...spec.env, CRANK_BINDING: name },
   };
 }
 
@@ -603,12 +630,20 @@ export async function attachBinding(
   const emit = deps.emit ?? bbEmit;
   const projector = deps.project ?? redisProjector;
   const nowMs = (deps.now ?? new Date()).getTime();
-  const spec = manifestSpec(identity, policy, project, deps.now);
+  const base = manifestSpec(identity, policy, project, deps.now);
   const existing = await listBindings(client);
   const superseded: string[] = [];
   const reaped: string[] = [];
+  const live = existing.find((record) => sameLineage(record.name, base.name));
+  let spec = base;
+  if (!live) {
+    const name = freshGeneration(base.name, (await client.list()).map((row) => row.name));
+    if (name !== base.name) spec = renamedSpec(base, name);
+  } else if (live.name !== base.name) {
+    spec = renamedSpec(base, live.name);
+  }
   for (const record of existing) {
-    if (record.name === spec.name) continue;
+    if (sameLineage(record.name, base.name)) continue;
     if (record.pid === identity.pid && record.pidStart === identity.pidStart) {
       await detachBinding(record, "superseded", { client, emit, project: projector, detail: `session ${identity.sessionId.slice(0, 8)} took over pid ${identity.pid}` });
       superseded.push(record.name);
@@ -658,7 +693,7 @@ export async function attachBinding(
       } catch {
         // nothing to clean
       }
-      return { status: "refused", name: spec.name, reason: `Candybar name ${spec.name} is archived and can never be reused (CAND-54); restart the agent for a new crank`, superseded, reaped };
+      return { status: "refused", name: spec.name, reason: `Candybar name ${spec.name} was taken while attaching (CAND-54 names are never reused); run attach again`, superseded, reaped };
     }
   } else if (!row) {
     try {
