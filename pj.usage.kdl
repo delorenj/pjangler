@@ -1,0 +1,578 @@
+// Static snapshot of src/index.ts Commander registrations; regenerate with node scripts/export-usage.mjs
+name pj
+bin pj
+version "1.5.58"
+about "Project subsystem bootstrapper CLI"
+usage "[options] [command]"
+flag "-V --version" help="output the version number"
+cmd notebook subcommand_required=#true help="Manage the repository companion notebook" {
+	cmd status {
+		flag --local-only help="Do not construct or contact the remote adapter"
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd create {
+		flag --live help="Authorize the composite remote reconciliation"
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd list subcommand_required=#true help="List notebook resources" {
+		cmd notes {
+			flag --limit help="Page size" default="50" {
+				arg <LIMIT>
+			}
+			flag --cursor help="Opaque page cursor" {
+				arg <CURSOR>
+			}
+			flag --json help="Emit JSON v1"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+		cmd sources {
+			flag --json help="Emit JSON v1"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd add subcommand_required=#true help="Add notebook resources" {
+		cmd note {
+			flag --title help="Note title" {
+				arg <TITLE>
+			}
+			flag --text help="Note body" {
+				arg <TEXT>
+			}
+			flag --file help="Read note body from a regular file" {
+				arg <FILE>
+			}
+			flag --json help="Emit JSON v1"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd get subcommand_required=#true help="Get notebook resources" {
+		cmd note {
+			flag --json help="Emit JSON v1"
+			arg <note-id> help="Stable note ID"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd update subcommand_required=#true help="Update notebook resources" {
+		cmd note {
+			flag --title help="Replacement title" {
+				arg <TITLE>
+			}
+			flag --text help="Replacement body" {
+				arg <TEXT>
+			}
+			flag --file help="Read replacement body from a regular file" {
+				arg <FILE>
+			}
+			flag --json help="Emit JSON v1"
+			arg <note-id> help="Stable note ID"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd delete subcommand_required=#true help="Delete notebook resources" {
+		cmd note {
+			flag --yes help="Confirm deletion"
+			flag --json help="Emit JSON v1"
+			arg <note-id> help="Stable note ID"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd search subcommand_required=#true help="Search scoped notebook resources locally" {
+		cmd notes {
+			flag --limit help="Result limit" default="20" {
+				arg <LIMIT>
+			}
+			flag --json help="Emit JSON v1"
+			arg <query> help="Required all-token text query"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd sync help="Synchronize project notebook: reconcile overview drift, prune zombie notes, compact session captures, and sync sources" {
+		flag --no-sources help="Skip synchronizing OpenNotebook sources" negate=--sources
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd overview {
+		flag --set-file help="Replace Overview body from a regular file" {
+			arg <SET_FILE>
+		}
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd capture subcommand_required=#true help="Inspect and retry durable capture receipts" {
+		cmd list {
+			flag --state help="Filter by exact receipt state" {
+				arg <STATE>
+			}
+			flag --json help="Emit JSON v1"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+		cmd retry {
+			flag --baseline help="Explicit committed baseline for blocked-missing-baseline" {
+				arg <BASELINE>
+			}
+			flag --json help="Emit JSON v1"
+			arg <receipt-id> help="Durable receipt ID"
+			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		}
+	}
+	cmd audit {
+		flag --local-only help="Do not construct or contact the remote adapter"
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd migrate {
+		flag --apply help="Apply selected owned repairs"
+		flag --live help="Authorize selected remote repairs"
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd skill help="Inspect and reconcile the host Project Notebook skill projection" {
+		flag --apply help="Restore the drifted canonical projection from the version-pinned export"
+		flag --json help="Emit JSON v1"
+		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+	}
+	cmd hook hide=#true subcommand_required=#true help="Internal managed hook entry points" {
+		cmd session-start hide=#true {
+			flag --payload-file help="Contained compatibility payload file" {
+				arg <PAYLOAD_FILE>
+			}
+		}
+		cmd session-close hide=#true {
+			flag --payload-file help="Contained compatibility payload file" {
+				arg <PAYLOAD_FILE>
+			}
+		}
+	}
+	cmd worker hide=#true subcommand_required=#true help="Internal detached workers" {
+		cmd capture hide=#true {
+			flag --receipt-id help="Durable receipt ID" required=#true {
+				arg <RECEIPT_ID>
+			}
+		}
+	}
+}
+cmd init help="Initialize the project manifest, scaffold and registry index" {
+	flag --description help="Project description" {
+		arg <DESCRIPTION>
+	}
+	flag --target-dir help="Adopt an existing repo at this path (the only way to init a directory you are not standing in)" {
+		arg <TARGET_DIR>
+	}
+	flag --source-skill help="Source skill/template provenance path" {
+		arg <SOURCE_SKILL>
+	}
+	flag --primary-language help="Primary language recorded for the project (default: the recorded one, else the project type's, else python)" {
+		arg <PRIMARY_LANGUAGE>
+	}
+	flag --obsidian-plugin help="Render the CommonProject variant built on the canonical Obsidian sample plugin (new projects; on an existing repo, records one that already is a plugin)"
+	flag --apply help="Write the project manifest, render the scaffold and refresh its index"
+	flag --dry-run help="Preview changes without writing files (default)"
+	flag --live help="Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this."
+	flag --id help="Canonical project ID (case-insensitive)" {
+		arg <ID>
+	}
+	flag --slug help="Legacy alias for --id" hide=#true {
+		arg <SLUG>
+	}
+	flag --identifier help="Provider ticket prefix (board metadata)" {
+		arg <IDENTIFIER>
+	}
+	flag --ticket-provider help="Ticket provider: plane | trello (default: existing binding or plane)" {
+		arg <TICKET_PROVIDER>
+	}
+	flag --board-id help="Board id (Plane project UUID or Trello board id)" {
+		arg <BOARD_ID>
+	}
+	flag --board-url help="Deprecated no-op; board URLs are derived from provider + workspace + board-id" {
+		arg <BOARD_URL>
+	}
+	flag --skip-board help="Do not create or link a ticket board (the record stays unlinked, and init says so)"
+	flag --workspace help="Ticket workspace/org (Plane workspace; blank for Trello)" {
+		arg <WORKSPACE>
+	}
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag "-f --force" help="Allow replacing an existing registry entry, re-rendering files, and renaming an already-registered project"
+	flag "-y --yes" help="Apply every proposed operation without prompting"
+	flag --no-tui help="Disable interactive prompts" negate=--tui
+	flag --json help="Output machine-parseable JSON"
+	arg "[name]" help="Name of a NEW project; creates ./<name>. Omit to adopt the repo you are standing in." required=#false
+}
+cmd add help="Scaffold a subsystem/component into the current repo" {
+	flag --dry-run help="Preview changes without writing files"
+	flag "-f --force" help="Overwrite existing files"
+	arg <subsystem> help="Subsystem to scaffold (mise, docker, node, agent-hooks, …)"
+}
+cmd subsystems help="List available subsystems"
+cmd board help="Open this project's ticket board — or one work item — in a browser" {
+	flag --print help="Print the resolved URL instead of opening it"
+	arg "[ref]" help="Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board" required=#false
+	cmd provider help="Print this project's ticket provider (plane|trello)" {
+		flag --json help="Emit the provider as a JSON string"
+	}
+	cmd slug help="Print this project's slug" {
+		flag --json help="Emit the slug as a JSON string"
+	}
+	cmd status help="List work items in a started state, most recently added or updated first" {
+		flag --json help="Emit the work items as JSON"
+		flag --limit help="Show at most this many work items" {
+			arg <LIMIT>
+		}
+	}
+	cmd recent help="List the most recently added or updated work items in any state" {
+		flag --json help="Emit the work items as JSON"
+		arg "[count]" help="How many work items to show" required=#false default="5"
+	}
+	cmd modules help="List this project's modules" {
+		flag --json help="Emit the modules as JSON"
+	}
+}
+cmd project hide=#true subcommand_required=#true help="Legacy aliases for project commands" {
+	cmd init help="Plan or apply a registry-backed CommonProject initialization or legacy repo sync" {
+		flag --description help="Project description" {
+			arg <DESCRIPTION>
+		}
+		flag --target-dir help="Adopt an existing repo at this path (the only way to init a directory you are not standing in)" {
+			arg <TARGET_DIR>
+		}
+		flag --source-skill help="Source skill/template provenance path" {
+			arg <SOURCE_SKILL>
+		}
+		flag --primary-language help="Primary language recorded for the project (default: the recorded one, else the project type's, else python)" {
+			arg <PRIMARY_LANGUAGE>
+		}
+		flag --obsidian-plugin help="Render the CommonProject variant built on the canonical Obsidian sample plugin (new projects; on an existing repo, records one that already is a plugin)"
+		flag --apply help="Write the project manifest, render the scaffold and refresh its index"
+		flag --dry-run help="Preview changes without writing files (default)"
+		flag --live help="Allow host-level external effects (systemd, notebook reconcile). The ticket board is created by default and does not need this."
+		flag --id help="Canonical project ID (case-insensitive)" {
+			arg <ID>
+		}
+		flag --slug help="Legacy alias for --id" hide=#true {
+			arg <SLUG>
+		}
+		flag --identifier help="Provider ticket prefix (board metadata)" {
+			arg <IDENTIFIER>
+		}
+		flag --ticket-provider help="Ticket provider: plane | trello (default: existing binding or plane)" {
+			arg <TICKET_PROVIDER>
+		}
+		flag --board-id help="Board id (Plane project UUID or Trello board id)" {
+			arg <BOARD_ID>
+		}
+		flag --board-url help="Deprecated no-op; board URLs are derived from provider + workspace + board-id" {
+			arg <BOARD_URL>
+		}
+		flag --skip-board help="Do not create or link a ticket board (the record stays unlinked, and init says so)"
+		flag --workspace help="Ticket workspace/org (Plane workspace; blank for Trello)" {
+			arg <WORKSPACE>
+		}
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag "-f --force" help="Allow replacing an existing registry entry, re-rendering files, and renaming an already-registered project"
+		flag "-y --yes" help="Apply every proposed operation without prompting"
+		flag --no-tui help="Disable interactive prompts" negate=--tui
+		flag --json help="Output machine-parseable JSON"
+		arg "[name]" help="Project display name" required=#false
+	}
+	cmd list help="List projects in the pjangler registry" {
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag --json help="Output machine-parseable JSON"
+	}
+	cmd show help="Read the authoritative project manifest and its registry status" {
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag --json help="Output machine-parseable JSON"
+		arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+	}
+	cmd remove help="Remove a project from the pjangler registry (the repo and its board are left alone)" {
+		alias rm
+		flag --apply help="Write the removal (default is a dry run)"
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag --json help="Output machine-parseable JSON"
+		arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+	}
+	cmd link help="Bind the project to an existing board, reading its identity back from the provider" {
+		flag --apply help="Write the binding (default is a dry run)"
+		flag --workspace help="Workspace to look the board up in (default: the record's workspace)" {
+			arg <WORKSPACE>
+		}
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag --json help="Output machine-parseable JSON"
+		arg <project-or-board-id> help="Project ID, or board UUID when using the current repository"
+		arg "[board-id]" help="Provider board UUID when a project ID is supplied" required=#false
+	}
+	cmd rename help="Rename a project: one key becomes the project ID and the board identifier, across registry, manifest and provider" {
+		flag --apply help="Write the rename (default is a dry run)"
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag --json help="Output machine-parseable JSON"
+		arg <old-id> help="Current project ID"
+		arg <new-id> help="New project ID; also becomes the board identifier, upper-cased (1-12 lowercase letters/digits)"
+	}
+	cmd identity help="Read board identifiers back from the provider and repair the registries" {
+		flag --all help="Reconcile every agent in the Hermes fleet registry"
+		flag --apply help="Write the repairs (default is a dry-run diff)"
+		flag --json help="Output machine-parseable JSON"
+		flag --hermes-registry help="Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)" {
+			arg <HERMES_REGISTRY>
+		}
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+	}
+	cmd doctor help="Validate the current project manifest and its registry entry" {
+		flag --all help="Validate every registered project"
+		flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+			arg <REGISTRY>
+		}
+		flag --json help="Output machine-parseable JSON"
+		arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+	}
+}
+cmd migrate-project-status help="Preview or apply the explicit registry-only project status backfill to active" {
+	flag --registry help="Explicit project registry service URL (no default or YAML adapter)" required=#true {
+		arg <REGISTRY>
+	}
+	flag --apply help="Change registry statuses; default is read-only preview"
+	flag --json help="Output machine-parseable JSON"
+}
+cmd list help="List projects in the pjangler registry" {
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+}
+cmd info help="Read the authoritative project manifest and its registry status" {
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+}
+cmd remove help="Remove a project from the pjangler registry (the repo and its board are left alone)" {
+	alias rm
+	flag --apply help="Write the removal (default is a dry run)"
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+}
+cmd link help="Bind the project to an existing board, reading its identity back from the provider" {
+	flag --apply help="Write the binding (default is a dry run)"
+	flag --workspace help="Workspace to look the board up in (default: the record's workspace)" {
+		arg <WORKSPACE>
+	}
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg <project-or-board-id> help="Project ID, or board UUID when using the current repository"
+	arg "[board-id]" help="Provider board UUID when a project ID is supplied" required=#false
+}
+cmd rename help="Rename a project: one key becomes the project ID and the board identifier, across registry, manifest and provider" {
+	flag --apply help="Write the rename (default is a dry run)"
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg <old-id> help="Current project ID"
+	arg <new-id> help="New project ID; also becomes the board identifier, upper-cased (1-12 lowercase letters/digits)"
+}
+cmd identity help="Read board identifiers back from the provider and repair the registries" {
+	flag --all help="Reconcile every agent in the Hermes fleet registry"
+	flag --apply help="Write the repairs (default is a dry-run diff)"
+	flag --json help="Output machine-parseable JSON"
+	flag --hermes-registry help="Hermes agents registry override (default: ~/.hermes/agents-registry.yaml)" {
+		arg <HERMES_REGISTRY>
+	}
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+}
+cmd doctor help="Validate the current project manifest and its registry entry" {
+	flag --all help="Validate every registered project"
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+}
+cmd import help="Adopt a repository as a submodule and enroll its canonical project path" {
+	flag --name help="Destination directory and submodule name (default: repository basename)" {
+		arg <NAME>
+	}
+	flag --dry-run help="Explain the adoption without moving or enrolling files"
+	flag --registry help="Project registry service URL" {
+		arg <REGISTRY>
+	}
+	flag --bindings-home help="Home containing executable/service bindings (default: current user's home)" {
+		arg <BINDINGS_HOME>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg <source> help="Local checkout, github.com/owner/repo or Git URL"
+}
+cmd reindex help="Refresh the project index from authoritative manifests" {
+	flag --all help="Refresh every manifest already known to the registry"
+	flag --receipt help="Rebuild discovery from a migration receipt" {
+		arg <RECEIPT>
+	}
+	flag --registry help="Registry service URL (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg "[project-id]" help="Canonical project ID (defaults to the current repository)" required=#false
+}
+cmd recipe subcommand_required=#true help="Manage pjangler recipes" {
+	cmd list help="List all available recipes"
+	cmd describe help="Show detailed information about a recipe" {
+		arg <name> help="Recipe name"
+	}
+	cmd run help="Execute a specific recipe" {
+		flag --dry-run help="Preview changes without writing files"
+		flag --json help="Print the structured recipe result, including optional extensions"
+		flag "-f --force" help="Overwrite existing files"
+		arg <name> help="Recipe name"
+	}
+}
+cmd command subcommand_required=#true help="Manage pjangler commands" {
+	alias cmd
+	cmd list help="List all available commands" {
+		flag "-g --group" help="Group commands by category"
+	}
+	cmd describe help="Show detailed information about a command" {
+		arg <name> help="Command name"
+	}
+	cmd create help="Create a new command from template (placeholder for STORY-005)" {
+		flag "-t --template" help="Template type (toml, json, yaml, dockerfile)" {
+			arg <TEMPLATE>
+		}
+		flag "-m --model" help="LLM model to use (OpenRouter)" {
+			arg <MODEL>
+		}
+		arg <name> help="Command name"
+		arg <prompt> help="Description of what the command should do"
+	}
+}
+cmd audit help="Deterministic parity audit against 33god project standard" {
+	flag --profile help="Audit profile, e.g. momo-lifecycle-plane (opt-in; does not affect default audit)" {
+		arg <PROFILE>
+	}
+	flag --rules help="Comma-separated rule ids; report only these (an unknown id is an error, never an empty pass)" {
+		arg <RULES>
+	}
+	flag --live help="Run credentialed live checks for supported profiles (only affects supported profiles such as momo-lifecycle-plane)"
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg "[repo]" help="Path to repo to audit (default: cwd)" required=#false
+}
+cmd migrate help="Idempotent migration recipe for a parity rule (or open the rule selector)" {
+	flag --all help="Apply every migration recipe in order"
+	flag --dry-run help="Preview changes without writing files"
+	flag --accept-registry-matches help="Retired: refuses and names the reviewed path instead (pj skills migrate --project <repo> [--apply])"
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	arg "[rule-id]" help="Rule ID to migrate (omit to open interactive rule selector)" required=#false
+	arg "[repo]" help="Path to repo (default: cwd)" required=#false
+}
+cmd describe help="Describe the current project (for AI context)" {
+	flag --registry help="Registry service URL or fixture path (default: http://localhost:8764)" {
+		arg <REGISTRY>
+	}
+	flag --json help="Output machine-parseable JSON"
+	flag "-i --interactive" help="Tick off fixable findings and apply them"
+	arg "[repo]" help="Path to the repo to describe (default: cwd)" required=#false
+}
+cmd skills help="Run the Skillex CLI on PATH (SKILLEX_BIN, PATH, then the mise shim); every argument passes through (e.g. pj skills migrate --project <repo>)" {
+	arg "[args]…" help="skillex command and options, passed through unchanged" required=#false var=#true
+}
+cmd crank subcommand_required=#true help="Crank: one Candybar-clocked officer per live interactive agent session, driven by the project's crank block" {
+	cmd status help="This project's crank policy (with where each value comes from) and its live crank sessions" {
+		flag --json help="Emit JSON"
+	}
+	cmd enable help="Turn crank ON for this project (writes .project.json crank.enabled) and attach its live agent sessions; --global sets the install default" {
+		flag --interval help="How often each session is cranked: 5m|15m|1h|6h|1d or any <N>m/<N>h/1d (asked in a terminal when omitted)" {
+			arg <INTERVAL>
+		}
+		flag --global help="Set enabled_by_default in the global crank.toml instead"
+		flag --no-attach help="Only write the policy; sessions attach at their next start" negate=--attach
+	}
+	cmd disable help="Turn crank OFF for this project and end its live cranks; --global clears the install default" {
+		flag --global help="Set enabled_by_default = false in the global crank.toml instead"
+	}
+	cmd interval help="Set this project's crank interval (<N>m, <N>h, 1d), or 'default' to follow the global default; --global sets that default" {
+		flag --global help="Set default_interval in the global crank.toml"
+		arg <interval>
+	}
+	cmd config help="Read or edit the crank block: config | config get <key> | config set <key> <value> | config unset <key>. Project keys: enabled, interval, prompt, target, rules; --global keys: enabled_by_default, default_interval, zellij_session, officer_profile, officer_max_turns, prompt" {
+		flag --global help="Edit the install-wide crank.toml instead of .project.json"
+		flag --json help="Emit JSON"
+		arg "[action]" required=#false
+		arg "[key]" required=#false
+		arg "[value]" required=#false
+	}
+	cmd sessions help="Live crank sessions (one per agent session): this project's, or --all" {
+		alias list
+		flag --all help="Every project"
+		flag --json help="Emit JSON"
+	}
+	cmd attach help="Bind a crank to an agent session. --hook reads a SessionStart payload (hook-hub); otherwise the agent session this command was started from" {
+		flag --hook help="Hook mode: payload on stdin, BB_HOOK_* env; never fails the hook"
+		flag --cli help="Agent CLI (claude, codex, opencode, kimi, …)" {
+			arg <CLI>
+		}
+		flag --session-id help="Native session id" {
+			arg <SESSION_ID>
+		}
+		flag --pid help="Agent process id" {
+			arg <PID>
+		}
+		flag --force help="Attach even when the project's crank is off"
+	}
+	cmd detach help="End a crank: by binding name, --session-id, or (--hook) the SessionEnd payload's session" {
+		flag --hook help="Hook mode: SessionEnd payload on stdin, BB_HOOK_* env; never fails the hook"
+		flag --session-id help="End every crank of this native session" {
+			arg <SESSION_ID>
+		}
+		flag --reason help=explicit|session_end|superseded|disabled|pane_closed|orphan_reaped default=explicit {
+			arg <REASON>
+		}
+		arg "[binding]" required=#false
+	}
+	cmd reap help="End every crank whose agent process is gone, announcing each as bloodbank.crank.binding.ended reason=orphan_reaped" {
+		flag --json help="Emit JSON"
+	}
+	cmd fire help="One crank fire (Candybar runs this): verify the session is alive, then run the crank-pane engine" {
+		arg <binding>
+	}
+	cmd log help="This project's crank engine log: what each fire saw and did (newest last)" {
+		flag --tail help="Show only the last N rows" default="20" {
+			arg <TAIL>
+		}
+		flag --all help="Every project"
+	}
+	cmd tui help="Full-screen crank dashboard: project toggle, interval, live sessions with last/next fire, log"
+	cmd panes help="Read-only inventory of the live agent panes in this zellij session: pane -> pid -> agent CLI -> session id/status (from /proc, not tab names)" {
+		flag --json help="Emit the inventory as JSON"
+		flag --all help="Also list terminal panes that run no agent"
+	}
+}

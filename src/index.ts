@@ -493,6 +493,10 @@ async function runRecipeSubsystem(name: string, options: { force?: boolean; dryR
 
 const program = new Command();
 const commandArgs = process.argv.slice(2);
+if (commandArgs.includes("--usage-spec") && !commandArgs.slice(0, commandArgs.indexOf("--usage-spec")).includes("--")) {
+  process.stdout.write(readFileSync(new URL("./pj.usage.kdl", import.meta.url), "utf8"));
+  process.exit(0);
+}
 program.exitOverride();
 program.configureOutput({
   writeErr: (text) => { if (!isNotebookJsonInvocation(commandArgs)) process.stderr.write(text); },
