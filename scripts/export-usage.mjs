@@ -9,6 +9,18 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 
+// Only defaults equal to the invocation directory are cwd-relative. Preserve
+// literal numeric/string defaults and package version so real drift still fails.
+function portableDefaults(node) {
+  for (const arg of node.args ?? []) {
+    if (arg.default?.length === 1 && arg.default[0] === process.cwd()) {
+      arg.default = ['.'];
+      arg.help = `${arg.help ?? ''} (default: current working directory)`.trim();
+    }
+  }
+  for (const child of node.cmds ?? []) portableDefaults(child);
+}
+
 const dir = new URL('../dist/', import.meta.url).pathname;
 const dispatch = 'await program.parseAsync();';
 try {
@@ -36,6 +48,7 @@ try {
     }
   }
   restore(program, spec);
+  portableDefaults(spec);
   const kdl = '// Static snapshot of src/index.ts Commander registrations; regenerate with node scripts/export-usage.mjs\n' + renderKDL(spec);
   const target = new URL('../pj.usage.kdl', import.meta.url);
   if (process.argv.includes('--check')) {
@@ -52,8 +65,9 @@ try {
     } finally {
       rmSync(probePath, { force: true });
     }
-  } else writeFileSync(target, kdl);
-  console.log('pj usage snapshot matches parser');
+  } else if (process.argv.includes('--stdout')) process.stdout.write(kdl);
+  else writeFileSync(target, kdl);
+  if (!process.argv.includes('--stdout')) console.log('pj usage snapshot matches parser');
 } finally {
   rmSync(join(dir, 'usage-parser.mjs'), { force: true });
 }
