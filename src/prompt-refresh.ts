@@ -3,7 +3,7 @@
 // pjangler prompt's 33GOD pipeline segments (see ./prompt-pipeline.ts).
 //
 // `pjangler-prompt` spawns this, unref'd, whenever its cache is stale, and never
-// waits for it. It computes the two slow facts and atomically replaces the
+// waits for it. It computes the slow facts and atomically replaces the
 // cache file, then releases the lock the prompt took:
 //
 //   candybars  GET $CANDYBAR_API_URL/candybars (default http://127.0.0.1:8700),
@@ -294,7 +294,8 @@ export function readPmIdentity(root: string, env: NodeJS.ProcessEnv = process.en
   if (out.enrolled === false) return { enrolled: false };
   const version = out.manifest?.version;
   if (out.enrolled !== true || !Number.isInteger(version) || !Number.isInteger(out.satisfied) || !Number.isInteger(out.total)) return null;
-  return { enrolled: true, version, satisfied: out.satisfied, total: out.total };
+  const status = typeof out.status === "string" && out.status !== "active" && /^[a-z]{1,16}$/.test(out.status) ? { status: out.status } : {};
+  return { enrolled: true, version, satisfied: out.satisfied, total: out.total, ...status };
 }
 
 async function main(): Promise<void> {

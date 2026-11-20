@@ -191,7 +191,8 @@ it (`flume identity manifest <pm> --json`, run by the background refresher):
   many of that manifest's required points it holds (v1: 1Password Identity item,
   own AAI gateway key, native Plane identity, private inbox, voice, avatar;
   Telegram is optional and not counted). `flume identity manifest <pm>` lists
-  which point is missing.
+  which point is missing. A PM that is not `active` gets its status appended
+  (`id v1 5/6 suspended`).
 - `id none` — the PM was never enrolled (no company identity), or Flume does not
   know the employee at all.
 - nothing — not known yet (first prompt in a new place) or Flume did not answer.

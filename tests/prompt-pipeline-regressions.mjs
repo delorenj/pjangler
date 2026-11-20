@@ -653,6 +653,7 @@ await test("the PM segment: @bot(PM), then its identity against the manifest; no
   assert.equal(formatPm(pm, { enrolled: true, version: 1, satisfied: 5, total: 6 }), "@tolt_pm_bot(PM) id v1 5/6");
   assert.equal(formatPm({ agentId: "tolt-pm" }, { enrolled: false }), "tolt-pm(PM) id none", "no bot: named; never enrolled: said so");
   assert.equal(formatIdentity({ enrolled: true, version: 2, satisfied: 7, total: 7 }), "id v2 7/7");
+  assert.equal(formatIdentity({ enrolled: true, version: 1, satisfied: 5, total: 6, status: "suspended" }), "id v1 5/6 suspended");
   const base = { root: "/x", slug: "tolt", identifier: "TOLT", age: "3m", active: true };
   assert.equal(formatPromptLine({ ...base, pm, identity: { enrolled: true, version: 1, satisfied: 6, total: 6 }, candybars: { project: 1, total: 2 } }),
     `tolt (TOLT) · 3m · @tolt_pm_bot(PM) id v1 6/6 · ${CANDYBAR_GLYPH} 1/2`);
@@ -685,12 +686,16 @@ await test("readPmIdentity asks flume for the PM's manifest; unknown employee is
   const bin = join(workspace, "fake-flume");
   const flume = (body, status = 0) => writeFileSync(bin, `#!/bin/sh\n[ "$1 $2 $3 $4" = "identity manifest idp-pm --json" ] || exit 9\ncat <<'JSON'\n${body}\nJSON\nexit ${status}\n`, { mode: 0o755 });
   const env = hermeticEnv({ FLUME_BIN: bin });
-  flume(JSON.stringify({ ok: true, enrolled: true, manifest: { version: 1, latest: 1, adopted: null }, satisfied: 5, total: 6 }));
+  flume(JSON.stringify({ ok: true, enrolled: true, status: "active", manifest: { version: 1, latest: 1, adopted: null }, satisfied: 5, total: 6 }));
   assert.deepEqual(readPmIdentity(proj, env), { enrolled: true, version: 1, satisfied: 5, total: 6 });
+  flume(JSON.stringify({ ok: true, enrolled: true, status: "suspended", manifest: { version: 1 }, satisfied: 4, total: 6 }));
+  assert.deepEqual(readPmIdentity(proj, env), { enrolled: true, version: 1, satisfied: 4, total: 6, status: "suspended" });
   flume(JSON.stringify({ ok: true, enrolled: false, manifest: { version: 1 }, satisfied: 2, total: 6 }));
   assert.deepEqual(readPmIdentity(proj, env), { enrolled: false });
   flume(JSON.stringify({ ok: false, error: "Employee not found: idp-pm" }), 1);
   assert.deepEqual(readPmIdentity(proj, env), { enrolled: false }, "nobody hired this PM: no identity");
+  flume(JSON.stringify({ ok: false, error: "Agent registry not readable: /nowhere/agents-registry.yaml" }), 1);
+  assert.equal(readPmIdentity(proj, env), null, "no registry is unknown, not 'none'");
   flume(JSON.stringify({ ok: false, error: "Registry is not valid YAML" }), 1);
   assert.equal(readPmIdentity(proj, env), null, "a broken registry is unknown, not 'none'");
   flume("not json");

@@ -110,7 +110,7 @@ export interface PipelineCache {
  */
 export type IdentitySummary =
   | { enrolled: false }
-  | { enrolled: true; version: number; satisfied: number; total: number };
+  | { enrolled: true; version: number; satisfied: number; total: number; /** Present only when not `active`. */ status?: string };
 
 function isIdentity(value: unknown): value is IdentitySummary {
   const v = value as Record<string, unknown> | null;
@@ -118,12 +118,14 @@ function isIdentity(value: unknown): value is IdentitySummary {
   if (v.enrolled === false) return true;
   const count = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
   return v.enrolled === true && Number.isInteger(v.version) && (v.version as number) > 0
-    && count(v.satisfied) && count(v.total) && (v.satisfied as number) <= (v.total as number);
+    && count(v.satisfied) && count(v.total) && (v.satisfied as number) <= (v.total as number)
+    && (v.status === undefined || (typeof v.status === "string" && /^[a-z]{1,16}$/.test(v.status)));
 }
 
-/** `id v1 5/6` (manifest version, required points held/required), or `id none` for a PM never enrolled. */
+/** `id v1 5/6` (manifest version, required points held/required; `id v1 5/6 suspended` when not active), or `id none` for a PM never enrolled. */
 export function formatIdentity(identity: IdentitySummary): string {
-  return identity.enrolled ? `id v${identity.version} ${identity.satisfied}/${identity.total}` : "id none";
+  if (!identity.enrolled) return "id none";
+  return `id v${identity.version} ${identity.satisfied}/${identity.total}${identity.status ? ` ${identity.status}` : ""}`;
 }
 
 /** `$PJ_PROMPT_CACHE_DIR`, else `$XDG_CACHE_HOME/pjangler/prompt`, else `~/.cache/pjangler/prompt`. */
