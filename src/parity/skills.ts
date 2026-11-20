@@ -20,6 +20,14 @@ import type { AuditFinding, Context } from "./rules";
 import { planSkillRoots, repoOwnsPath, skillContentIdentical, skillRootsSummary, SUPPORTED_SKILLS_ALIASES, type SkillRootIncoming } from "./skill-roots";
 import { shellQuotePath } from "../skills/cli";
 
+/** A manifest that selects a set (`"set": "name"`, skillex >= 0.4.9; the legacy `sets`
+ * array is still recognised so an unnormalised manifest is never mistaken for none). */
+export function declaresSet(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const { set, sets } = raw as { set?: unknown; sets?: unknown };
+  return (typeof set === "string" && set.length > 0) || (Array.isArray(sets) && sets.length > 0);
+}
+
 /** The Skillex CLI passthrough, as an operator types it (src/skills/cli.ts). */
 export const PJ_SKILLS = "pj skills";
 
@@ -249,7 +257,7 @@ export async function handOffInstallerSkills(ctx: Context): Promise<InstallerSki
     try { declaration = await readSelectionManifest(options.project); }
     catch (error) { return skip(`the project skills manifest is invalid (${error instanceof Error ? error.message : String(error)})`); }
     if (!declaration.exists || !declaration.raw) return { ...none, apply: async () => {} };
-    if (Array.isArray(declaration.raw.sets) && declaration.raw.sets.length) {
+    if (declaresSet(declaration.raw)) {
       return skip("a set replaces the project skills root, so installer-provided skills cannot be excluded beside it");
     }
     let receipt: Awaited<ReturnType<typeof readActivationReceipt<{ links?: Record<string, { kind?: string }>; pending?: unknown }>>>;

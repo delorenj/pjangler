@@ -83,7 +83,7 @@ test("a declared set exclusively replaces the root and exclusive packs use canon
     // 2026-10-10 contract: a set is an exclusive root replacement — no member
     // masking (the old "set filters" exclude form is retired), so the project
     // root becomes a symlink to the set's skill root with every member live.
-    const setManifest = '{"inherit_global":false,"sets":["coding"]}\n';
+    const setManifest = '{"inherit_global":false,"set":"coding"}\n';
     put(join(f.project, ".agents", "skills.json"), setManifest);
     assert.equal(f.migrate().exit, 0);
     assert.equal(realpathSync(join(f.project, ".agents", "skills")), join(f.registry, "sets", "coding"));

@@ -214,7 +214,7 @@ test("PJAN-176: nothing is excluded beside a set (skillex refuses exclusions the
   const f = await fixture();
   try {
     f.install();
-    put(join(f.project, ".agents", "skills.json"), `${JSON.stringify({ sets: ["team"] })}\n`);
+    put(join(f.project, ".agents", "skills.json"), `${JSON.stringify({ set: "team" })}\n`);
     const before = f.manifestText();
     const handoff = await handOffInstallerSkills(f.ctx);
     assert.match(handoff.skipped ?? "", /a set replaces the project skills root/);
@@ -260,7 +260,8 @@ test("PJAN-176: an invalid project manifest is skillex's finding, never a handof
     assert.match(handoff.skipped ?? "", /project skills manifest is invalid/);
     const finding = await f.audit();
     assert.equal(finding.status, "fail");
-    assert.match(finding.details.join("\n"), /E_SET_CONFLICT/);
+    // skillex >= 0.4.9 rejects the legacy sets array outright (E_LEGACY_FIELD).
+    assert.match(finding.details.join("\n"), /E_LEGACY_FIELD/);
     assert.equal(f.manifestText(), before);
   } finally { f.close(); }
 });

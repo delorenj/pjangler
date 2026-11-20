@@ -215,8 +215,9 @@ function stringLiterals() {
 
 test("pj skills runs the skillex CLI SKILLEX_BIN names, argv untouched", () => {
   const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const pinned = manifest.dependencies["@delorenj/skillex"];
-  assert.equal(lockedSkillex.version, pinned, "node_modules must hold exactly the skillex library pjangler depends on");
+  // Never pinned: the dependency tracks the latest release; the lockfile holds what it resolved.
+  assert.equal(manifest.dependencies["@delorenj/skillex"], "latest", "skillex is never pinned: a pin forks the skill engine");
+  const pinned = lockedSkillex.version;
   assert.deepEqual(lib.resolveSkillex(env), { bin: lockedSkillex.bin, source: "SKILLEX_BIN" });
 
   const version = pj(["skills", "--version"]);

@@ -74,11 +74,11 @@ try {
   const install = join(tmp, "installed");
   const args = ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", tarball];
   // Prepublication acceptance can supply the exact prepared core artifact.
-  // This only affects the isolated fixture; the package dependency stays a registry pin.
+  // This only affects the isolated fixture; the package dependency is never pinned.
   if (process.env.PJ_SKILLEX_TEST_TARBALL) args.push(process.env.PJ_SKILLEX_TEST_TARBALL);
   run("npm", args);
   const installed = join(install, "node_modules", "@delorenj", "pjangler");
-  assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).dependencies["@delorenj/skillex"], "0.4.4");
+  assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).dependencies["@delorenj/skillex"], "latest", "skillex is never pinned: a pin forks the skill engine");
   const results = [];
   for (const [label, cli] of [["source", join(root, "dist", "index.js")], ["installed", join(installed, "dist", "index.js")]]) {
     const project = join(tmp, `${label} project`);

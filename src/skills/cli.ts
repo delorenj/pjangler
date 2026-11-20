@@ -42,7 +42,7 @@ export interface ResolvedSkillex {
 
 export class SkillexNotFoundError extends Error {
   constructor(readonly tried: readonly string[]) {
-    super(`no skillex CLI found (set SKILLEX_BIN, or install @delorenj/skillex: mise use -g npm:@delorenj/skillex@latest); looked at: ${tried.join("; ")}`);
+    super(`no skillex CLI found (set SKILLEX_BIN, or install the latest @delorenj/skillex, never a pinned one: npm install -g @delorenj/skillex@latest, or on a 33GOD host 33god-platform/scripts/cli-launchers.py upgrade @delorenj/skillex); looked at: ${tried.join("; ")}`);
     this.name = "SkillexNotFoundError";
   }
 }

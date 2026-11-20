@@ -9,7 +9,7 @@ import {
   type BmadUpdateScope, type ScopedBackup,
 } from "./update-scope";
 import { enableSelection, PROJECT_CLI_ALIASES, readSelectionManifest, showSkill } from "@delorenj/skillex";
-import { PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
+import { declaresSet, PJ_SKILLS, skillCoreOptions, skillDiagnostics } from "../parity/skills";
 import type { Context, MigrationRuleResult, RecipeOwnedCheck } from "../parity/rules";
 
 /** PJangler's callable boundary; an owner adapter translates its public API. */
@@ -338,7 +338,7 @@ export async function g33Enrollability(ctx: Context): Promise<G33Enrollability> 
   // A set replaces the project skills root and enabling beside it derives a new
   // set directory inside the shared catalog: not ours to write (see handOffInstallerSkills).
   const declaration = await readSelectionManifest(skillCoreOptions(ctx).project);
-  if (Array.isArray(declaration.raw?.sets) && declaration.raw.sets.length) {
+  if (declaresSet(declaration.raw)) {
     return skipped("skipped: a set replaces the project skills root", [`Enrolling would derive a new set inside the skills catalog. ${enrollRetry()}`]);
   }
   return { enrollable: true, reason: "eligible 33god project has no companion adapter" };

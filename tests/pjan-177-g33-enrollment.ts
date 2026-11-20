@@ -289,7 +289,7 @@ try {
   {
     // A set replaces the skills root and enabling beside it derives a set dir in the shared catalog.
     const { dir, ctx } = direct("sets", linked);
-    put(join(dir, ".agents", "skills.json"), '{"inherit_global":false,"sets":["myset"]}');
+    put(join(dir, ".agents", "skills.json"), '{"inherit_global":false,"set":"myset"}');
     const catalogRoot = process.env.PJ_SKILLS_REGISTRY_ROOT!;
     put(join(catalogRoot, "all-skills", "set-member", "SKILL.md"), "---\nname: set-member\ndescription: Scratch set member\n---\n");
     mkdirSync(join(catalogRoot, "sets", "myset"), { recursive: true });
