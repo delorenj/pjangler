@@ -97,6 +97,7 @@ const SUITES = [
   "tests/pjan-135-skill-roots-property.mjs",
   "tests/pjan-135-guidance-commands-regressions.mjs",
   "tests/pjan-135-mise-hooks-regressions.mjs",
+  "tests/skillex-never-pinned-regressions.mjs",
   "tests/pjan-135-mise-rewrite-regressions.mjs",
   "tests/pjan-141-142-skills-parity-regressions.mjs",
   "tests/pjan-176-bmad-installer-skills-regressions.mjs",

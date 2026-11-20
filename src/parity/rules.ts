@@ -3375,6 +3375,26 @@ function refreshOptionalTemplateScripts(ctx: Context): string[] {
 }
 
 
+/** The one Skillex is never pinned: a per-repo version forks the skill engine. Any mise
+ * tools entry for the package, top-level or inside a task, must be absent or "latest". */
+export function skillexPinIssues(parsed: TomlTable): string[] {
+  const PKG = "npm:@delorenj/skillex";
+  const versionOf = (spec: unknown): string | undefined =>
+    typeof spec === "string" ? spec : isTable(spec) && typeof spec.version === "string" ? spec.version : undefined;
+  const issues: string[] = [];
+  const check = (where: string, tools: unknown) => {
+    if (!isTable(tools) || !(PKG in tools)) return;
+    const version = versionOf(tools[PKG]);
+    if (version !== "latest") {
+      issues.push(`${where} pins ${PKG} to ${JSON.stringify(version ?? tools[PKG])}: Skillex is never pinned (drop it and use the canonical skillex on PATH, or set "latest")`);
+    }
+  };
+  check("[tools]", parsed.tools);
+  const tasks = isTable(parsed.tasks) ? parsed.tasks : {};
+  for (const [name, task] of Object.entries(tasks)) if (isTable(task)) check(`tasks."${name}".tools`, task.tools);
+  return issues;
+}
+
 export function createMiseChecks(): RecipeOwnedCheck[] {
 return [
   {
@@ -3414,6 +3434,7 @@ return [
         if (!isDeepStrictEqualLoose(tasks[LINK_AGENTFILES_TASK], managed.link.value)) {
           toml.push(`tasks."${LINK_AGENTFILES_TASK}" must run the managed link-agentfiles.sh`);
         }
+        manual.push(...skillexPinIssues(parsed));
       }
       toml.push(...legacyHookScriptIssues(text));
       toml.push(...retiredTaskNameIssues(text));
