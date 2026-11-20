@@ -65,6 +65,7 @@ const GATES = [
  * place and can never be silently dropped from the chain.
  */
 const SUITES = [
+  "tests/usage-portability.test.mjs",
   "tests/pjan-165-import-regressions.mjs",
   "tests/pjan-165-import-receipt-recovery.mjs",
   "tests/pjan-80-cli-regressions.mjs",

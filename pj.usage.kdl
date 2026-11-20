@@ -1,7 +1,7 @@
 // Static snapshot of src/index.ts Commander registrations; regenerate with node scripts/export-usage.mjs
 name pj
 bin pj
-version "1.5.60"
+version "1.5.61"
 about "Project subsystem bootstrapper CLI"
 usage "[options] [command]"
 flag "-V --version" help="output the version number"
