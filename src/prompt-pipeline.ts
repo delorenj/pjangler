@@ -98,11 +98,32 @@ export interface PipelineCache {
   /** null = Redis did not answer (the segment is hidden, never guessed). */
   crank: CrankState | null;
   /**
-   * The hermes-agent-template commit Flume currently pins (its committed gitlink). A PM whose
-   * role manifest records an older `template_rev` is shown as behind. Absent/null = not known, and
-   * the PM segment then shows the desk's own revision without judging it.
+   * The project PM's company identity, as `flume identity manifest <pm> --json` judged it. Absent/null =
+   * not known (no PM, Flume missing or silent): the PM segment then shows no identity part at all.
    */
-  templatePin?: string | null;
+  identity?: IdentitySummary | null;
+}
+
+/**
+ * What the prompt says about the PM's company identity. `enrolled: false` is a known answer ("id none");
+ * an enrolled PM carries the identity-manifest version it is judged against and its required points.
+ */
+export type IdentitySummary =
+  | { enrolled: false }
+  | { enrolled: true; version: number; satisfied: number; total: number };
+
+function isIdentity(value: unknown): value is IdentitySummary {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return false;
+  if (v.enrolled === false) return true;
+  const count = (n: unknown) => Number.isInteger(n) && (n as number) >= 0;
+  return v.enrolled === true && Number.isInteger(v.version) && (v.version as number) > 0
+    && count(v.satisfied) && count(v.total) && (v.satisfied as number) <= (v.total as number);
+}
+
+/** `id v1 5/6` (manifest version, required points held/required), or `id none` for a PM never enrolled. */
+export function formatIdentity(identity: IdentitySummary): string {
+  return identity.enrolled ? `id v${identity.version} ${identity.satisfied}/${identity.total}` : "id none";
 }
 
 /** `$PJ_PROMPT_CACHE_DIR`, else `$XDG_CACHE_HOME/pjangler/prompt`, else `~/.cache/pjangler/prompt`. */
@@ -163,7 +184,7 @@ export function readPipelineCache(path: string, root: string): PipelineCache | u
       root: parsed.root,
       candybars: isCounts(parsed.candybars) ? parsed.candybars : null,
       crank: isCrank(parsed.crank) ? parsed.crank : null,
-      ...(typeof parsed.templatePin === "string" && /^[0-9a-f]{40}$/.test(parsed.templatePin) ? { templatePin: parsed.templatePin } : {}),
+      ...(isIdentity(parsed.identity) ? { identity: parsed.identity } : {}),
     };
   } catch {
     return undefined;
@@ -171,12 +192,12 @@ export function readPipelineCache(path: string, root: string): PipelineCache | u
 }
 
 /** The segments a cache is fit to show at `nowMs`: nothing once it has expired. */
-export function freshSegments(cache: PipelineCache | undefined, nowMs: number): Pick<PipelineCache, "candybars" | "crank" | "templatePin"> {
+export function freshSegments(cache: PipelineCache | undefined, nowMs: number): Pick<PipelineCache, "candybars" | "crank" | "identity"> {
   if (!cache) return { candybars: null, crank: null };
   const age = nowMs - cache.writtenAtMs;
   // A clock that went backwards (or a cache from the future) is not trusted either.
   if (age > PIPELINE_EXPIRE_AFTER_MS || age < -PIPELINE_REFRESH_AFTER_MS) return { candybars: null, crank: null };
-  return { candybars: cache.candybars, crank: cache.crank, ...(cache.templatePin ? { templatePin: cache.templatePin } : {}) };
+  return { candybars: cache.candybars, crank: cache.crank, ...(cache.identity ? { identity: cache.identity } : {}) };
 }
 
 export function needsRefresh(cache: PipelineCache | undefined, nowMs: number): boolean {

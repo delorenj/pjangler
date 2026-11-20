@@ -32,7 +32,7 @@ writeFileSync(
   [
     `export * from ${JSON.stringify(join(root, "src/prompt-pipeline.ts"))};`,
     `export { formatPromptLine, formatPm, readProjectPm } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
-    `export { candybarProjectName, countCandybars, readArbiterFacts, readCandybars, readCrank, readTemplatePin, sweepCacheDir, tabOnSinceMs, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
+    `export { candybarProjectName, countCandybars, readArbiterFacts, readCandybars, readCrank, readPmIdentity, sweepCacheDir, tabOnSinceMs, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
     `export { encodeCommand, parseResp, redisPipeline, replyToHash } from ${JSON.stringify(join(root, "src/crank/resp.ts"))};`,
   ].join("\n"),
 );
@@ -50,8 +50,8 @@ const kit = await import(kitOut);
 const {
   PIPELINE_CACHE_VERSION, PIPELINE_REFRESH_AFTER_MS, PIPELINE_EXPIRE_AFTER_MS, PIPELINE_LOCK_STALE_MS,
   pipelineCacheDir, pipelineCachePath, readPipelineCache, freshSegments, needsRefresh,
-  formatCandybars, formatCrank, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine, formatPm, readProjectPm,
-  countCandybars, readArbiterFacts, readCandybars, readCrank, readTemplatePin, sweepCacheDir, writeCacheAtomically, candybarProjectName,
+  formatCandybars, formatCrank, formatIdentity, takeRefreshLock, CANDYBAR_GLYPH, maybeRefresh, formatPromptLine, formatPm, readProjectPm,
+  countCandybars, readArbiterFacts, readCandybars, readCrank, readPmIdentity, sweepCacheDir, writeCacheAtomically, candybarProjectName,
   formatSpan, formatCountdown, CRANK_STALL_AFTER_MS, CRANK_READ_TIMEOUT_MS,
   crankFromArbiter, readPaneCrank, zellijPane, tabOnSinceMs,
   encodeCommand, parseResp, redisPipeline, replyToHash,
@@ -646,17 +646,58 @@ await test("a stale cache spawns the detached refresher, which writes the cache 
 });
 
 
-await test("the PM segment: @bot(PM) ID [template rev], behind when Flume pins newer", () => {
-  const pin = "b5aa431d9a19c7ac6a9267539d2a70b5cee9ae27";
-  const rev = "c738f69db40a19b9f6c316b03b1c17edef9d0948";
-  const pm = { agentId: "tolt-pm", botUsername: "tolt_pm_bot", botId: "8467282336", templateRev: rev };
-  assert.equal(formatPm(pm), "@tolt_pm_bot(PM) 8467282336 [c738f69]");
-  assert.equal(formatPm(pm, rev), "@tolt_pm_bot(PM) 8467282336 [c738f69]");
-  assert.equal(formatPm(pm, pin), "@tolt_pm_bot(PM) 8467282336 [c738f69 ↑b5aa431]");
-  assert.equal(formatPm({ agentId: "tolt-pm" }, pin), "tolt-pm(PM) [?]", "no bot, no stamp: named, never guessed");
+await test("the PM segment: @bot(PM), then its identity against the manifest; nothing when unknown", () => {
+  const pm = { agentId: "tolt-pm", botUsername: "tolt_pm_bot" };
+  assert.equal(formatPm(pm), "@tolt_pm_bot(PM)", "identity unknown: no identity part, never guessed");
+  assert.equal(formatPm(pm, null), "@tolt_pm_bot(PM)");
+  assert.equal(formatPm(pm, { enrolled: true, version: 1, satisfied: 5, total: 6 }), "@tolt_pm_bot(PM) id v1 5/6");
+  assert.equal(formatPm({ agentId: "tolt-pm" }, { enrolled: false }), "tolt-pm(PM) id none", "no bot: named; never enrolled: said so");
+  assert.equal(formatIdentity({ enrolled: true, version: 2, satisfied: 7, total: 7 }), "id v2 7/7");
   const base = { root: "/x", slug: "tolt", identifier: "TOLT", age: "3m", active: true };
-  assert.equal(formatPromptLine({ ...base, pm, templatePin: pin, candybars: { project: 1, total: 2 } }),
-    `tolt (TOLT) · 3m · @tolt_pm_bot(PM) 8467282336 [c738f69 ↑b5aa431] · ${CANDYBAR_GLYPH} 1/2`);
+  assert.equal(formatPromptLine({ ...base, pm, identity: { enrolled: true, version: 1, satisfied: 6, total: 6 }, candybars: { project: 1, total: 2 } }),
+    `tolt (TOLT) · 3m · @tolt_pm_bot(PM) id v1 6/6 · ${CANDYBAR_GLYPH} 1/2`);
+});
+
+await test("the cache carries the PM identity; a malformed one degrades to absent and it expires with the rest", () => {
+  const path = join(workspace, "identity-cache.json");
+  const write = (identity) => writeFileSync(path, JSON.stringify({ ...cacheFile(), identity }));
+  write({ enrolled: true, version: 1, satisfied: 5, total: 6 });
+  assert.deepEqual(readPipelineCache(path, projectRoot).identity, { enrolled: true, version: 1, satisfied: 5, total: 6 });
+  write({ enrolled: false });
+  assert.deepEqual(readPipelineCache(path, projectRoot).identity, { enrolled: false });
+  for (const bad of [{ enrolled: true, version: 0, satisfied: 1, total: 6 }, { enrolled: true, version: 1, satisfied: 7, total: 6 }, { enrolled: true, version: 1 }, "v1 5/6", null]) {
+    write(bad);
+    const cache = readPipelineCache(path, projectRoot);
+    assert.ok(cache, "a bad identity never discards the cache");
+    assert.equal(cache.identity, undefined, JSON.stringify(bad));
+    assert.deepEqual(cache.candybars, { project: 3, total: 124 }, "the other segments survive");
+  }
+  write({ enrolled: true, version: 1, satisfied: 5, total: 6 });
+  const cache = readPipelineCache(path, projectRoot);
+  assert.deepEqual(freshSegments(cache, NOW).identity, { enrolled: true, version: 1, satisfied: 5, total: 6 });
+  assert.equal(freshSegments(cache, NOW + PIPELINE_EXPIRE_AFTER_MS + 1).identity, undefined);
+});
+
+await test("readPmIdentity asks flume for the PM's manifest; unknown employee is 'none', anything else unknown", () => {
+  const proj = join(workspace, "identity-proj");
+  mkdirSync(join(proj, "agents", "hermes", "pm"), { recursive: true });
+  writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "idp", agents: { "idp-pm": { role: "pm", role_dir: "agents/hermes/pm" } } }));
+  const bin = join(workspace, "fake-flume");
+  const flume = (body, status = 0) => writeFileSync(bin, `#!/bin/sh\n[ "$1 $2 $3 $4" = "identity manifest idp-pm --json" ] || exit 9\ncat <<'JSON'\n${body}\nJSON\nexit ${status}\n`, { mode: 0o755 });
+  const env = hermeticEnv({ FLUME_BIN: bin });
+  flume(JSON.stringify({ ok: true, enrolled: true, manifest: { version: 1, latest: 1, adopted: null }, satisfied: 5, total: 6 }));
+  assert.deepEqual(readPmIdentity(proj, env), { enrolled: true, version: 1, satisfied: 5, total: 6 });
+  flume(JSON.stringify({ ok: true, enrolled: false, manifest: { version: 1 }, satisfied: 2, total: 6 }));
+  assert.deepEqual(readPmIdentity(proj, env), { enrolled: false });
+  flume(JSON.stringify({ ok: false, error: "Employee not found: idp-pm" }), 1);
+  assert.deepEqual(readPmIdentity(proj, env), { enrolled: false }, "nobody hired this PM: no identity");
+  flume(JSON.stringify({ ok: false, error: "Registry is not valid YAML" }), 1);
+  assert.equal(readPmIdentity(proj, env), null, "a broken registry is unknown, not 'none'");
+  flume("not json");
+  assert.equal(readPmIdentity(proj, env), null);
+  assert.equal(readPmIdentity(proj, hermeticEnv({ FLUME_BIN: join(workspace, "no-such-flume") })), null, "flume missing: unknown");
+  writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "idp" }));
+  assert.equal(readPmIdentity(proj, env), null, "no PM: nothing to ask");
 });
 
 await test("the PM is read from the role manifest the project's agents entry names", () => {
@@ -681,16 +722,10 @@ await test("the PM is read from the role manifest the project's agents entry nam
     "other-pm": { role: "pm", role_dir: "agents/hermes/missing" },
     "tolt-pm": { role: "pm", role_dir: "agents/hermes/pm" },
   };
-  assert.deepEqual(readProjectPm(proj, "tolt", agents), {
-    agentId: "tolt-pm", botUsername: "tolt_pm_bot", botId: "8467282336", templateRev: "c738f69db40a19b9f6c316b03b1c17edef9d0948",
-  }, "<slug>-pm wins, and the Telegram bot_id is not the Slack one");
+  assert.deepEqual(readProjectPm(proj, "tolt", agents), { agentId: "tolt-pm", botUsername: "tolt_pm_bot" }, "<slug>-pm wins");
   assert.deepEqual(readProjectPm(proj, "zzz", { "other-pm": agents["other-pm"] }), { agentId: "other-pm" }, "a declared PM with no manifest on disk keeps its name");
   assert.equal(readProjectPm(proj, "tolt", { "tolt-director": agents["tolt-director"] }), undefined, "no PM, no segment");
   assert.equal(readProjectPm(proj, "tolt", undefined), undefined);
-});
-
-await test("the template pin is Flume's committed gitlink, null when Flume is absent", () => {
-  assert.equal(readTemplatePin({ FLUME_ROOT: join(workspace, "no-flume"), HOME: workspace }), null);
 });
 
 console.log(`prompt-pipeline: ${passed} passed`);

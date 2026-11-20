@@ -20,24 +20,26 @@
 //   next crank The tab's interval and newest beat row; the prompt does the countdown
 //              math at render time so it keeps moving between refreshes.
 //   stalled    The engine heartbeat (crank:engine scan_ms) is absent or older than CRANK_STALL_AFTER_MS.
-//   pin        The hermes-agent-template commit Flume pins (`HEAD:templates/hermes-agent` in
-//              $FLUME_ROOT, default ~/code/33GOD/flume), so the prompt can say a PM is behind it.
+//   identity   The project PM's company identity: `flume identity manifest <pm> --json` ($FLUME_BIN,
+//              default `flume` on PATH), reduced to the manifest version and required points held.
 //
 // A fact that cannot be read is written as null and the prompt hides that
 // segment. It is never guessed: "crank off" when Redis is down would be a lie.
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { contextFor, currentProjectNames } from "./crank/cli";
 import { canon, keyScopeOf, redis, snapshotCrank, storedTabKeys } from "./crank/index";
 import { redisEndpoint } from "./crank/redisEndpoint";
 import { redisPipeline, replyToHash } from "./crank/resp";
-import { CRANK_STALL_AFTER_MS, PIPELINE_CACHE_VERSION, zellijPane, type CandybarCounts, type CrankState, type PipelineCache } from "./prompt-pipeline";
+import { CRANK_STALL_AFTER_MS, PIPELINE_CACHE_VERSION, zellijPane, type CandybarCounts, type CrankState, type IdentitySummary, type PipelineCache } from "./prompt-pipeline";
+import { readProjectManifest, readProjectPm } from "./prompt-pm";
 
 const CANDYBAR_DEFAULT_API_URL = "http://127.0.0.1:8700";
 const CANDYBAR_TIMEOUT_MS = 3_000;
+/** `flume identity manifest` is a local read (~0.4s cold); past this it is treated as unknown. */
+const IDENTITY_TIMEOUT_MS = 5_000;
 const PROJECT_TAG_PREFIX = "project:";
 const CANDYBARS_DIR = ".candybars";
 const CANDYBAR_PROJECT_FILE = ".candybar.toml";
@@ -266,16 +268,33 @@ export function sweepCacheDir(dir: string, nowMs: number = Date.now(), keep?: st
   return removed;
 }
 
-/** The template commit Flume pins: its committed gitlink, never a worktree. null = unknown. */
-export function readTemplatePin(env: NodeJS.ProcessEnv = process.env): string | null {
-  const flume = env.FLUME_ROOT || join(env.HOME || homedir(), "code", "33GOD", "flume");
-  const result = spawnSync("git", ["--no-optional-locks", "-C", flume, "rev-parse", "HEAD:templates/hermes-agent"], {
+/**
+ * The project PM's company identity from `flume identity manifest <pm> --json` (local evidence only, ~0.4s).
+ * null = unknown: no PM, Flume missing, slow or answering something else. A PM Flume does not know is a known
+ * answer, `{ enrolled: false }`, because an employee nobody hired has no identity.
+ */
+export function readPmIdentity(root: string, env: NodeJS.ProcessEnv = process.env): IdentitySummary | null {
+  const { slug, agents } = readProjectManifest(root);
+  const pm = readProjectPm(root, slug, agents);
+  if (!pm) return null;
+  const result = spawnSync(env.FLUME_BIN || "flume", ["identity", "manifest", pm.agentId, "--json"], {
     encoding: "utf8",
-    timeout: 2_000,
+    timeout: IDENTITY_TIMEOUT_MS,
     stdio: ["ignore", "pipe", "ignore"],
+    env,
   });
-  const rev = result.status === 0 ? result.stdout.trim() : "";
-  return /^[0-9a-f]{40}$/.test(rev) ? rev : null;
+  let out: Record<string, any>;
+  try {
+    out = JSON.parse(result.stdout ?? "");
+  } catch {
+    return null;
+  }
+  if (out?.ok === false && typeof out.error === "string" && /^Employee not found/.test(out.error)) return { enrolled: false };
+  if (out?.ok !== true || result.status !== 0) return null;
+  if (out.enrolled === false) return { enrolled: false };
+  const version = out.manifest?.version;
+  if (out.enrolled !== true || !Number.isInteger(version) || !Number.isInteger(out.satisfied) || !Number.isInteger(out.total)) return null;
+  return { enrolled: true, version, satisfied: out.satisfied, total: out.total };
 }
 
 async function main(): Promise<void> {
@@ -286,8 +305,8 @@ async function main(): Promise<void> {
     // Inside a zellij pane the prompt reads crank straight from the arbiter, so the cache carries none.
     const candybars = await readCandybars(root);
     const crank = zellijPane(process.env) ? null : await readCrank(process.env, Date.now());
-    const templatePin = readTemplatePin();
-    writeCacheAtomically(cachePath, { v: PIPELINE_CACHE_VERSION, writtenAtMs: Date.now(), root, candybars, crank, templatePin });
+    const identity = readPmIdentity(root);
+    writeCacheAtomically(cachePath, { v: PIPELINE_CACHE_VERSION, writtenAtMs: Date.now(), root, candybars, crank, identity });
     sweepCacheDir(dirname(cachePath), Date.now(), cachePath);
   } catch {
     // A refresher that fails leaves the old cache; the prompt ages it out.

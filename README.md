@@ -179,18 +179,22 @@ pane, where it prints the pane's crank segment alone: crank mode belongs to the
 pane, not the project.
 
 ```
-pjangler (PJAN) · 3m · @pjangler_pm_bot(PM) 8538501729 [c738f69] · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
+pjangler (PJAN) · 3m · @pjangler_pm_bot(PM) id v1 6/6 · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
 ```
 
 After the slug, board prefix and age comes the project's PM, when `.project.json`
-`agents` declares one (role `pm`; `<slug>-pm` first): its Telegram bot handle,
-the bot's ID, and in brackets the hermes-agent-template commit its role
-manifest (`<role_dir>/role.yaml`, `template_rev`) was rendered or last refreshed
-from. `[c738f69 ↑b5aa431]` means Flume now pins a newer template (the committed
-`templates/hermes-agent` gitlink in `$FLUME_ROOT`, default `~/code/33GOD/flume`,
-read by the background refresher); `flume remediate hermes.pm-scaffold` brings
-the desk up and moves the stamp. `[?]` is a manifest rendered before the stamp
-existed. A PM with no bot is shown by its employee ID.
+`agents` declares one (role `pm`; `<slug>-pm` first): its Telegram bot handle
+(its employee ID when it has no bot), then its company identity as Flume judges
+it (`flume identity manifest <pm> --json`, run by the background refresher):
+
+- `id v1 5/6` — the identity-manifest version the PM is judged against, and how
+  many of that manifest's required points it holds (v1: 1Password Identity item,
+  own AAI gateway key, native Plane identity, private inbox, voice, avatar;
+  Telegram is optional and not counted). `flume identity manifest <pm>` lists
+  which point is missing.
+- `id none` — the PM was never enrolled (no company identity), or Flume does not
+  know the employee at all.
+- nothing — not known yet (first prompt in a new place) or Flume did not answer.
 
 Then two 33GOD pipeline segments, crank last:
 
@@ -245,12 +249,12 @@ of a single-instance ghostty or `alacritty msg create-window` is not enough).
 Awesome there. On a machine without the font, set
 `PJ_PROMPT_CANDYBAR_GLYPH=🍫` (or any glyph) instead of living with tofu.
 
-The candybar count (and, outside a zellij pane, the project's crank) is not
-computed on the prompt's critical path. It comes from a small cache
+The candybar count, the PM's identity (and, outside a zellij pane, the project's crank) are not
+computed on the prompt's critical path. They come from a small cache
 (`$PJ_PROMPT_CACHE_DIR`, default `~/.cache/pjangler/prompt/`, one file per
 project root, split only by in-a-zellij-pane or not) that a detached `dist/prompt-refresh.js` rewrites
 when it is older than 60s, so the first prompt in a new place shows no candybar count and the
-next one does. A segment whose source did not answer is omitted rather than
+next one does (`$FLUME_BIN`, default `flume` on PATH, answers the identity). A segment whose source did not answer is omitted rather than
 guessed, and a cache older than 15 minutes is not shown at all.
 `PJ_PROMPT_NO_REFRESH=1` stops the background refresh.
 
