@@ -1,7 +1,7 @@
 // Static snapshot of src/index.ts Commander registrations; regenerate with node scripts/export-usage.mjs
 name pj
 bin pj
-version "1.5.58"
+version "1.5.60"
 about "Project subsystem bootstrapper CLI"
 usage "[options] [command]"
 flag "-V --version" help="output the version number"
@@ -9,12 +9,12 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 	cmd status {
 		flag --local-only help="Do not construct or contact the remote adapter"
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd create {
 		flag --live help="Authorize the composite remote reconciliation"
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd list subcommand_required=#true help="List notebook resources" {
 		cmd notes {
@@ -25,11 +25,11 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 				arg <CURSOR>
 			}
 			flag --json help="Emit JSON v1"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 		cmd sources {
 			flag --json help="Emit JSON v1"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd add subcommand_required=#true help="Add notebook resources" {
@@ -44,14 +44,14 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 				arg <FILE>
 			}
 			flag --json help="Emit JSON v1"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd get subcommand_required=#true help="Get notebook resources" {
 		cmd note {
 			flag --json help="Emit JSON v1"
 			arg <note-id> help="Stable note ID"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd update subcommand_required=#true help="Update notebook resources" {
@@ -67,7 +67,7 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 			}
 			flag --json help="Emit JSON v1"
 			arg <note-id> help="Stable note ID"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd delete subcommand_required=#true help="Delete notebook resources" {
@@ -75,7 +75,7 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 			flag --yes help="Confirm deletion"
 			flag --json help="Emit JSON v1"
 			arg <note-id> help="Stable note ID"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd search subcommand_required=#true help="Search scoped notebook resources locally" {
@@ -85,20 +85,20 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 			}
 			flag --json help="Emit JSON v1"
 			arg <query> help="Required all-token text query"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd sync help="Synchronize project notebook: reconcile overview drift, prune zombie notes, compact session captures, and sync sources" {
 		flag --no-sources help="Skip synchronizing OpenNotebook sources" negate=--sources
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd overview {
 		flag --set-file help="Replace Overview body from a regular file" {
 			arg <SET_FILE>
 		}
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd capture subcommand_required=#true help="Inspect and retry durable capture receipts" {
 		cmd list {
@@ -106,7 +106,7 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 				arg <STATE>
 			}
 			flag --json help="Emit JSON v1"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 		cmd retry {
 			flag --baseline help="Explicit committed baseline for blocked-missing-baseline" {
@@ -114,24 +114,24 @@ cmd notebook subcommand_required=#true help="Manage the repository companion not
 			}
 			flag --json help="Emit JSON v1"
 			arg <receipt-id> help="Durable receipt ID"
-			arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+			arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 		}
 	}
 	cmd audit {
 		flag --local-only help="Do not construct or contact the remote adapter"
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd migrate {
 		flag --apply help="Apply selected owned repairs"
 		flag --live help="Authorize selected remote repairs"
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd skill help="Inspect and reconcile the host Project Notebook skill projection" {
 		flag --apply help="Restore the drifted canonical projection from the version-pinned export"
 		flag --json help="Emit JSON v1"
-		arg "[repo]" help="Registered repository" required=#false default="/home/delorenj/code/33GOD/pjangler/.worktrees/33GOD-103-pj"
+		arg "[repo]" help="Registered repository (default: current working directory)" required=#false default=.
 	}
 	cmd hook hide=#true subcommand_required=#true help="Internal managed hook entry points" {
 		cmd session-start hide=#true {
