@@ -761,14 +761,67 @@ export function resolvePaneCwds(
  * Pane cwds zellij withholds come from the engine's shared memory, then one retry (`retries`).
  */
 export function liveTabsWithOwners(
-  deps: { shell?: Shell; retries?: number; nowMs?: number; cachePath?: string; claimed?: Iterable<string> } = {},
+  deps: {
+    shell?: Shell;
+    retries?: number;
+    nowMs?: number;
+    cachePath?: string;
+    claimed?: Iterable<string>;
+    /** Accept a result up to this old from the shared memo, and write a fresh one back. Absent = always ask zellij. */
+    memoMs?: number;
+    memoPath?: string;
+  } = {},
 ): LiveTab[] {
+  const claimed = [...(deps.claimed ?? [])];
+  const memoKey = `${ZCRANK_SESSION}|${[...claimed].sort().join("\n")}`;
+  const memoFile = deps.memoPath ?? liveTabsMemoPath();
+  const now = deps.nowMs ?? Date.now();
+  if (deps.memoMs) {
+    const hit = readLiveTabsMemo(memoFile, memoKey, now, deps.memoMs);
+    if (hit) return hit;
+  }
   const tabs = liveTabs(deps);
   if (!tabs.length) return tabs;
   const cache: IdentityCache = new Map();
   const budget: IdentityBudget = { totalMs: IDENTITY_BUDGET_MS };
   const panes = resolvePaneCwds(() => livePanes(deps), { retries: deps.retries ?? 1, nowMs: deps.nowMs, cachePath: deps.cachePath });
-  return withTabOwners(tabs, panes, (cwd) => projectIdentity(cwd, { shell: deps.shell, cache, budget }), deps.claimed ?? []);
+  const owned = withTabOwners(tabs, panes, (cwd) => projectIdentity(cwd, { shell: deps.shell, cache, budget }), claimed);
+  if (deps.memoMs) writeLiveTabsMemo(memoFile, memoKey, now, owned);
+  return owned;
+}
+
+/**
+ * Shared memo of liveTabsWithOwners for callers that tolerate staleness. Each real read costs the
+ * zellij server one `list-tabs --json` plus up to two `list-panes --json --all`; the latter makes
+ * the server run `ps` once per pane (~0.08 s each on a busy host). The shell-prompt refresher runs
+ * once per project root per minute, so N roots meant N full pane scans a minute for one answer.
+ * Override the location with $PJ_LIVE_TABS_MEMO.
+ */
+export function liveTabsMemoPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PJ_LIVE_TABS_MEMO?.trim() || join(env.XDG_CACHE_HOME || join(env.HOME || homedir(), ".cache"), "pjangler", "live-tabs.json");
+}
+
+function readLiveTabsMemo(path: string, key: string, nowMs: number, maxAgeMs: number): LiveTab[] | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { key?: unknown; atMs?: unknown; tabs?: unknown };
+    const atMs = Number(parsed.atMs);
+    if (parsed.key !== key || !Number.isFinite(atMs) || nowMs - atMs < 0 || nowMs - atMs > maxAgeMs) return null;
+    return Array.isArray(parsed.tabs) && parsed.tabs.length ? (parsed.tabs as LiveTab[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLiveTabsMemo(path: string, key: string, nowMs: number, tabs: LiveTab[]): void {
+  if (!tabs.length) return;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ key, atMs: nowMs, tabs }));
+    renameSync(tmp, path);
+  } catch {
+    // a memo we cannot write only costs one more zellij read
+  }
 }
 
 /** Every `root` stored on a zcrank:tab key: the claimed identities that break a tab-owner tie. */

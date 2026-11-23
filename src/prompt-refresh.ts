@@ -45,6 +45,8 @@ const CANDYBARS_DIR = ".candybars";
 const CANDYBAR_PROJECT_FILE = ".candybar.toml";
 /** Cache files nobody has refreshed for this long belong to dead panes/sessions and are swept. */
 const CACHE_SWEEP_AFTER_MS = 24 * 3600_000;
+/** A prompt refresher reuses a zellij tab/pane scan up to this old (it runs per project root; the scan costs the server a ps per pane). */
+export const LIVE_TABS_MEMO_MS = 120_000;
 
 function git(cwd: string, ...args: string[]): string | undefined {
   try {
@@ -209,7 +211,8 @@ export async function readCrank(env: NodeJS.ProcessEnv = process.env, nowMs: num
     if (!store.ping()) return null;
     const keys = storedTabKeys(store);
     const project = currentProjectNames();
-    const ctx = contextFor(project, store);
+    // A prompt segment tolerates a stale tab map; the pane scan behind it is the expensive part, so share it.
+    const ctx = contextFor(project, store, { memoMs: LIVE_TABS_MEMO_MS });
     const snapshot = snapshotCrank(store, ctx.resolution.tab, keys, nowMs, 0, keyScopeOf(ctx));
     const state: CrankState = { enabled: snapshot.enabled === true, interval: snapshot.interval, scope: "project" };
     if (!state.enabled) return state;

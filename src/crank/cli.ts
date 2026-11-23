@@ -97,10 +97,14 @@ export function currentProjectNames(): { slug: string; names: ProjectNames; iden
 }
 
 /** Resolve a project onto a tab against live tabs (with pane owners) and stored keys + roots. */
-export function contextFor(project: { names: ProjectNames; identity?: string }, store: CrankStore): CrankContext {
+export function contextFor(
+  project: { names: ProjectNames; identity?: string },
+  store: CrankStore,
+  opts: { memoMs?: number } = {},
+): CrankContext {
   const keys = storedTabKeys(store);
   const roots = storedTabRoots(store, keys);
-  return buildCrankContext(project.names, liveTabsWithOwners({ claimed: Object.values(roots) }), keys, { identity: project.identity, roots });
+  return buildCrankContext(project.names, liveTabsWithOwners({ claimed: Object.values(roots), memoMs: opts.memoMs }), keys, { identity: project.identity, roots });
 }
 
 /** Turn this project's legacy zcrank:tab switch OFF so the old beat stops driving its tab. Best effort. */

@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { hermeticEnv, hermeticScratch } from "./helpers/hermetic-env.mjs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { startThrowawayRedis } from "./pjan-182-crank-regressions-helpers.mjs";
 
@@ -385,6 +385,29 @@ try {
       rmSync(cachePath, { force: true });
       const cold = liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 40_000, retries: 0 });
       assert.deepEqual(cold.map((t) => t.owner), [B, undefined], "no memory: tab 5 keeps only the pane that reported, tab 6 has none");
+
+      // The shared memo: a caller that tolerates staleness (the shell-prompt refresher) asks zellij ONCE
+      // per memoMs window however many project roots refresh; a stale or differently-keyed memo re-reads.
+      rmSync(cachePath, { force: true });
+      const memoPath = join(dirname(cachePath), "live-tabs-memo.json");
+      rmSync(memoPath, { force: true });
+      phase = "full";
+      argvs.length = 0;
+      const m1 = liveTabsWithOwners({ shell, cachePath, nowMs: T0, memoMs: 120_000, memoPath });
+      const scans1 = argvs.filter((a) => a.includes("list-panes")).length;
+      assert.ok(scans1 >= 1, "a cold memo reads zellij");
+      argvs.length = 0;
+      const m2 = liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 60_000, memoMs: 120_000, memoPath });
+      assert.equal(argvs.length, 0, "a fresh memo costs zellij nothing");
+      assert.deepEqual(m2, m1);
+      liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 200_000, memoMs: 120_000, memoPath });
+      assert.ok(argvs.some((a) => a.includes("list-tabs")), "an expired memo re-reads");
+      argvs.length = 0;
+      liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 200_000, memoMs: 120_000, memoPath, claimed: ["/some/root"] });
+      assert.ok(argvs.some((a) => a.includes("list-tabs")), "a different claimed set is a different memo");
+      argvs.length = 0;
+      liveTabsWithOwners({ shell, cachePath, nowMs: T0 + 300_000, memoPath });
+      assert.ok(argvs.some((a) => a.includes("list-tabs")), "without memoMs the memo is never consulted (CLI callers stay exact)");
 
       // Both sides, ONE memory file: whatever pj writes the engine's resolve_panes reads, and back.
       // Skipped where the engine is not installed (CI); on the dev box this is the real module.
