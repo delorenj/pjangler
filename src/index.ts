@@ -33,6 +33,7 @@ import {
 } from "./project/index";
 import { readProjectInfo, doctorCurrentProject } from "./project/info";
 import { resolveBoardUrl } from "./project/boardUrl";
+import { resolveDashboardUrl } from "./project/dashboardUrl";
 import { formatIdentityReport, linkProjectBoard, reconcileProjectIdentity } from "./project/identity";
 import { RenameError, renameProject, type RenameResult, type RenameStepStatus } from "./project/rename";
 import {
@@ -585,6 +586,30 @@ program
       console.log(`     ${dim(glyph.pointer)} ${dim(example)}`);
     }
     console.log("");
+  });
+
+// DASHBOARD (project walkthrough home; manifest identity, never the board)
+program
+  .command("dashboard")
+  .description("Open this project's Holocene walkthrough dashboard")
+  .option("--print", "Print the resolved URL instead of opening it")
+  .action(async (options: { print?: boolean }) => {
+    let url: string;
+    try {
+      url = await resolveDashboardUrl(process.cwd());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`${xmark} ${message}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (options.print) {
+      console.log(url);
+      return;
+    }
+    const outcome = await openUrl(url);
+    console.log(`  ${cyan(glyph.pointer)} ${outcome.display}`);
+    if (outcome.reason) console.log(`  ${dim(outcome.reason)}`);
   });
 
 // ============================================================================

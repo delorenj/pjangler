@@ -143,6 +143,7 @@ const SUITES = [
   "tests/pjan-67-trusted-lifecycle-regressions.mjs",
   "tests/pjan-71-regressions.mjs",
   "tests/pjan-72-regressions.mjs",
+  "tests/pjan-234-dashboard-regressions.mjs",
   "tests/pjan-75-regressions.mjs",
   "tests/pjan-76-regressions.mjs",
   "tests/pjan-87-board-read-regressions.mjs",

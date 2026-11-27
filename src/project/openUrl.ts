@@ -66,7 +66,21 @@ export async function openUrl(
       child.once("error", reject);
       child.once("spawn", resolve);
     });
+    // Some launchers spawn successfully but fail immediately (e.g. xdg-open
+    // with no browser configured). Give them a bounded chance to report that
+    // failure without waiting for a browser process that stays alive.
+    const launchResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null } | undefined>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(undefined), 750);
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("exit", (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+    });
     child.unref();
+    if (launchResult?.signal) {
+      return { opened: false, display: osc8(url), reason: `could not launch ${command}: terminated by ${launchResult.signal}` };
+    }
+    if (launchResult && launchResult.code !== 0) {
+      return { opened: false, display: osc8(url), reason: `could not launch ${command}: exited ${launchResult.code}` };
+    }
     return { opened: true, display: osc8(url) };
   } catch (err) {
     return {
