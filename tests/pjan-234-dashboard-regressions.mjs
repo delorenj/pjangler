@@ -42,6 +42,14 @@ try {
       assert.equal(existsSync(calls), false);
     });
     check(`${surface} nearer project`, () => assert.equal(run(bin, child).stdout, "https://holocene.delo.sh/projects/nested-project\n"));
+    check(`${surface} nested identity fields are not top-level duplicates`, () => {
+      const nestedKeys = join(gib, "nested-keys");
+      mkdirSync(nestedKeys, { recursive: true });
+      manifest(nestedKeys, '{"project_id":"nested-keys","details":{"project_id":"other","project_id":"another"}}');
+      const result = run(bin, nestedKeys);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, "https://holocene.delo.sh/projects/nested-keys\n");
+    });
     check(`${surface} desktop hands off URL and displays link`, () => {
       rmSync(calls, { force: true });
       const result = run(bin, gib, ["dashboard"], { DISPLAY: ":9" });
@@ -74,7 +82,30 @@ try {
       assert.match(result.stdout, /could not launch.*17/);
       assert.doesNotMatch(result.stderr, /Error:|Unhandled/);
     });
+    installLauncher("kill -TERM $$");
+    check(`${surface} signal-terminated launcher fallback`, () => {
+      const result = run(bin, gib, ["dashboard"], { DISPLAY: ":9" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes(url));
+      assert.match(result.stdout, /could not launch.*SIGTERM/);
+      assert.doesNotMatch(result.stderr, /Error:|Unhandled/);
+    });
     installLauncher('printf "%s\\n" "$1" >> "$CALLS"');
+    for (const [name, target] of [["dangling", "missing-manifest"], ["looping", ".project.json"]]) {
+      const nearer = join(gib, `${name}-manifest`);
+      mkdirSync(nearer, { recursive: true });
+      if (bin === source) symlinkSync(target, join(nearer, ".project.json"));
+      check(`${surface} refuses nearer ${name} manifest`, () => {
+        rmSync(calls, { force: true });
+        for (const args of [["dashboard", "--print"], ["dashboard"]]) {
+          const result = run(bin, nearer, args, { DISPLAY: ":9" });
+          assert.notEqual(result.status, 0, name);
+          assert.equal(result.stdout, "", name);
+          assert.ok(result.stderr.trim(), name);
+          assert.equal(existsSync(calls), false, name);
+        }
+      });
+    }
     const invalid = join(gib, "invalid");
     mkdirSync(invalid, { recursive: true });
     for (const [name, data, dir] of [
@@ -84,6 +115,10 @@ try {
       ["invalid ID", { project_id: "../greeninbetween" }, invalid],
       ["conflicting IDs", { project_id: "greeninbetween", project_slug: "different" }, invalid],
       ["invalid legacy ID", { project_id: "greeninbetween", project_slug: "../bad" }, invalid],
+      ["duplicate canonical ID", '{"project_id":"wrong","project_id":"greeninbetween"}', invalid],
+      ["duplicate escaped canonical ID", String.raw`{"project_id":"wrong","project_\u0069d":"greeninbetween"}`, invalid],
+      ["duplicate legacy slug", '{"project_id":"greeninbetween","project_slug":"wrong","project_slug":"greeninbetween"}', invalid],
+      ["duplicate escaped legacy slug", String.raw`{"project_id":"greeninbetween","project_slug":"wrong","project_\u0073lug":"greeninbetween"}`, invalid],
     ]) {
       check(`${surface} refuses ${name} without launching`, () => {
         if (data !== null) manifest(invalid, data);
