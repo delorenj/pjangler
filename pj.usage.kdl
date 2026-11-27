@@ -207,6 +207,9 @@ cmd add help="Scaffold a subsystem/component into the current repo" {
 	arg <subsystem> help="Subsystem to scaffold (mise, docker, node, agent-hooks, …)"
 }
 cmd subsystems help="List available subsystems"
+cmd dashboard help="Open this project's Holocene walkthrough dashboard" {
+	flag --print help="Print the resolved URL instead of opening it"
+}
 cmd board help="Open this project's ticket board — or one work item — in a browser" {
 	flag --print help="Print the resolved URL instead of opening it"
 	arg "[ref]" help="Work item to open (71, PJAN-71); defaults to the current branch's ticket, then the board" required=#false
