@@ -31,7 +31,8 @@ writeFileSync(
   join(workspace, "entry.ts"),
   [
     `export * from ${JSON.stringify(join(root, "src/prompt-pipeline.ts"))};`,
-    `export { formatPromptLine, formatPm, readProjectPm } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
+    `export { formatPromptLine, formatPm, readProjectPm, formatMode, readProjectMode } from ${JSON.stringify(join(root, "src/prompt.ts"))};`,
+    `export { normalizeMode, readPolishMetrics } from ${JSON.stringify(join(root, "src/prompt-mode.ts"))};`,
     `export { candybarProjectName, countCandybars, readArbiterFacts, readCandybars, readCrank, readPmIdentity, sweepCacheDir, tabOnSinceMs, writeCacheAtomically } from ${JSON.stringify(join(root, "src/prompt-refresh.ts"))};`,
     `export { encodeCommand, parseResp, redisPipeline, replyToHash } from ${JSON.stringify(join(root, "src/crank/resp.ts"))};`,
   ].join("\n"),
@@ -55,6 +56,7 @@ const {
   formatSpan, formatCountdown, CRANK_STALL_AFTER_MS, CRANK_READ_TIMEOUT_MS,
   crankFromArbiter, readPaneCrank, zellijPane, tabOnSinceMs,
   encodeCommand, parseResp, redisPipeline, replyToHash,
+  formatMode, readProjectMode, normalizeMode, readPolishMetrics,
 } = kit;
 
 let passed = 0;
@@ -162,15 +164,16 @@ await test("PJ_PROMPT_NO_REFRESH=1 and a fresh cache both spawn nothing", () => 
 });
 
 console.log("formatting");
-await test("segments follow the age, in order, joined by ·", () => {
+await test("segments follow the mode and the age, in order, joined by ·", () => {
   const base = { root: projectRoot, slug: "pjangler", identifier: "PJAN", age: "3m", active: true };
-  assert.equal(formatPromptLine(base), "pjangler (PJAN) · 3m");
+  assert.equal(formatPromptLine(base), "pjangler (PJAN) · ⚙ develop · 3m", "a facts object with no mode renders the default: the segment is never omitted");
+  assert.equal(formatPromptLine({ ...base, mode: { mode: "launch" } }), "pjangler (PJAN) · 🚀 launch · 3m");
   assert.equal(
-    formatPromptLine({ ...base, candybars: { project: 3, total: 124 }, crank: { enabled: true, interval: "1h", scope: "tab" } }, NOW + 60_000),
-    `pjangler (PJAN) · 3m · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻1h ⏳4m`,
+    formatPromptLine({ ...base, mode: { mode: "develop" }, candybars: { project: 3, total: 124 }, crank: { enabled: true, interval: "1h", scope: "tab" } }, NOW + 60_000),
+    `pjangler (PJAN) · ⚙ develop · 3m · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻1h ⏳4m`,
     "crank is the LAST segment: a 1h tab that never ran is due at the next 5m tick",
   );
-  assert.equal(formatPromptLine({ ...base, age: undefined, candybars: null, crank: { enabled: false, scope: "pane" } }), "pjangler (PJAN) · ◌ crank off");
+  assert.equal(formatPromptLine({ ...base, age: undefined, mode: { mode: "develop" }, candybars: null, crank: { enabled: false, scope: "pane" } }), "pjangler (PJAN) · ⚙ develop · ◌ crank off");
 });
 await test("unknown is omitted, OFF is explicit", () => {
   assert.equal(CANDYBAR_GLYPH, String.fromCodePoint(0x10ef0d), "the candy glyph font's codepoint (scripts/build-prompt-font.py)");
@@ -233,6 +236,96 @@ await test("the cache carries the timing facts, and drops garbage ones with the 
     writeFileSync(path, JSON.stringify(cacheFile({ crank: { ...crank, ...bad } })));
     assert.equal(readPipelineCache(path, projectRoot).crank, null, JSON.stringify(bad));
   }
+});
+
+console.log("mode: the declared .launch.yaml mode and the polish metrics ledger");
+const modeProj = join(workspace, "mode-proj");
+mkdirSync(modeProj, { recursive: true });
+const metricsDir = join(modeProj, "agents", "hermes", "pm", "runtime");
+const declare = (text) => writeFileSync(join(modeProj, ".launch.yaml"), text);
+const ledger = (value) => {
+  mkdirSync(metricsDir, { recursive: true });
+  writeFileSync(join(metricsDir, "polish-metrics.json"), typeof value === "string" ? value : JSON.stringify(value));
+};
+await test("every mode, normalised: lowercase, quoted, trailing comment; develop is the default", () => {
+  assert.deepEqual(readProjectMode(modeProj), { mode: "develop" }, "no .launch.yaml at all: the default mode");
+  declare("mode: develop\ndeclared: 2026-11-27\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "develop" });
+  declare('mode: launch\ndeclared: 2026-11-20\nsource: "owner decision"\nfinish_line: "on the store"\n');
+  assert.deepEqual(readProjectMode(modeProj), { mode: "launch" });
+  declare("mode: polish\npolish:\n  wip: 4\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "polish" }, "no ledger yet: polish, no counts");
+  declare("mode: live\nlive_since: 2026-11-01\nlive:\n  name: X\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "live" });
+  declare('mode: "LAUNCH"  # racing\n');
+  assert.deepEqual(readProjectMode(modeProj), { mode: "launch" }, "quotes, case and a trailing comment are noise");
+});
+await test("steady is the legacy alias of develop; unknown, broken or non-top-level reads as develop", () => {
+  declare("mode: steady\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "develop" }, "steady reads as develop");
+  declare("mode: banana\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "develop" }, "an unknown mode is never shown");
+  declare("\0\0{ not: [yaml\n  mode: launch\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "develop" }, "garbage with no top-level mode key");
+  declare("");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "develop" });
+  assert.equal(normalizeMode(" Steady "), "develop");
+  assert.equal(normalizeMode(undefined), "develop");
+  assert.equal(normalizeMode("POLISH"), "polish");
+});
+await test("polish metrics: counts are len(proposed), len(implemented), cycles; missing or broken is no metrics, never an error", () => {
+  declare("mode: polish\n");
+  rmSync(join(metricsDir, "polish-metrics.json"), { force: true });
+  assert.deepEqual(readProjectMode(modeProj), { mode: "polish" }, "ledger absent");
+  assert.equal(readPolishMetrics(modeProj), undefined);
+  ledger("{not json");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "polish" }, "ledger broken");
+  ledger({ cycles: 31, proposed: "12", implemented: [] });
+  assert.equal(readPolishMetrics(modeProj), undefined, "proposed is not an array");
+  ledger({ cycles: -1, proposed: [], implemented: [] });
+  assert.equal(readPolishMetrics(modeProj), undefined, "a negative cycle count is junk");
+  ledger({ cycles: 1.5, proposed: [], implemented: [] });
+  assert.equal(readPolishMetrics(modeProj), undefined, "cycles is an integer");
+  ledger({ declared: "2026-11-27", cycles: 31, proposed: Array.from({ length: 12 }, (_, i) => ({ ref: `X-${i}`, title: "t", at: "a" })), implemented: ["X-1", "X-2", "X-3", "X-4", "X-5"], updated_at: "now" });
+  assert.deepEqual(readProjectMode(modeProj), { mode: "polish", polish: { proposed: 12, implemented: 5, cycles: 31 } });
+  declare("mode: launch\n");
+  assert.deepEqual(readProjectMode(modeProj), { mode: "launch" }, "a ledger under a non-polish mode is not read");
+});
+await test("formatMode: one glyph and a word; polish adds proposed↑ implemented✓ cycles⟳ only when known", () => {
+  assert.equal(formatMode({ mode: "develop" }), "⚙ develop");
+  assert.equal(formatMode({ mode: "launch" }), "🚀 launch");
+  assert.equal(formatMode({ mode: "live" }), "● live");
+  assert.equal(formatMode({ mode: "polish" }), "✨ polish", "no ledger: the mode alone, numbers never guessed");
+  assert.equal(formatMode({ mode: "polish", polish: { proposed: 12, implemented: 5, cycles: 31 } }), "✨ polish 12↑ 5✓ 31⟳");
+  assert.equal(formatMode({ mode: "polish", polish: { proposed: 0, implemented: 0, cycles: 1 } }), "✨ polish 0↑ 0✓ 1⟳");
+});
+await test("the mode segment sits right after slug (BOARD), before the age", () => {
+  const base = { root: modeProj, slug: "mode", identifier: "MOD", age: "2h", active: true };
+  assert.equal(formatPromptLine({ ...base, mode: { mode: "polish", polish: { proposed: 3, implemented: 1, cycles: 7 } } }),
+    "mode (MOD) · ✨ polish 3↑ 1✓ 7⟳ · 2h");
+  assert.equal(formatPromptLine({ ...base, mode: { mode: "live" } }), "mode (MOD) · ● live · 2h");
+});
+await test("end to end: dist/prompt.js shows the declared mode, and defaults to develop", () => {
+  const bin = join(root, "dist", "prompt.js");
+  assert.ok(existsSync(bin), "dist/prompt.js is built (npm run build)");
+  const proj = join(workspace, "mode-e2e");
+  mkdirSync(proj, { recursive: true });
+  writeFileSync(join(proj, ".project.json"), JSON.stringify({ project_id: "mode-e2e", ticket_provider: { identifier: "MOD" } }));
+  const env = hermeticEnv({ PJ_PROMPT_CACHE_DIR: join(workspace, "mode-e2e-cache"), PJ_PROMPT_NO_REFRESH: "1" });
+  const run = () => spawnSync(process.execPath, [bin], { cwd: proj, env, encoding: "utf8" });
+  assert.equal(run().stdout, "mode-e2e (MOD) · ⚙ develop", "no declaration: develop, always shown");
+  writeFileSync(join(proj, ".launch.yaml"), "mode: polish\ndeclared: 2026-11-27\n");
+  assert.equal(run().stdout, "mode-e2e (MOD) · ✨ polish", "polish declared, no ledger yet");
+  const rt = join(proj, "agents", "hermes", "pm", "runtime");
+  mkdirSync(rt, { recursive: true });
+  writeFileSync(join(rt, "polish-metrics.json"), JSON.stringify({ declared: "2026-11-27", cycles: 31, proposed: [{ ref: "MOD-1" }, { ref: "MOD-2" }], implemented: ["MOD-1"], updated_at: "now" }));
+  assert.equal(run().stdout, "mode-e2e (MOD) · ✨ polish 2↑ 1✓ 31⟳");
+  writeFileSync(join(proj, ".launch.yaml"), "mode: steady\n");
+  assert.equal(run().stdout, "mode-e2e (MOD) · ⚙ develop", "the legacy alias reads as develop");
+  writeFileSync(join(proj, ".launch.yaml"), "mode: live\n");
+  assert.equal(run().stdout, "mode-e2e (MOD) · ● live");
+  writeFileSync(join(proj, ".launch.yaml"), "mode: launch\n");
+  assert.equal(run().stdout, "mode-e2e (MOD) · 🚀 launch");
 });
 
 console.log("crank, from the arbiter's resolved hash (pure)");
@@ -557,9 +650,9 @@ console.log("the prompt reads crank straight from a throwaway redis-server with 
       // a cache that CLAIMS crank is ON: the pane's own answer (OFF) must win
       writeFileSync(cachePath, JSON.stringify({ ...cacheFile(), root: e2e, writtenAtMs: Date.now(), crank: { enabled: true, interval: "5m", scope: "tab" } }));
       const out = spawnSync(process.execPath, [join(root, "dist", "prompt.js")], { cwd: e2e, env, encoding: "utf8" });
-      assert.match(out.stdout, new RegExp(`^direct \\(DIR\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ◌ crank off$`, "u"), out.stdout);
+      assert.match(out.stdout, new RegExp(`^direct \\(DIR\\) · ⚙ develop( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ◌ crank off$`, "u"), out.stdout);
       const silent = spawnSync(process.execPath, [join(root, "dist", "prompt.js")], { cwd: e2e, env: { ...env, ZCRANK_REDIS_PORT: "1" }, encoding: "utf8" });
-      assert.match(silent.stdout, new RegExp(`^direct \\(DIR\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124$`, "u"), "Redis down: the cached crank is NOT shown in a pane either");
+      assert.match(silent.stdout, new RegExp(`^direct \\(DIR\\) · ⚙ develop( · \\S+)? · ${CANDYBAR_GLYPH} 3/124$`, "u"), "Redis down: the cached crank is NOT shown in a pane either");
       const dir = { PJ_PROMPT_CACHE_DIR: join(workspace, "direct-proj-cache") };
       assert.notEqual(pipelineCachePath(e2e, env), pipelineCachePath(e2e, dir), "a pane's cache is its own (it holds no crank)");
       assert.equal(pipelineCachePath(e2e, env), pipelineCachePath(e2e, { ...dir, ...paneEnv(99) }), "...but not one per pane id: crank is no longer cached per pane");
@@ -600,7 +693,7 @@ await test("prints cached segments inside a project; nothing outside", () => {
   const run = (cwd) => spawnSync(process.execPath, [bin], { cwd, env, encoding: "utf8" });
   const inside = run(proj);
   assert.equal(inside.status, 0);
-  assert.match(inside.stdout, new RegExp(`^e2e \\(E2E\\)( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻5m ⏳\\S+$`, "u"));
+  assert.match(inside.stdout, new RegExp(`^e2e \\(E2E\\) · ⚙ develop( · \\S+)? · ${CANDYBAR_GLYPH} 3/124 · ⚡ crank ↻5m ⏳\\S+$`, "u"));
   const outside = run(workspace);
   assert.equal(outside.stdout, "");
   assert.equal(run(workspace).stdout, "", "no pane, no project: silent");
@@ -656,7 +749,7 @@ await test("the PM segment: @bot(PM), then its identity against the manifest; no
   assert.equal(formatIdentity({ enrolled: true, version: 1, satisfied: 5, total: 6, status: "suspended" }), "id v1 5/6 suspended");
   const base = { root: "/x", slug: "tolt", identifier: "TOLT", age: "3m", active: true };
   assert.equal(formatPromptLine({ ...base, pm, identity: { enrolled: true, version: 1, satisfied: 6, total: 6 }, candybars: { project: 1, total: 2 } }),
-    `tolt (TOLT) · 3m · @tolt_pm_bot(PM) id v1 6/6 · ${CANDYBAR_GLYPH} 1/2`);
+    `tolt (TOLT) · ⚙ develop · 3m · @tolt_pm_bot(PM) id v1 6/6 · ${CANDYBAR_GLYPH} 1/2`);
 });
 
 await test("the cache carries the PM identity; a malformed one degrades to absent and it expires with the rest", () => {

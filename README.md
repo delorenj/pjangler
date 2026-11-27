@@ -179,10 +179,29 @@ pane, where it prints the pane's crank segment alone: crank mode belongs to the
 pane, not the project.
 
 ```
-pjangler (PJAN) · 3m · @pjangler_pm_bot(PM) id v1 6/6 · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
+pjangler (PJAN) · ⚙ develop · 3m · @pjangler_pm_bot(PM) id v1 6/6 · 🍬 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m
 ```
 
-After the slug, board prefix and age comes the project's PM, when `.project.json`
+Right after the slug and board prefix comes the project's declared MODE, then
+the age. The mode is the owner's `mode:` key in the repo's committed
+`.launch.yaml` (agents never edit that file), read inline on every prompt — a
+tiny file, never cached, never thrown on:
+
+- `⚙ develop` — the default: no `.launch.yaml`, `mode: develop`, or the legacy
+  alias `mode: steady`. An unknown or broken declaration also reads as
+  `develop`, exactly as the launch-pass monitor reports it.
+- `🚀 launch` — racing a finish line (the launch pass is active).
+- `✨ polish 12↑ 5✓ 31⟳` — around-the-clock exploratory QA; the numbers come
+  from the pass's ledger at `agents/hermes/pm/runtime/polish-metrics.json`:
+  improvements proposed ↑, implemented ✓ and total QA cycles ⟳
+  (`len(proposed)`, `len(implemented)`, `cycles`). A missing or broken ledger
+  shows `✨ polish` alone — the mode is known even when its metrics are not.
+- `● live` — the product is in production (a lifecycle stage, no pass).
+
+The segment is always shown inside a project, develop included; the
+crank-only line outside projects has no mode.
+
+After the mode and age comes the project's PM, when `.project.json`
 `agents` declares one (role `pm`; `<slug>-pm` first): its Telegram bot handle
 (its employee ID when it has no bot), then its company identity as Flume judges
 it (`flume identity manifest <pm> --json`, run by the background refresher):

@@ -28,6 +28,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { computeRepoActivity } from "./describe/activity";
 import { findProjectRoot, resolveBoardUrl } from "./project/boardUrl";
+import { formatMode, readProjectMode, type ModeFacts } from "./prompt-mode";
 import {
   formatCandybars,
   formatCrank,
@@ -50,6 +51,12 @@ export interface PromptFacts {
   identifier?: string;
   age?: string;
   active: boolean;
+  /**
+   * The PM mode declared in the repo's `.launch.yaml` (develop | launch | polish | live, read inline —
+   * two tiny files, never cached). readPromptFacts always sets it; the formatter defaults a missing one
+   * to develop so a project line can never omit the mode.
+   */
+  mode?: ModeFacts;
   /** 33GOD pipeline (cached, see ./prompt-pipeline): this project's / all registered candybars. */
   candybars?: CandybarCounts | null;
   /** 33GOD pipeline: crank mode for this pane (read directly in zellij, cached outside it). */
@@ -61,6 +68,7 @@ export interface PromptFacts {
 }
 
 export { readProjectPm, type ProjectPm };
+export { formatMode, readProjectMode, type ModeFacts, type ProjectMode } from "./prompt-mode";
 
 /**
  * `@tolt_pm_bot(PM) id v1 5/6`: the PM's bot, then its company identity: the identity-manifest version it is
@@ -94,11 +102,12 @@ export function readPromptFacts(root: string, now?: Date): PromptFacts {
     identifier,
     age: activity.updatedUnix ? activity.compact : undefined,
     active: activity.active,
+    mode: readProjectMode(root),
     pm: readProjectPm(root, slug, agents),
   };
 }
 
-/** `pjangler (PJAN) · 3m · @pjangler_pm_bot(PM) id v1 6/6 · <candy> 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m` — deliberately terse; a prompt is not a report. */
+/** `pjangler (PJAN) · ⚙ develop · 3m · @pjangler_pm_bot(PM) id v1 6/6 · <candy> 3/124 · ⚡ crank ↑3d4h ↻5m ⏳2m` — deliberately terse; a prompt is not a report. */
 export function formatPromptLine(facts: PromptFacts, nowMs: number = Date.now()): string {
   const parts = [facts.slug];
   // The board prefix is context, not a competing identity. PJAN-80 collapsed
@@ -111,6 +120,10 @@ export function formatPromptLine(facts: PromptFacts, nowMs: number = Date.now())
   // that disagreed, while still parsing the identifier it no longer printed.
   if (facts.identifier) parts.push(`(${facts.identifier})`);
   const segments = [parts.join(" ")];
+  // The declared mode (develop | launch | polish | live) sits right after the identity, before the
+  // age: it colours everything after it. ALWAYS shown inside a project — develop included — so a
+  // facts object that somehow lacks it renders the default rather than a shorter line.
+  segments.push(formatMode(facts.mode ?? { mode: "develop" }));
   if (facts.age) segments.push(facts.age);
   // The PM is the project's own employee: identity, so it precedes the pipeline machinery.
   if (facts.pm) segments.push(formatPm(facts.pm, facts.identity));
